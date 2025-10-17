@@ -149,6 +149,14 @@ Felix includes comprehensive benchmarking via `exp/benchmark_felix.py`, which te
 
 Run benchmarks from the exp/ directory to generate CSV metrics. Results demonstrate functional verification with expected performance improvements across all hypotheses.
 
+## GUI Interface
+
+A Tkinter GUI is available in `src/gui/` for interactive control of Felix components. See [`src/gui/README.md`](src/gui/README.md) for details. Run with:
+
+```bash
+python -m src.gui.main
+```
+
 ## Documentation
 
 - **[User Manual](USER_MANUAL.md)**: Complete setup, configuration, and operational guide

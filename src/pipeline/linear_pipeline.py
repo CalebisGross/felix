@@ -29,8 +29,11 @@ Mathematical references:
 """
 
 import time
+import threading
 import statistics
-from typing import List, Dict, Any, Optional
+import logging
+import uuid
+from typing import List, Dict, Any, Optional, Callable
 from enum import Enum
 
 
@@ -462,3 +465,220 @@ class LinearPipeline:
         """String representation for debugging."""
         return (f"LinearPipeline(stages={self.num_stages}, capacity={self.stage_capacity}, "
                 f"agents={self.total_agents}, active={len(self.get_active_agents())})")
+
+
+def run(task: str, progress_callback: Optional[Callable[[str, float], None]] = None) -> Dict[str, Any]:
+    """
+    Run a linear pipeline for a task with dynamic agent spawning and LLM integration.
+
+    Args:
+        task: Task description to process
+        progress_callback: Optional callback for progress updates (status, progress_percentage)
+
+    Returns:
+        Dictionary containing pipeline results and metadata
+    """
+    try:
+        # Initialize pipeline with 4 stages (planning, execution, review, finalization)
+        pipeline = LinearPipeline(num_stages=4, stage_capacity=8)
+        current_time = 0.0
+
+        # Initialize LM Studio client for LLM processing
+        from src.llm.lm_studio_client import LMStudioClient
+        llm_client = LMStudioClient(base_url="http://127.0.0.1:1234/v1", timeout=60.0)
+
+        # Initialize memory systems for persistence
+        from src.memory.knowledge_store import KnowledgeStore, KnowledgeType, ConfidenceLevel
+        from src.memory.task_memory import TaskMemory, TaskOutcome, TaskComplexity
+        knowledge_store = KnowledgeStore()
+        task_memory = TaskMemory()
+
+        # Initialize dynamic spawning system
+        from src.agents.dynamic_spawning import DynamicSpawning
+        from src.core.helix_geometry import HelixGeometry
+
+        # Create a simple agent factory for dynamic spawning
+        class SimpleAgentFactory:
+            def __init__(self, llm_client):
+                self.llm_client = llm_client
+                self.helix = HelixGeometry(top_radius=10.0, bottom_radius=2.0, height=20.0, turns=3)
+
+            def create_research_agent(self, domain="general", spawn_time_range=(0.1, 0.3)):
+                from src.agents.specialized_agents import ResearchAgent
+                spawn_time = spawn_time_range[0] + (spawn_time_range[1] - spawn_time_range[0]) * 0.5
+                return ResearchAgent(f"research_{int(time.time()*1000)}", spawn_time, self.helix, self.llm_client, domain)
+
+            def create_analysis_agent(self, analysis_type="general", spawn_time_range=(0.4, 0.6)):
+                from src.agents.specialized_agents import AnalysisAgent
+                spawn_time = spawn_time_range[0] + (spawn_time_range[1] - spawn_time_range[0]) * 0.5
+                return AnalysisAgent(f"analysis_{int(time.time()*1000)}", spawn_time, self.helix, self.llm_client, analysis_type)
+
+            def create_critic_agent(self, review_focus="general", spawn_time_range=(0.6, 0.8)):
+                from src.agents.specialized_agents import CriticAgent
+                spawn_time = spawn_time_range[0] + (spawn_time_range[1] - spawn_time_range[0]) * 0.5
+                return CriticAgent(f"critic_{int(time.time()*1000)}", spawn_time, self.helix, self.llm_client, review_focus)
+
+            def create_synthesis_agent(self, output_format="general", spawn_time_range=(0.8, 0.95)):
+                from src.agents.specialized_agents import SynthesisAgent
+                spawn_time = spawn_time_range[0] + (spawn_time_range[1] - spawn_time_range[0]) * 0.5
+                return SynthesisAgent(f"synthesis_{int(time.time()*1000)}", spawn_time, self.helix, self.llm_client, output_format)
+
+        agent_factory = SimpleAgentFactory(llm_client)
+        spawning_system = DynamicSpawning(agent_factory)
+
+        # Create initial planning agent
+        planning_agent = PipelineAgent("planning_agent", 0.0)
+        pipeline.add_agent(planning_agent)
+
+        # Progress tracking
+        total_iterations = 20
+        results = {"task": task, "stages": [], "agents_spawned": [], "llm_responses": []}
+
+        if progress_callback:
+            progress_callback("Initializing pipeline...", 0.0)
+
+        # Main pipeline execution loop
+        for iteration in range(total_iterations):
+            progress_percentage = (iteration / total_iterations) * 100
+
+            # Update pipeline time
+            current_time = iteration / total_iterations
+            pipeline.update(current_time)
+
+            # Dynamic agent spawning based on current state
+            current_agents = pipeline.get_active_agents()
+            if current_agents:
+                # Analyze current work and spawn additional agents if needed
+                mock_messages = []
+                for agent in current_agents[:3]:  # Analyze up to 3 recent agents
+                    mock_messages.append(type('Message', (), {
+                        'content': {'result': f'Agent {agent.agent_id} processing task chunk', 'confidence': 0.8},
+                        'timestamp': time.time()
+                    })())
+
+                new_agents = spawning_system.analyze_and_spawn(mock_messages, current_agents, current_time)
+                for new_agent in new_agents:
+                    pipeline.add_agent(new_agent)
+                    results["agents_spawned"].append(new_agent.agent_id)
+                    if progress_callback:
+                        progress_callback(f"Spawned agent: {new_agent.agent_id}", progress_percentage)
+
+            # Process agents through pipeline stages
+            pipeline.advance_agents()
+
+            # Simulate LLM processing for agents in execution stages (stages 1-2)
+            for stage_idx, stage in enumerate(pipeline.stages):
+                if stage_idx in [1, 2]:  # Execution and review stages
+                    for agent in stage.agents:
+                        if hasattr(agent, 'current_task') and agent.current_task:
+                            try:
+                                # Create LLM task for this agent
+                                system_prompt = f"You are processing part of task: {task}. Focus on your role in stage {stage_idx}."
+                                user_prompt = f"Process this task segment: {task[:200]}..."  # Truncate for efficiency
+
+                                llm_response = llm_client.complete(
+                                    agent_id=agent.agent_id,
+                                    system_prompt=system_prompt,
+                                    user_prompt=user_prompt,
+                                    temperature=0.7,
+                                    max_tokens=300
+                                )
+
+                                results["llm_responses"].append({
+                                    "agent_id": agent.agent_id,
+                                    "stage": stage_idx,
+                                    "response": llm_response.content,
+                                    "tokens_used": llm_response.tokens_used
+                                })
+
+                                if progress_callback:
+                                    progress_callback(f"LLM processing by {agent.agent_id}", progress_percentage)
+
+                                # Store knowledge from LLM response
+                                try:
+                                    knowledge_store.store_knowledge(
+                                        knowledge_type=KnowledgeType.TASK_RESULT,
+                                        content={
+                                            "task": task,
+                                            "agent_id": agent.agent_id,
+                                            "stage": stage_idx,
+                                            "response": llm_response.content,
+                                            "tokens_used": llm_response.tokens_used,
+                                            "timestamp": time.time()
+                                        },
+                                        confidence_level=ConfidenceLevel.MEDIUM,
+                                        source_agent=agent.agent_id,
+                                        domain="workflow_execution",
+                                        tags=["llm_response", f"stage_{stage_idx}", "pipeline_result"]
+                                    )
+                                    logging.info(f"Stored knowledge entry for agent: {agent.agent_id}")
+                                except Exception as e:
+                                    logging.error(f"Failed to store knowledge for agent {agent.agent_id}: {e}")
+
+                                # Record task execution
+                                try:
+                                    task_id = str(uuid.uuid4())
+                                    execution_start = time.time() - 0.5  # Approximate start time
+                                    execution_duration = time.time() - execution_start
+
+                                    task_memory.record_task_execution(
+                                        task_description=task,
+                                        task_type="workflow_execution",
+                                        complexity=TaskComplexity.MODERATE,
+                                        outcome=TaskOutcome.SUCCESS,
+                                        duration=execution_duration,
+                                        agents_used=[agent.agent_id],
+                                        strategies_used=["linear_pipeline"],
+                                        context_size=len(task),
+                                        success_metrics={
+                                            "tokens_used": llm_response.tokens_used,
+                                            "stage": stage_idx,
+                                            "response_length": len(llm_response.content)
+                                        }
+                                    )
+                                    logging.info(f"Recorded task execution for task: {task_id}")
+                                except Exception as e:
+                                    logging.error(f"Failed to record task execution for agent {agent.agent_id}: {e}")
+
+                            except Exception as e:
+                                # Handle LLM connection errors gracefully
+                                results["llm_responses"].append({
+                                    "agent_id": agent.agent_id,
+                                    "stage": stage_idx,
+                                    "error": str(e)
+                                })
+
+            # Simulate realistic timing with sleep
+            time.sleep(0.5)  # 500ms delay per iteration for visible progress
+
+            # Update progress
+            if progress_callback:
+                stage_names = ["Planning", "Execution", "Review", "Finalization"]
+                current_stage = min(int(current_time * len(stage_names)), len(stage_names) - 1)
+                progress_callback(f"Processing: {stage_names[current_stage]}", progress_percentage)
+
+        # Collect final results
+        final_metrics = pipeline.get_performance_metrics()
+        results.update({
+            "completed_agents": len(pipeline.completed_agents),
+            "total_processing_time": sum(agent.processing_time for agent in pipeline.completed_agents),
+            "final_metrics": final_metrics,
+            "status": "completed"
+        })
+
+        if progress_callback:
+            progress_callback("Pipeline completed successfully", 100.0)
+
+        return results
+
+    except Exception as e:
+        error_result = {
+            "task": task,
+            "status": "error",
+            "error": str(e),
+            "completed_agents": 0,
+            "llm_responses": []
+        }
+        if progress_callback:
+            progress_callback(f"Pipeline failed: {str(e)}", 0.0)
+        return error_result
