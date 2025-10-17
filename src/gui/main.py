@@ -44,7 +44,7 @@ class MainApp(tk.Tk):
         self.db_helper = DBHelper()
 
         # Dashboard tab
-        dashboard_frame = DashboardFrame(self.notebook, self.thread_manager)
+        dashboard_frame = DashboardFrame(self.notebook, self.thread_manager, main_app=self)
         self.notebook.add(dashboard_frame, text="Dashboard")
 
         # Workflows tab

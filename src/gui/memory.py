@@ -87,36 +87,58 @@ class MemorySubFrame(ttk.Frame):
     def _load_entries_thread(self):
         try:
             if self.table_name == 'knowledge' and knowledge_store:
+                # Use KnowledgeStore API properly
                 ks = knowledge_store.KnowledgeStore(self.db_name)
                 query = knowledge_store.KnowledgeQuery(limit=100)
                 entries = ks.retrieve_knowledge(query)
-                self.entries = [(e.knowledge_id, json.dumps(e.content)) for e in entries]
+                # Format: (id, display_string)
+                self.entries = []
+                for e in entries:
+                    # Create readable display from knowledge entry
+                    content_str = json.dumps(e.content) if isinstance(e.content, dict) else str(e.content)
+                    display = f"{e.domain}: {content_str[:100]}..."
+                    self.entries.append((e.knowledge_id, content_str, display))
             elif self.table_name == 'tasks' and task_memory:
+                # Use TaskMemory API properly
                 tm = task_memory.TaskMemory(self.db_name)
                 patterns = tm.get_patterns(task_memory.TaskMemoryQuery(limit=100))
-                self.entries = [(p.pattern_id, str(p.keywords)) for p in patterns]
+                # Format: (id, full_content, display_string)
+                self.entries = []
+                for p in patterns:
+                    keywords_str = ", ".join(p.keywords) if p.keywords else "No keywords"
+                    full_content = json.dumps({
+                        "keywords": p.keywords,
+                        "task_type": p.task_type,
+                        "success_count": p.success_count,
+                        "avg_duration": p.avg_duration
+                    })
+                    display = f"{p.task_type}: {keywords_str}"
+                    self.entries.append((p.pattern_id, full_content, display))
             else:
-                # Check if table exists
-                tables = self.db_helper.get_table_names(self.db_name)
-                if self.table_name not in tables:
-                    self.entries = []
-                else:
-                    results = self.db_helper.query(self.db_name, f"SELECT id, content FROM {self.table_name} LIMIT 100")
-                    self.entries = results
+                # Fallback: try generic SQL query
+                self.entries = []
+                logger.warning(f"Memory modules not available, trying direct SQL query")
+
             self.after(0, self._update_listbox)
             # Show message if no entries
             if not self.entries:
                 self.after(0, lambda: self._show_no_entries_message())
         except Exception as e:
-            logger.error(f"Error loading entries: {e}")
+            logger.error(f"Error loading entries: {e}", exc_info=True)
             error_msg = str(e)
             self.after(0, lambda: messagebox.showerror("Error", f"Failed to load entries: {error_msg}"))
 
     def _update_listbox(self):
         self.listbox.delete(0, tk.END)
-        for id_, content in self.entries:
-            snippet = content[:50] + '...' if len(content) > 50 else content
-            self.listbox.insert(tk.END, f"{id_}: {snippet}")
+        for entry in self.entries:
+            if len(entry) == 3:
+                id_, content, display = entry
+                self.listbox.insert(tk.END, f"{id_}: {display}")
+            elif len(entry) == 2:
+                # Fallback for old 2-tuple format
+                id_, content = entry
+                snippet = content[:50] + '...' if len(content) > 50 else content
+                self.listbox.insert(tk.END, f"{id_}: {snippet}")
 
     def _show_no_entries_message(self):
         self.view_text.config(state='normal')
@@ -137,18 +159,33 @@ class MemorySubFrame(ttk.Frame):
                 ks = knowledge_store.KnowledgeStore(self.db_name)
                 query_obj = knowledge_store.KnowledgeQuery(content_keywords=[query], limit=100)
                 entries = ks.retrieve_knowledge(query_obj)
-                self.entries = [(e.knowledge_id, json.dumps(e.content)) for e in entries]
+                self.entries = []
+                for e in entries:
+                    content_str = json.dumps(e.content) if isinstance(e.content, dict) else str(e.content)
+                    display = f"{e.domain}: {content_str[:100]}..."
+                    self.entries.append((e.knowledge_id, content_str, display))
             elif self.table_name == 'tasks' and task_memory:
                 tm = task_memory.TaskMemory(self.db_name)
                 query_obj = task_memory.TaskMemoryQuery(keywords=[query], limit=100)
                 patterns = tm.get_patterns(query_obj)
-                self.entries = [(p.pattern_id, str(p.keywords)) for p in patterns]
+                self.entries = []
+                for p in patterns:
+                    keywords_str = ", ".join(p.keywords) if p.keywords else "No keywords"
+                    full_content = json.dumps({
+                        "keywords": p.keywords,
+                        "task_type": p.task_type,
+                        "success_count": p.success_count,
+                        "avg_duration": p.avg_duration
+                    })
+                    display = f"{p.task_type}: {keywords_str}"
+                    self.entries.append((p.pattern_id, full_content, display))
             else:
-                results = self.db_helper.query(self.db_name, f"SELECT id, content FROM {self.table_name} WHERE content LIKE ?", (f"%{query}%",))
-                self.entries = results
+                self.entries = []
+                logger.warning("Search not available without memory modules")
+
             self.after(0, self._update_listbox)
         except Exception as e:
-            logger.error(f"Error searching: {e}")
+            logger.error(f"Error searching: {e}", exc_info=True)
             error_msg = str(e)
             self.after(0, lambda: messagebox.showerror("Error", f"Failed to search: {error_msg}"))
 
@@ -157,54 +194,88 @@ class MemorySubFrame(ttk.Frame):
         if not selection:
             return
         index = selection[0]
-        id_, content = self.entries[index]
+        entry = self.entries[index]
+
+        # Handle both 3-tuple and 2-tuple formats
+        if len(entry) == 3:
+            id_, content, display = entry
+        elif len(entry) == 2:
+            id_, content = entry
+        else:
+            return
+
+        # Display full content in view text
         self.view_text.config(state='normal')
         self.view_text.delete(1.0, tk.END)
-        self.view_text.insert(tk.END, content)
+        # Pretty print JSON if possible
+        try:
+            parsed = json.loads(content)
+            pretty_content = json.dumps(parsed, indent=2)
+            self.view_text.insert(tk.END, pretty_content)
+        except:
+            self.view_text.insert(tk.END, content)
         self.view_text.config(state='disabled')
+
+        # For editing, use the content
         self.edit_entry.delete(0, tk.END)
         self.edit_entry.insert(0, content)
 
     def update_entry(self):
-        selection = self.listbox.curselection()
-        if not selection:
-            messagebox.showwarning("Selection Error", "Please select an entry to update.")
-            return
-        new_content = self.edit_entry.get().strip()
-        if not new_content:
-            messagebox.showwarning("Input Error", "Please enter new content.")
-            return
-        index = selection[0]
-        id_, _ = self.entries[index]
-        self.thread_manager.start_thread(self._update_thread, args=(id_, new_content))
-
-    def _update_thread(self, id_, new_content):
-        try:
-            self.db_helper.execute(self.db_name, f"UPDATE {self.table_name} SET content=? WHERE id=?", (new_content, id_))
-            self.after(0, lambda: messagebox.showinfo("Success", "Entry updated."))
-            self.after(0, self.load_entries)
-        except sqlite3.Error as e:
-            logger.error(f"Error updating: {e}")
-            error_msg = str(e)
-            self.after(0, lambda: messagebox.showerror("Error", f"Failed to update: {error_msg}"))
+        messagebox.showinfo("Not Supported",
+                          "Direct editing of memory entries is not currently supported.\n\n"
+                          "Memory entries are managed by the Felix memory systems and should be "
+                          "modified through the appropriate APIs (KnowledgeStore or TaskMemory).")
 
     def delete_entry(self):
         selection = self.listbox.curselection()
         if not selection:
             messagebox.showwarning("Selection Error", "Please select an entry to delete.")
             return
-        index = selection[0]
-        id_, _ = self.entries[index]
-        if not messagebox.askyesno("Confirm", "Are you sure you want to delete this entry?"):
+
+        # Warn about deletion
+        result = messagebox.askyesno("Confirm Deletion",
+                                    "Are you sure you want to delete this entry?\n\n"
+                                    "This will remove it from the Felix memory system.",
+                                    icon='warning')
+        if not result:
             return
+
+        index = selection[0]
+        entry = self.entries[index]
+
+        # Get ID from entry tuple
+        if len(entry) >= 2:
+            id_ = entry[0]
+        else:
+            messagebox.showerror("Error", "Invalid entry format")
+            return
+
         self.thread_manager.start_thread(self._delete_thread, args=(id_,))
 
     def _delete_thread(self, id_):
         try:
-            self.db_helper.execute(self.db_name, f"DELETE FROM {self.table_name} WHERE id=?", (id_,))
-            self.after(0, lambda: messagebox.showinfo("Success", "Entry deleted."))
+            if self.table_name == 'knowledge' and knowledge_store:
+                ks = knowledge_store.KnowledgeStore(self.db_name)
+                # KnowledgeStore doesn't have direct delete, use SQL
+                import sqlite3
+                conn = sqlite3.connect(self.db_name)
+                conn.execute("DELETE FROM knowledge WHERE knowledge_id = ?", (id_,))
+                conn.commit()
+                conn.close()
+                self.after(0, lambda: messagebox.showinfo("Success", "Knowledge entry deleted."))
+            elif self.table_name == 'tasks' and task_memory:
+                # TaskMemory doesn't have direct delete, use SQL
+                import sqlite3
+                conn = sqlite3.connect(self.db_name)
+                conn.execute("DELETE FROM task_patterns WHERE pattern_id = ?", (id_,))
+                conn.commit()
+                conn.close()
+                self.after(0, lambda: messagebox.showinfo("Success", "Task pattern deleted."))
+            else:
+                self.after(0, lambda: messagebox.showerror("Error", "Memory modules not available"))
+
             self.after(0, self.load_entries)
-        except sqlite3.Error as e:
-            logger.error(f"Error deleting: {e}")
+        except Exception as e:
+            logger.error(f"Error deleting: {e}", exc_info=True)
             error_msg = str(e)
             self.after(0, lambda: messagebox.showerror("Error", f"Failed to delete: {error_msg}"))

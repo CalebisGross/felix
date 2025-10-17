@@ -148,8 +148,9 @@ class AgentsFrame(ttk.Frame):
         """Check if the system is running and ready for agent operations."""
         return (self.main_app and
                 self.main_app.system_running and
-                self.main_app.lm_client and
-                self.main_app.lm_client.test_connection())
+                self.main_app.felix_system and
+                self.main_app.felix_system.lm_client and
+                self.main_app.felix_system.lm_client.test_connection())
 
     def spawn_agent(self):
         agent_type = self.type_combo.get()
@@ -210,41 +211,58 @@ class AgentsFrame(ttk.Frame):
         # Add agents from core system
         for agent in self.agents:
             try:
-                # Get agent properties
-                position_info = agent.get_position_info(0.1)  # Use current time
-                depth_ratio = position_info.get("depth_ratio", 0.0)
+                # Get agent properties with safe access
+                agent_type = getattr(agent, 'agent_type', 'unknown')
+                agent_id = getattr(agent, 'agent_id', 'unknown')
+                state = getattr(agent, 'state', 'unknown')
+
+                # Try to get position info
+                position_str = "N/A"
+                try:
+                    if hasattr(agent, 'get_position_info'):
+                        position_info = agent.get_position_info(0.1)
+                        depth_ratio = position_info.get("depth_ratio", 0.0)
+                        position_str = f"{depth_ratio:.2f}"
+                except Exception:
+                    pass
+
+                # Get other properties with defaults
                 confidence = getattr(agent, 'confidence', 0.0)
                 velocity = getattr(agent, 'velocity', 0.0)
                 progress = getattr(agent, 'progress', 0.0)
-                state = getattr(agent, 'state', 'active')
 
                 # Format display values
-                position_str = f"{depth_ratio:.2f}"
-                confidence_str = f"{confidence:.2f}"
-                velocity_str = f"{velocity:.2f}"
-                progress_str = f"{progress:.1%}"
+                confidence_str = f"{confidence:.2f}" if isinstance(confidence, (int, float)) else "N/A"
+                velocity_str = f"{velocity:.2f}" if isinstance(velocity, (int, float)) else "N/A"
+                progress_str = f"{progress:.1%}" if isinstance(progress, (int, float)) else "N/A"
 
                 # Insert into treeview
                 self.tree.insert("", tk.END, values=(
-                    agent.agent_type.capitalize(),
+                    agent_type.capitalize() if isinstance(agent_type, str) else str(agent_type),
                     position_str,
                     state,
                     progress_str,
                     confidence_str,
                     velocity_str
-                ), tags=(agent.agent_id,))
+                ), tags=(agent_id,))
 
             except Exception as e:
-                logger.warning(f"Error updating treeview for agent {agent.agent_id}: {e}")
-                # Fallback display
-                self.tree.insert("", tk.END, values=(
-                    getattr(agent, 'agent_type', 'unknown'),
-                    "0.00",
-                    "error",
-                    "0.0%",
-                    "0.00",
-                    "0.00"
-                ), tags=(agent.agent_id,))
+                logger.warning(f"Error updating treeview for agent: {e}")
+                # Fallback display with minimal info
+                try:
+                    agent_id = getattr(agent, 'agent_id', 'unknown')
+                    agent_type = getattr(agent, 'agent_type', 'unknown')
+                    self.tree.insert("", tk.END, values=(
+                        agent_type,
+                        "N/A",
+                        "error",
+                        "N/A",
+                        "N/A",
+                        "N/A"
+                    ), tags=(agent_id,))
+                except Exception:
+                    # Complete fallback
+                    pass
 
     def on_select(self, event):
         selection = self.tree.selection()
@@ -257,40 +275,68 @@ class AgentsFrame(ttk.Frame):
         # Find agent in list
         agent = None
         for a in self.agents:
-            if a.agent_id == agent_id:
+            if getattr(a, 'agent_id', None) == agent_id:
                 agent = a
                 break
 
         if not agent:
+            self._append_monitor(f"Agent {agent_id} not found")
             return
 
-        # Get detailed agent information
+        # Get detailed agent information with robust error handling
+        details = []
+
+        # Basic info
+        details.append(f"ID: {getattr(agent, 'agent_id', 'N/A')}")
+        details.append(f"Type: {getattr(agent, 'agent_type', 'N/A')}")
+        details.append(f"State: {getattr(agent, 'state', 'N/A')}")
+
+        # Position info
         try:
-            position_info = agent.get_position_info(0.1)
-            details = f"ID: {agent.agent_id}\n"
-            details += f"Type: {agent.agent_type}\n"
-            details += f"Position: Depth {position_info.get('depth_ratio', 0.0):.2f}\n"
-            details += f"State: {getattr(agent, 'state', 'active')}\n"
-            details += f"Confidence: {getattr(agent, 'confidence', 0.0):.2f}\n"
-            details += f"Progress: {getattr(agent, 'progress', 0.0):.1%}\n"
-            details += f"Velocity: {getattr(agent, 'velocity', 0.0):.2f}\n"
-
-            # Add specialized information
-            if hasattr(agent, 'research_domain'):
-                details += f"Research Domain: {agent.research_domain}\n"
-            elif hasattr(agent, 'analysis_type'):
-                details += f"Analysis Type: {agent.analysis_type}\n"
-            elif hasattr(agent, 'output_format'):
-                details += f"Output Format: {agent.output_format}\n"
-            elif hasattr(agent, 'review_focus'):
-                details += f"Review Focus: {agent.review_focus}\n"
-
+            if hasattr(agent, 'get_position_info'):
+                position_info = agent.get_position_info(0.1)
+                depth_ratio = position_info.get('depth_ratio', 'N/A')
+                if isinstance(depth_ratio, (int, float)):
+                    details.append(f"Position: Depth {depth_ratio:.2f}")
+                else:
+                    details.append(f"Position: {depth_ratio}")
         except Exception as e:
-            details = f"ID: {agent.agent_id}\nType: {agent.agent_type}\nError getting details: {e}"
+            details.append(f"Position: Error ({e})")
 
+        # Performance metrics
+        confidence = getattr(agent, 'confidence', None)
+        if confidence is not None and isinstance(confidence, (int, float)):
+            details.append(f"Confidence: {confidence:.2f}")
+
+        progress = getattr(agent, 'progress', None)
+        if progress is not None and isinstance(progress, (int, float)):
+            details.append(f"Progress: {progress:.1%}")
+
+        velocity = getattr(agent, 'velocity', None)
+        if velocity is not None and isinstance(velocity, (int, float)):
+            details.append(f"Velocity: {velocity:.2f}")
+
+        # Spawn time
+        spawn_time = getattr(agent, 'spawn_time', None)
+        if spawn_time is not None:
+            details.append(f"Spawn Time: {spawn_time}")
+
+        # Add specialized information based on agent type
+        agent_type = getattr(agent, 'agent_type', '').lower()
+
+        if agent_type == 'research' and hasattr(agent, 'research_domain'):
+            details.append(f"Research Domain: {agent.research_domain}")
+        elif agent_type == 'analysis' and hasattr(agent, 'analysis_type'):
+            details.append(f"Analysis Type: {agent.analysis_type}")
+        elif agent_type == 'synthesis' and hasattr(agent, 'output_format'):
+            details.append(f"Output Format: {agent.output_format}")
+        elif agent_type == 'critic' and hasattr(agent, 'review_focus'):
+            details.append(f"Review Focus: {agent.review_focus}")
+
+        # Display in monitor
         self.monitor_text.config(state='normal')
         self.monitor_text.delete(1.0, tk.END)
-        self.monitor_text.insert(tk.END, details)
+        self.monitor_text.insert(tk.END, '\n'.join(details))
         self.monitor_text.config(state='disabled')
 
     def send_message(self):
