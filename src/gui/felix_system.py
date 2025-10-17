@@ -13,11 +13,13 @@ from dataclasses import dataclass
 
 from src.core.helix_geometry import HelixGeometry
 from src.communication.central_post import CentralPost, AgentFactory, Message, MessageType
+from src.communication.spoke import SpokeManager
 from src.llm.lm_studio_client import LMStudioClient
 from src.llm.token_budget import TokenBudgetManager
 from src.memory.knowledge_store import KnowledgeStore
 from src.memory.task_memory import TaskMemory
-from src.agents.specialized_agents import ResearchAgent, AnalysisAgent, SynthesisAgent, CriticAgent
+from src.memory.context_compression import ContextCompressor, CompressionConfig, CompressionStrategy, CompressionLevel
+from src.agents import ResearchAgent, AnalysisAgent, SynthesisAgent, CriticAgent, PromptOptimizer
 
 logger = logging.getLogger(__name__)
 
@@ -37,16 +39,24 @@ class FelixConfig:
 
     # System limits
     max_agents: int = 15
-    base_token_budget: int = 2048
+    base_token_budget: int = 2500
 
     # Memory
     memory_db_path: str = "felix_memory.db"
     knowledge_db_path: str = "felix_knowledge.db"
 
+    # Context compression
+    compression_target_length: int = 100
+    compression_ratio: float = 0.3
+    compression_strategy: str = "abstractive"
+
     # Features
     enable_metrics: bool = True
     enable_memory: bool = True
     enable_dynamic_spawning: bool = True
+    enable_compression: bool = True
+    enable_spoke_topology: bool = True
+    verbose_llm_logging: bool = True  # Log detailed LLM requests/responses
 
 
 class AgentManager:
@@ -105,8 +115,10 @@ class FelixSystem:
         self.helix: Optional[HelixGeometry] = None
         self.lm_client: Optional[LMStudioClient] = None
         self.central_post: Optional[CentralPost] = None
+        self.spoke_manager: Optional[SpokeManager] = None
         self.agent_factory: Optional[AgentFactory] = None
         self.token_budget_manager: Optional[TokenBudgetManager] = None
+        self.prompt_optimizer: Optional[PromptOptimizer] = None
 
         # Agent management
         self.agent_manager = AgentManager()
@@ -114,6 +126,7 @@ class FelixSystem:
         # Memory systems
         self.knowledge_store: Optional[KnowledgeStore] = None
         self.task_memory: Optional[TaskMemory] = None
+        self.context_compressor: Optional[ContextCompressor] = None
 
         # Current simulation time
         self._current_time = 0.0
@@ -143,7 +156,10 @@ class FelixSystem:
 
             # Initialize LM Studio client
             base_url = f"http://{self.config.lm_host}:{self.config.lm_port}/v1"
-            self.lm_client = LMStudioClient(base_url=base_url)
+            self.lm_client = LMStudioClient(
+                base_url=base_url,
+                verbose_logging=self.config.verbose_llm_logging
+            )
 
             # Test LM Studio connection
             if not self.lm_client.test_connection():
@@ -165,6 +181,25 @@ class FelixSystem:
                 self.task_memory = TaskMemory(self.config.memory_db_path)
                 logger.info("Memory systems initialized")
 
+            # Initialize context compressor
+            if self.config.enable_compression:
+                # Map config strategy to CompressionStrategy enum
+                strategy = (CompressionStrategy.ABSTRACTIVE_SUMMARY
+                           if self.config.compression_strategy == "abstractive"
+                           else CompressionStrategy.HIERARCHICAL_SUMMARY)
+
+                compression_config = CompressionConfig(
+                    max_context_size=self.config.compression_target_length * 10,  # Target length in words, convert to tokens
+                    strategy=strategy,
+                    level=CompressionLevel.MODERATE
+                )
+                self.context_compressor = ContextCompressor(config=compression_config)
+                logger.info(f"Context compressor initialized (strategy: {strategy.value}, max_context: {compression_config.max_context_size})")
+
+            # Initialize prompt optimizer
+            self.prompt_optimizer = PromptOptimizer()
+            logger.info("Prompt optimizer initialized")
+
             # Initialize central post
             self.central_post = CentralPost(
                 max_agents=self.config.max_agents,
@@ -173,6 +208,11 @@ class FelixSystem:
                 memory_db_path=self.config.memory_db_path
             )
             logger.info("Central post initialized")
+
+            # Initialize spoke manager (for O(N) communication topology)
+            if self.config.enable_spoke_topology:
+                self.spoke_manager = SpokeManager(self.central_post)
+                logger.info("Spoke manager initialized")
 
             # Initialize agent factory
             self.agent_factory = AgentFactory(
@@ -207,8 +247,17 @@ class FelixSystem:
             agent_ids = list(self.agent_manager.agents.keys())
             for agent_id in agent_ids:
                 self.agent_manager.deregister_agent(agent_id)
-                if self.central_post:
+                # Spoke manager handles deregistration
+                if self.spoke_manager:
+                    self.spoke_manager.remove_spoke(agent_id)
+                elif self.central_post:
+                    # Fallback if spoke manager not used
                     self.central_post.deregister_agent(agent_id)
+
+            # Shutdown spoke manager
+            if self.spoke_manager:
+                self.spoke_manager.shutdown_all()
+                logger.info("Spoke manager shutdown")
 
             # Shutdown central post
             if self.central_post:
@@ -300,9 +349,17 @@ class FelixSystem:
 
             # Register agent with systems
             self.agent_manager.register_agent(agent)
-            self.central_post.register_agent(agent)
 
-            logger.info(f"Spawned {agent_type} agent: {agent_id} (domain: {domain})")
+            # Use spoke topology if enabled, otherwise direct central post registration
+            if self.spoke_manager:
+                # Create spoke connection (automatically registers with central post)
+                self.spoke_manager.create_spoke(agent)
+                logger.info(f"Spawned {agent_type} agent: {agent_id} (domain: {domain}) with spoke connection")
+            elif self.central_post:
+                # Fallback to direct registration
+                self.central_post.register_agent(agent)
+                logger.info(f"Spawned {agent_type} agent: {agent_id} (domain: {domain})")
+
             return agent
 
         except Exception as e:
@@ -394,7 +451,83 @@ class FelixSystem:
                 "task_patterns": memory_summary.get("task_patterns", 0)
             })
 
+        # Add spoke manager stats
+        if self.spoke_manager:
+            spoke_summary = self.spoke_manager.get_connection_summary()
+            status.update({
+                "spoke_connections": spoke_summary.get("connected_spokes", 0),
+                "total_spokes": spoke_summary.get("total_spokes", 0),
+                "spoke_messages": spoke_summary.get("total_messages_sent", 0)
+            })
+
+        # Add compression info if enabled
+        if self.context_compressor:
+            status.update({
+                "compression_enabled": True,
+                "compression_strategy": self.config.compression_strategy
+            })
+
         return status
+
+    @property
+    def dynamic_spawner(self):
+        """Get dynamic spawning system if available."""
+        if self.agent_factory and hasattr(self.agent_factory, 'dynamic_spawner'):
+            return self.agent_factory.dynamic_spawner
+        return None
+
+    def analyze_team_needs(self, processed_messages: List[Message]) -> List[Any]:
+        """
+        Analyze current team composition and spawn agents if needed.
+
+        This exposes the dynamic spawning system for GUI access.
+
+        Args:
+            processed_messages: Recent messages for analysis
+
+        Returns:
+            List of newly spawned agents
+        """
+        if self.agent_factory:
+            current_agents = self.agent_manager.get_all_agents()
+            new_agents = self.agent_factory.assess_team_needs(
+                processed_messages,
+                self._current_time,
+                current_agents
+            )
+
+            # Register new agents with the system
+            for agent in new_agents:
+                self.agent_manager.register_agent(agent)
+                if self.spoke_manager:
+                    self.spoke_manager.create_spoke(agent)
+                elif self.central_post:
+                    self.central_post.register_agent(agent)
+
+            return new_agents
+        return []
+
+    def compress_context(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Compress context using the context compressor.
+
+        Args:
+            context: Context dictionary to compress
+
+        Returns:
+            Compressed context or original if compression fails
+        """
+        if self.context_compressor:
+            try:
+                compressed = self.context_compressor.compress_context(context)
+                # CompressedContext has a 'content' attribute with the compressed data
+                if hasattr(compressed, 'content'):
+                    return compressed.content
+                return context
+            except Exception as e:
+                logger.warning(f"Context compression failed: {e}")
+                return context
+        return context
 
     def advance_time(self, delta: float = 0.1) -> None:
         """Advance simulation time."""

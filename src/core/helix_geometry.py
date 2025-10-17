@@ -1,8 +1,7 @@
 """
 Helix geometry calculations for the Felix Framework.
 
-This module implements the core mathematical model for the helical agent path,
-translating the 3D geometric model from thefelix.md into computational form.
+This module implements the core mathematical model for the helical agent path.
 
 Mathematical Foundation:
 - Parametric helix with exponential radius tapering
@@ -14,10 +13,7 @@ Mathematical Foundation:
 For complete mathematical specification, see:
 - docs/mathematical_model.md: Formal parametric equations and geometric properties
 - docs/hypothesis_mathematics.md: Statistical formulations for research hypotheses
-- thefelix.md: Original OpenSCAD geometric prototype
-- validate_openscad.py: Numerical validation against OpenSCAD (<1e-12 precision)
 
-Implementation validates against OpenSCAD model with mathematical precision.
 """
 
 import math
@@ -28,8 +24,6 @@ class HelixGeometry:
     """
     Core helix mathematical model for agent positioning.
     
-    Implements the same parametric equations as the OpenSCAD prototype,
-    allowing validation against the geometric visualization.
     """
     
     def __init__(self, top_radius: float, bottom_radius: float, height: float, turns: int):
@@ -76,7 +70,6 @@ class HelixGeometry:
         - θ(t) = 2πnt (angular progression)
         - z(t) = Ht (linear height progression)
         
-        Mathematical reference: docs/mathematical_model.md, Section 1.2
         
         Args:
             t: Parameter value between 0 (bottom) and 1 (top)
@@ -91,7 +84,6 @@ class HelixGeometry:
             raise ValueError("t must be between 0 and 1")
         
         # Calculate height (linear interpolation: t=0 is bottom, t=1 is top)
-        # Matches OpenSCAD model where step=0 is bottom, step=max is top
         z = self.height * t
         
         # Calculate radius at this height (exponential tapering)
@@ -116,9 +108,6 @@ class HelixGeometry:
         
         This creates exponential tapering that naturally focuses agent density
         toward the narrow end, supporting Hypothesis H3 (attention focusing).
-        
-        Mathematical reference: docs/mathematical_model.md, Section 2
-        Hypothesis reference: docs/hypothesis_mathematics.md, Section H3.2
         
         Args:
             z: Height value (0 = bottom, height = top)

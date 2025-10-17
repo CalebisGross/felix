@@ -68,22 +68,35 @@ class LMStudioClient:
     with built-in error handling, connection testing, and usage tracking.
     """
     
-    def __init__(self, base_url: str = "http://localhost:1234/v1", 
-                 timeout: float = 120.0, max_concurrent_requests: int = 4, debug_mode: bool = False):
+    def __init__(self, base_url: str = "http://localhost:1234/v1",
+                 timeout: float = 120.0, max_concurrent_requests: int = 4,
+                 debug_mode: bool = False, verbose_logging: bool = True):
         """
         Initialize LM Studio client.
-        
+
         Args:
             base_url: LM Studio API endpoint
             timeout: Request timeout in seconds
             max_concurrent_requests: Maximum concurrent async requests
-            debug_mode: Enable verbose debug output
+            debug_mode: Enable verbose debug output to console
+            verbose_logging: Enable detailed logging to Felix logging system (for GUI)
         """
         self.base_url = base_url
         self.timeout = timeout
         self.max_concurrent_requests = max_concurrent_requests
         self.debug_mode = debug_mode
-        
+        self.verbose_logging = verbose_logging
+
+        # DEBUG: Confirm initialization
+        print(f"DEBUG: LMStudioClient created, verbose_logging={verbose_logging}")
+
+        # Ensure logger is configured
+        logger.setLevel(logging.INFO)
+        logger.propagate = True
+
+        # Log initialization with verbose setting
+        logger.info(f"LMStudioClient initialized: base_url={base_url}, verbose_logging={verbose_logging}")
+
         # Sync client
         self.client = OpenAI(
             base_url=base_url,
@@ -156,51 +169,77 @@ class LMStudioClient:
         self.ensure_connection()
         
         start_time = time.perf_counter()
-        
+
         try:
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ]
-            
+
+            # Log request details at INFO level for GUI visibility (if enabled)
+            if self.verbose_logging:
+                system_preview = system_prompt[:100] + "..." if len(system_prompt) > 100 else system_prompt
+                user_preview = user_prompt[:100] + "..." if len(user_prompt) > 100 else user_prompt
+
+                logger.info("=" * 60)
+                logger.info(f"LLM REQUEST to LM Studio")
+                logger.info(f"  Agent: {agent_id}")
+                logger.info(f"  Model: {model}")
+                logger.info(f"  Temperature: {temperature}, Max Tokens: {max_tokens}")
+                logger.info(f"  System Prompt ({len(system_prompt)} chars): {system_preview}")
+                logger.info(f"  User Prompt ({len(user_prompt)} chars): {user_preview}")
+                logger.info("=" * 60)
+
             if self.debug_mode:
                 print(f"\n🔍 DEBUG LLM CALL for {agent_id}")
                 print(f"📝 System Prompt:\n{system_prompt}")
                 print(f"🎯 User Prompt:\n{user_prompt}")
                 print(f"🌡️ Temperature: {temperature}, Max Tokens: {max_tokens}")
                 print("━" * 60)
-            
+
             completion_args = {
                 "model": model,
                 "messages": messages,
                 "temperature": temperature
             }
-            
+
             if max_tokens:
                 completion_args["max_tokens"] = max_tokens
-            
+
             response = self.client.chat.completions.create(**completion_args)
             
             end_time = time.perf_counter()
             response_time = end_time - start_time
-            
+
             # Extract response data
             content = response.choices[0].message.content
             tokens_used = response.usage.total_tokens if response.usage else 0
-            
+            prompt_tokens = response.usage.prompt_tokens if response.usage else 0
+            completion_tokens = response.usage.completion_tokens if response.usage else 0
+
             # Update usage tracking
             self.total_tokens += tokens_used
             self.total_requests += 1
             self.total_response_time += response_time
-            
+
+            # Log response details at INFO level for GUI visibility (if enabled)
+            if self.verbose_logging:
+                content_preview = content[:200] + "..." if len(content) > 200 else content
+
+                logger.info("=" * 60)
+                logger.info(f"LLM RESPONSE from LM Studio")
+                logger.info(f"  Agent: {agent_id}")
+                logger.info(f"  Model: {model}")
+                logger.info(f"  Response Time: {response_time:.2f}s")
+                logger.info(f"  Tokens: {tokens_used} total (prompt: {prompt_tokens}, completion: {completion_tokens})")
+                logger.info(f"  Content ({len(content)} chars): {content_preview}")
+                logger.info("=" * 60)
+
             if self.debug_mode:
                 print(f"✅ LLM RESPONSE for {agent_id}")
                 print(f"📄 Content ({len(content)} chars):\n{content}")
                 print(f"📊 Tokens Used: {tokens_used}, Time: {response_time:.2f}s")
                 print("━" * 60)
-            
-            logger.debug(f"LLM completion for {agent_id}: {tokens_used} tokens, "
-                        f"{response_time:.2f}s")
             
             return LLMResponse(
                 content=content,
@@ -249,49 +288,75 @@ class LMStudioClient:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ]
-                
+
+                # Log request details at INFO level for GUI visibility (if enabled)
+                if self.verbose_logging:
+                    system_preview = system_prompt[:100] + "..." if len(system_prompt) > 100 else system_prompt
+                    user_preview = user_prompt[:100] + "..." if len(user_prompt) > 100 else user_prompt
+
+                    logger.info("=" * 60)
+                    logger.info(f"ASYNC LLM REQUEST to LM Studio")
+                    logger.info(f"  Agent: {agent_id}")
+                    logger.info(f"  Model: {model}")
+                    logger.info(f"  Temperature: {temperature}, Max Tokens: {max_tokens}")
+                    logger.info(f"  System Prompt ({len(system_prompt)} chars): {system_preview}")
+                    logger.info(f"  User Prompt ({len(user_prompt)} chars): {user_preview}")
+                    logger.info("=" * 60)
+
                 if self.debug_mode:
                     print(f"\n🔍 DEBUG ASYNC LLM CALL for {agent_id}")
                     print(f"📝 System Prompt:\n{system_prompt}")
                     print(f"🎯 User Prompt:\n{user_prompt}")
                     print(f"🌡️ Temperature: {temperature}, Max Tokens: {max_tokens}")
                     print("━" * 60)
-                
+
                 payload = {
                     "model": model,
                     "messages": messages,
                     "temperature": temperature,
                     "stream": False
                 }
-                
+
                 if max_tokens:
                     payload["max_tokens"] = max_tokens
-                
+
                 response = await client.post("/chat/completions", json=payload)
                 response.raise_for_status()
-                
+
                 data = response.json()
-                
+
                 end_time = time.perf_counter()
                 response_time = end_time - start_time
-                
+
                 # Extract response data
                 content = data["choices"][0]["message"]["content"]
                 tokens_used = data.get("usage", {}).get("total_tokens", 0)
-                
+                prompt_tokens = data.get("usage", {}).get("prompt_tokens", 0)
+                completion_tokens = data.get("usage", {}).get("completion_tokens", 0)
+
                 # Update usage tracking
                 self.total_tokens += tokens_used
                 self.total_requests += 1
                 self.total_response_time += response_time
-                
+
+                # Log response details at INFO level for GUI visibility (if enabled)
+                if self.verbose_logging:
+                    content_preview = content[:200] + "..." if len(content) > 200 else content
+
+                    logger.info("=" * 60)
+                    logger.info(f"ASYNC LLM RESPONSE from LM Studio")
+                    logger.info(f"  Agent: {agent_id}")
+                    logger.info(f"  Model: {model}")
+                    logger.info(f"  Response Time: {response_time:.2f}s")
+                    logger.info(f"  Tokens: {tokens_used} total (prompt: {prompt_tokens}, completion: {completion_tokens})")
+                    logger.info(f"  Content ({len(content)} chars): {content_preview}")
+                    logger.info("=" * 60)
+
                 if self.debug_mode:
                     print(f"✅ ASYNC LLM RESPONSE for {agent_id}")
                     print(f"📄 Content ({len(content)} chars):\n{content}")
                     print(f"📊 Tokens Used: {tokens_used}, Time: {response_time:.2f}s")
                     print("━" * 60)
-                
-                logger.debug(f"Async LLM completion for {agent_id}: {tokens_used} tokens, "
-                           f"{response_time:.2f}s")
                 
                 return LLMResponse(
                     content=content,
