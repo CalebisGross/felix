@@ -23,13 +23,11 @@ class AgentsFrame(ttk.Frame):
     def __init__(self, parent, thread_manager, main_app=None):
         super().__init__(parent)
         self.thread_manager = thread_manager
-        self.main_app = main_app  # Reference to main application for LM client access
-        self.agents = []  # List of active agents from core system
+        self.main_app = main_app  # Reference to main application for core system access
+        self.agents = []  # Reference to main system's agent list
         self.agent_counter = 0
-        self.dynamic_spawning = None
-        self.agent_factory = None
-        self.central_post = None
         self.recent_messages = []  # For dynamic spawning analysis
+        self.polling_active = False
 
         # Label + Combobox for type
         ttk.Label(self, text="Agent Type:").grid(row=0, column=0, sticky='w', padx=5, pady=5)
@@ -77,11 +75,11 @@ class AgentsFrame(ttk.Frame):
         self.send_button = ttk.Button(self, text="Send", command=self.send_message)
         self.send_button.grid(row=3, column=2, padx=5)
 
-        # Initialize dynamic spawning and communication when system starts
-        self._initialize_core_components()
-
         # Initially disable features
         self._disable_features()
+
+        # Start polling for updates if main_app is available
+        self._start_polling()
 
         # Monitor Text
         ttk.Label(self, text="Monitor:").grid(row=4, column=0, sticky='w', padx=5)
@@ -98,52 +96,59 @@ class AgentsFrame(ttk.Frame):
 
     def _enable_features(self):
         """Enable agent features when system is running."""
-        if self.main_app and self.main_app.system_running:
+        if self.main_app and hasattr(self.main_app, 'dynamic_spawner') and hasattr(self.main_app, 'central_post'):
             self.spawn_button.config(state=tk.NORMAL)
             self.send_button.config(state=tk.NORMAL)
-            self._initialize_core_components()
+            self._append_monitor("System ready - GUI connected to main Felix architecture")
+            self._start_polling()
+        else:
+            self._append_monitor("Main system components not available - some features disabled")
 
-    def _initialize_core_components(self):
-        """Initialize dynamic spawning and communication components."""
-        if not self.main_app or not self.main_app.system_running:
+    def _start_polling(self):
+        """Start polling for agent updates."""
+        if self.polling_active:
+            return
+        self.polling_active = True
+        self._poll_updates()
+
+    def _stop_polling(self):
+        """Stop polling for updates."""
+        self.polling_active = False
+
+    def _poll_updates(self):
+        """Poll for agent updates every 1-2 seconds."""
+        if not self.polling_active:
             return
 
         try:
-            # Initialize central post if available
-            if self.main_app.cp and CentralPost:
-                self.central_post = self.main_app.cp
-            elif CentralPost:
-                self.central_post = CentralPost()
-                logger.info("Initialized local central post for GUI")
-
-            # Initialize dynamic spawning if available
-            if dynamic_spawning and self.main_app.lm_client:
-                from ..agents.dynamic_spawning import DynamicSpawning
-                from ..communication.central_post import AgentFactory
-
-                # Create agent factory
-                self.agent_factory = AgentFactory(
-                    helix=self.main_app.helix if hasattr(self.main_app, 'helix') else None,
-                    llm_client=self.main_app.lm_client,
-                    token_budget_manager=getattr(self.main_app, 'token_budget_manager', None)
-                )
-
-                # Initialize dynamic spawning
-                self.dynamic_spawning = DynamicSpawning(
-                    agent_factory=self.agent_factory,
-                    confidence_threshold=0.7,
-                    max_agents=15,
-                    token_budget_limit=10000
-                )
-                logger.info("Initialized dynamic spawning system")
-
+            self._update_agents_from_main()
+            self._update_treeview()
         except Exception as e:
-            logger.warning(f"Failed to initialize core components: {e}")
+            logger.warning(f"Error during polling update: {e}")
+
+        # Schedule next poll in 1.5 seconds
+        self.after(1500, self._poll_updates)
+
+    def _update_agents_from_main(self):
+        """Update local agent list from main system's agent manager."""
+        if not self.main_app:
+            return
+
+        # Try to get agents from main_app's agent_manager
+        if hasattr(self.main_app, 'agent_manager') and self.main_app.agent_manager:
+            self.agents = list(self.main_app.agent_manager.agents.values())
+        elif hasattr(self.main_app, 'agents'):
+            self.agents = self.main_app.agents
+        else:
+            # Fallback: keep local list if no main system agents available
+            pass
 
     def _disable_features(self):
         """Disable agent features when system is not running."""
         self.spawn_button.config(state=tk.DISABLED)
         self.send_button.config(state=tk.DISABLED)
+        # Monitor text is created after this call, so delay the message
+        self.after(100, lambda: self._append_monitor("System not ready - waiting for main Felix system initialization..."))
 
     def _is_system_ready(self):
         """Check if the system is running and ready for agent operations."""
@@ -158,12 +163,11 @@ class AgentsFrame(ttk.Frame):
             messagebox.showwarning("Input Error", "Please select an agent type.")
             return
 
-        # Check if system is ready for real LLM agents
-        if not self._is_system_ready():
+        # Check if main system is available
+        if not self.main_app or not hasattr(self.main_app, 'dynamic_spawner'):
             messagebox.showerror("System Not Ready",
-                                "Cannot spawn real LLM agents. Please ensure:\n"
-                                "1. Felix system is running (Start System button)\n"
-                                "2. LM Studio is connected and has a model loaded")
+                                "Main Felix system not available or DynamicSpawning not initialized.\n"
+                                "Please start the main system first.")
             return
 
         # Get specialized parameters
@@ -173,135 +177,49 @@ class AgentsFrame(ttk.Frame):
 
     def _spawn_thread(self, agent_type, domain):
         try:
-            # Check if system is running and LM client is available
-            if not self.main_app or not self.main_app.system_running or not self.main_app.lm_client:
-                self.after(0, lambda: messagebox.showerror("Error", "System not running or LM Studio not connected"))
+            # Check if main system is available
+            if not self.main_app or not hasattr(self.main_app, 'dynamic_spawner'):
+                self.after(0, lambda: messagebox.showerror("Error", "Main Felix system not available"))
                 return
 
-            # Use dynamic spawning if available, otherwise create manually
-            if self.dynamic_spawning and self.agent_factory:
-                # Use dynamic spawning system
-                current_time = 0.1  # GUI demo time
-                new_agents = self.dynamic_spawning.analyze_and_spawn(
+            # Send spawn request to main system's DynamicSpawning
+            spawn_request = {
+                'type': agent_type.lower(),
+                'domain': domain,
+                'source': 'gui'
+            }
+
+            # Try to call analyze_and_spawn with the request
+            if hasattr(self.main_app.dynamic_spawner, 'analyze_and_spawn'):
+                # Get current agents from main system
+                current_agents = []
+                if hasattr(self.main_app, 'agent_manager') and self.main_app.agent_manager:
+                    current_agents = list(self.main_app.agent_manager.agents.values())
+
+                # Call dynamic spawning with request parameters
+                new_agents = self.main_app.dynamic_spawner.analyze_and_spawn(
                     processed_messages=self.recent_messages,
-                    current_agents=self.agents,
-                    current_time=current_time
+                    current_agents=current_agents,
+                    current_time=time.time(),
+                    spawn_request=spawn_request
                 )
 
                 if new_agents:
-                    for agent in new_agents:
-                        self.agents.append(agent)
-                        # Register with central post if available
-                        if self.central_post:
-                            try:
-                                self.central_post.register_agent(agent)
-                                logger.info(f"Agent {agent.agent_id} registered with central post")
-                            except Exception as e:
-                                logger.warning(f"Failed to register agent {agent.agent_id}: {e}")
-
-                    logger.info(f"Dynamic spawning created {len(new_agents)} agents")
-                    self.after(0, self._update_treeview)
-                    self.after(0, lambda: self._append_monitor(f"Dynamic spawning created {len(new_agents)} agents"))
+                    logger.info(f"Dynamic spawning created {len(new_agents)} agents from GUI request")
+                    self.after(0, lambda: self._append_monitor(f"Spawned {len(new_agents)} {agent_type} agent(s)"))
                 else:
-                    # Fallback: create specific agent type manually
-                    self._create_manual_agent(agent_type, domain)
+                    self.after(0, lambda: self._append_monitor(f"No agents spawned - system may be at capacity or conditions not met"))
             else:
-                # Manual agent creation
-                self._create_manual_agent(agent_type, domain)
+                logger.warning("DynamicSpawning does not have analyze_and_spawn method")
+                self.after(0, lambda: self._append_monitor("Spawn request sent but spawning system unavailable"))
 
         except Exception as e:
             logger.error(f"Error spawning agent: {e}")
             error_msg = str(e)
             self.after(0, lambda: messagebox.showerror("Error", f"Failed to spawn agent: {error_msg}"))
 
-    def _create_manual_agent(self, agent_type, domain):
-        """Create agent manually using specialized classes."""
-        try:
-            # Get helix from main app or create default
-            helix = getattr(self.main_app, 'helix', None)
-            if not helix:
-                try:
-                    from ..core.helix_geometry import HelixGeometry
-                    helix = HelixGeometry(
-                        top_radius=5.0, bottom_radius=1.0, height=10.0, turns=3
-                    )
-                except ImportError:
-                    self.after(0, lambda: messagebox.showerror("Error", "Helix geometry module not available"))
-                    return
-
-            # Get token budget manager from main app
-            token_budget_manager = getattr(self.main_app, 'token_budget_manager', None)
-
-            # Create specialized agent
-            agent_id = f"{agent_type.lower()}_{self.agent_counter:03d}"
-            self.agent_counter += 1
-            spawn_time = 0.1
-
-            if agent_type == "Research" and ResearchAgent:
-                agent = ResearchAgent(
-                    agent_id=agent_id,
-                    spawn_time=spawn_time,
-                    helix=helix,
-                    llm_client=self.main_app.lm_client,
-                    research_domain=domain,
-                    token_budget_manager=token_budget_manager
-                )
-            elif agent_type == "Analysis" and AnalysisAgent:
-                agent = AnalysisAgent(
-                    agent_id=agent_id,
-                    spawn_time=spawn_time,
-                    helix=helix,
-                    llm_client=self.main_app.lm_client,
-                    analysis_type=domain,
-                    token_budget_manager=token_budget_manager
-                )
-            elif agent_type == "Synthesis" and SynthesisAgent:
-                agent = SynthesisAgent(
-                    agent_id=agent_id,
-                    spawn_time=spawn_time,
-                    helix=helix,
-                    llm_client=self.main_app.lm_client,
-                    output_format=domain,
-                    token_budget_manager=token_budget_manager
-                )
-            elif agent_type == "Critic" and CriticAgent:
-                agent = CriticAgent(
-                    agent_id=agent_id,
-                    spawn_time=spawn_time,
-                    helix=helix,
-                    llm_client=self.main_app.lm_client,
-                    review_focus=domain,
-                    token_budget_manager=token_budget_manager
-                )
-            else:
-                # Fallback to basic LLMAgent
-                from ..agents.llm_agent import LLMAgent
-                agent = LLMAgent(
-                    agent_id=agent_id,
-                    spawn_time=spawn_time,
-                    helix=helix,
-                    llm_client=self.main_app.lm_client,
-                    agent_type=agent_type.lower()
-                )
-
-            # Add to agents list
-            self.agents.append(agent)
-
-            # Register with central post if available
-            if self.central_post:
-                try:
-                    self.central_post.register_agent(agent)
-                    logger.info(f"Agent {agent_id} registered with central post")
-                except Exception as e:
-                    logger.warning(f"Failed to register agent {agent_id}: {e}")
-
-            logger.info(f"Specialized {agent_type} agent spawned with id {agent_id}")
-            self.after(0, self._update_treeview)
-            self.after(0, lambda: self._append_monitor(f"Specialized {agent_type} agent spawned with id {agent_id}"))
-
-        except Exception as e:
-            logger.error(f"Error creating manual agent: {e}")
-            self.after(0, lambda: messagebox.showerror("Error", f"Failed to create {agent_type} agent: {str(e)}"))
+    # Manual agent creation removed - GUI should not create agents directly
+    # All spawning should go through main system's DynamicSpawning
 
     def _update_treeview(self):
         """Update treeview with current agent states."""
@@ -405,105 +323,79 @@ class AgentsFrame(ttk.Frame):
             messagebox.showwarning("Input Error", "Please enter a message.")
             return
 
-        # Check if system is ready for LLM processing
-        if not self._is_system_ready():
+        # Check if main system is available
+        if not self.main_app or not hasattr(self.main_app, 'central_post'):
             messagebox.showerror("System Not Ready",
-                                "Cannot send message to LLM agent. Please ensure:\n"
-                                "1. Felix system is running (Start System button)\n"
-                                "2. LM Studio is connected and has a model loaded")
+                                "Main Felix system not available or CentralPost not initialized.")
             return
 
         item = selection[0]
         agent_id = self.tree.item(item, "tags")[0]
 
-        # Find agent in list
+        # Find agent in main system's agent list
         agent = None
-        for a in self.agents:
-            if a.agent_id == agent_id:
-                agent = a
-                break
+        if hasattr(self.main_app, 'agent_manager') and self.main_app.agent_manager:
+            agent = self.main_app.agent_manager.agents.get(agent_id)
+        elif hasattr(self.main_app, 'agents'):
+            for a in self.main_app.agents:
+                if a.agent_id == agent_id:
+                    agent = a
+                    break
 
-        if not agent or not hasattr(agent, 'process_task_with_llm'):
-            messagebox.showerror("Invalid Agent",
-                                f"Agent {agent_id} is not a real LLM agent.\n"
-                                "Please spawn a new LLM agent to interact with LM Studio.")
+        if not agent:
+            messagebox.showerror("Agent Not Found", f"Agent {agent_id} not found in main system.")
             return
 
         self.thread_manager.start_thread(self._send_thread, args=(agent, message))
 
     def _send_thread(self, agent, message):
         try:
-            # Check if this is a real LLM agent
-            if hasattr(agent, 'process_task_with_llm'):
-                # Use real LLM agent processing
-                from ..agents.llm_agent import LLMTask
+            # Send task to main system's task processor
+            if hasattr(self.main_app, 'task_processor') and self.main_app.task_processor:
+                # Create task and send to main system's processor
+                task_data = {
+                    'agent_id': agent.agent_id,
+                    'task_type': 'message',
+                    'content': message,
+                    'source': 'gui'
+                }
 
-                # Create a task for the LLM agent
-                task = LLMTask(
-                    task_id=f"gui_message_{agent.agent_id}_{len(self.recent_messages)}",
-                    description=message,
-                    context=f"GUI message from agents tab for {agent.agent_id}"
-                )
+                # Queue task through main system's task processor
+                result = self.main_app.task_processor.process_task(task_data)
 
-                # Get current time for position calculation
-                current_time = 0.1  # Use a small time value for GUI demo
-
-                # Use type-specific processing methods
-                if agent.agent_type == "research" and hasattr(agent, 'process_research_task'):
-                    result = agent.process_research_task(task, current_time)
-                elif agent.agent_type == "analysis" and hasattr(agent, 'process_analysis_task'):
-                    result = agent.process_analysis_task(task, current_time)
-                elif agent.agent_type == "synthesis" and hasattr(agent, 'process_synthesis_task'):
-                    result = agent.process_synthesis_task(task, current_time)
-                elif agent.agent_type == "critic" and hasattr(agent, 'process_critic_task'):
-                    result = agent.process_critic_task(task, current_time)
+                if result:
+                    response = f"[{agent.agent_type.upper()}] Task processed: {result.get('content', 'No response')}"
+                    if 'confidence' in result:
+                        response += f" (confidence: {result['confidence']:.2f})"
                 else:
-                    # Default LLM processing
-                    result = agent.process_task_with_llm(task, current_time)
+                    response = f"Task sent to {agent.agent_id} but no immediate response"
 
-                # Format response with agent info
-                response = f"[{agent.agent_type.upper()}] {result.content}"
-                if hasattr(result, 'confidence') and result.confidence > 0:
-                    response += f" (confidence: {result.confidence:.2f})"
-
-                # Create message for communication system
-                if self.central_post and Message and MessageType:
+            # Send message through central post for communication
+            elif hasattr(self.main_app, 'central_post') and self.main_app.central_post:
+                if Message and MessageType:
                     msg = Message(
-                        sender_id=agent.agent_id,
-                        message_type=MessageType.TASK_COMPLETE,
+                        sender_id="gui",
+                        message_type=MessageType.TASK_REQUEST,
                         content={
-                            "result": result.content,
-                            "confidence": getattr(result, 'confidence', 0.0),
-                            "agent_type": agent.agent_type,
-                            "position_info": result.position_info if hasattr(result, 'position_info') else {}
+                            "target_agent": agent.agent_id,
+                            "task": message,
+                            "source": "gui"
                         },
                         timestamp=time.time()
                     )
-                    self.central_post.queue_message(msg)
+                    self.main_app.central_post.queue_message(msg)
                     self.recent_messages.append(msg)
-
-                    # Store result as knowledge if central post supports it
-                    if hasattr(self.central_post, 'store_agent_result_as_knowledge'):
-                        self.central_post.store_agent_result_as_knowledge(
-                            agent_id=agent.agent_id,
-                            content=result.content,
-                            confidence=getattr(result, 'confidence', 0.0),
-                            domain=agent.agent_type
-                        )
-
-            elif hasattr(agent, 'process_message'):
-                # Fallback for any remaining simple agents
-                response = agent.process_message(message)
+                    response = f"Message queued for {agent.agent_id}"
+                else:
+                    response = f"Message sent to {agent.agent_id}: {message}"
             else:
-                # Final fallback
                 response = f"Message sent to {agent.agent_id}: {message}"
 
             self.after(0, lambda: self._append_monitor(response))
-            self.after(0, self._update_treeview)  # Update display after processing
         except Exception as e:
-            logger.error(f"Error sending message to LLM agent: {e}")
+            logger.error(f"Error sending message to agent: {e}")
             error_msg = str(e)
-            self.after(0, lambda: messagebox.showerror("Error", f"Failed to send message to LLM agent: {error_msg}"))
+            self.after(0, lambda: messagebox.showerror("Error", f"Failed to send message to agent: {error_msg}"))
 
     def _append_monitor(self, text):
         self.monitor_text.config(state='normal')
