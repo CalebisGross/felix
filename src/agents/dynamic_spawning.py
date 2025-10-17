@@ -745,7 +745,7 @@ class DynamicSpawning:
         
         # Priority 2: Content-based spawning
         for suggested_type in content_analysis.suggested_agent_types:
-            if len(decisions) >= 2:  # Limit concurrent spawns
+            if len(decisions) >= 4:  # Limit concurrent spawns
                 break
                 
             # Calculate priority based on issue severity
@@ -771,7 +771,7 @@ class DynamicSpawning:
         
         # Sort by priority and return top decisions
         decisions.sort(key=lambda d: d.priority_score, reverse=True)
-        return decisions[:2]  # Maximum 2 spawns per analysis cycle
+        return decisions[:5]  # Maximum 5 spawns per analysis cycle
     
     def _get_specialized_focus(self, content_analysis: ContentAnalysis, agent_type: str) -> str:
         """Get specialized focus for agent based on content analysis."""
