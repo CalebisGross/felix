@@ -5,6 +5,7 @@ from .dashboard import DashboardFrame
 from .workflows import WorkflowsFrame
 from .memory import MemoryFrame
 from .agents import AgentsFrame
+from .felix_system import FelixSystem, FelixConfig
 
 class MainApp(tk.Tk):
     def __init__(self):
@@ -12,12 +13,13 @@ class MainApp(tk.Tk):
         self.title("Felix GUI")
         self.geometry("800x600")
 
-        # System state
+        # Felix system manager (unified integration)
+        self.felix_system = None
         self.system_running = False
-        self.lm_client = None
+
+        # Legacy compatibility properties
         self.lm_host = '127.0.0.1'
         self.lm_port = 1234
-        self.cp = None
 
         # Menu bar
         menubar = tk.Menu(self)
@@ -46,7 +48,7 @@ class MainApp(tk.Tk):
         self.notebook.add(dashboard_frame, text="Dashboard")
 
         # Workflows tab
-        workflows_frame = WorkflowsFrame(self.notebook, self.thread_manager)
+        workflows_frame = WorkflowsFrame(self.notebook, self.thread_manager, main_app=self)
         self.notebook.add(workflows_frame, text="Workflows")
 
         # Memory tab
@@ -67,61 +69,48 @@ class MainApp(tk.Tk):
         messagebox.showinfo("About", "Felix GUI - Version 1.0")
 
     def start_system(self):
-        """Start the Felix system with LM Studio verification."""
+        """Start the Felix system with full integration."""
         if not self.system_running:
             self.thread_manager.start_thread(self._start_system_thread)
 
     def _start_system_thread(self):
         """Thread function to start system components."""
         try:
-            # Initialize central post
-            try:
-                from src.communication import central_post
-                self.cp = central_post.CentralPost()
-                logger.info("Central post initialized")
-            except ImportError as e:
-                logger.warning(f"Central post not available: {e}")
+            # Create Felix configuration
+            config = FelixConfig(
+                lm_host=self.lm_host,
+                lm_port=self.lm_port,
+                max_agents=15,
+                enable_metrics=True,
+                enable_memory=True,
+                enable_dynamic_spawning=True
+            )
 
-            # Initialize LM Studio client and verify connection
-            try:
-                from src.llm import lm_studio_client
-                base_url = f"http://{self.lm_host}:{self.lm_port}/v1"
-                self.lm_client = lm_studio_client.LMStudioClient(base_url=base_url)
+            # Initialize unified Felix system
+            self.felix_system = FelixSystem(config)
 
-                # Test connection with a simple request
-                if self.lm_client.test_connection():
-                    logger.info(f"Connected to LM Studio at {self.lm_host}:{self.lm_port}")
-                    self.system_running = True
-                    self.status_var.set("System Running")
-                    self._enable_all_features()
-                else:
-                    logger.error(f"Failed to connect to LM Studio at {self.lm_host}:{self.lm_port}")
-                    self.system_running = False
-                    self.status_var.set("LM Studio Connection Failed")
-                    messagebox.showwarning("Connection Failed",
-                                         f"Cannot connect to LM Studio at {self.lm_host}:{self.lm_port}.\n"
-                                         "Ensure LM Studio is running with a model loaded.")
-
-            except ImportError as e:
-                logger.warning(f"LM Studio client not available: {e}")
-                self.system_running = False
-                self.status_var.set("LM Studio Not Available")
-            except Exception as e:
-                logger.error(f"Error initializing LM Studio client: {e}")
-                self.system_running = False
-                self.status_var.set("LM Studio Error")
-                messagebox.showerror("Error", f"Failed to initialize LM Studio client: {e}")
-
-            if self.system_running:
-                logger.info("Felix system started")
+            # Start the system
+            if self.felix_system.start():
+                self.system_running = True
+                self.status_var.set("System Running")
+                logger.info("Felix system fully integrated and running")
+                self._enable_all_features()
             else:
-                logger.warning("Felix system started with limited functionality")
+                self.system_running = False
+                self.felix_system = None
+                self.status_var.set("System Start Failed")
+                self.after(0, lambda: messagebox.showerror(
+                    "System Start Failed",
+                    "Failed to start Felix system. Check logs for details.\n"
+                    "Ensure LM Studio is running with a model loaded."
+                ))
 
         except Exception as e:
-            logger.error(f"Error starting system: {e}")
+            logger.error(f"Error starting Felix system: {e}", exc_info=True)
             self.system_running = False
+            self.felix_system = None
             self.status_var.set("System Start Failed")
-            messagebox.showerror("Error", f"Failed to start system: {e}")
+            self.after(0, lambda: messagebox.showerror("Error", f"Failed to start system: {e}"))
 
     def _enable_all_features(self):
         """Enable features in all frames when system is running."""
@@ -146,23 +135,17 @@ class MainApp(tk.Tk):
     def _stop_system_thread(self):
         """Thread function to stop system components."""
         try:
-            if self.lm_client:
-                # Close LM client if it has a close method
-                if hasattr(self.lm_client, 'close_async'):
-                    import asyncio
-                    asyncio.run(self.lm_client.close_async())
-                self.lm_client = None
-
-            if self.cp and hasattr(self.cp, 'shutdown'):
-                self.cp.shutdown()
+            if self.felix_system:
+                self.felix_system.stop()
+                self.felix_system = None
 
             self.system_running = False
             self.status_var.set("System Stopped")
             logger.info("Felix system stopped")
 
         except Exception as e:
-            logger.error(f"Error stopping system: {e}")
-            messagebox.showerror("Error", f"Failed to stop system: {e}")
+            logger.error(f"Error stopping system: {e}", exc_info=True)
+            self.after(0, lambda: messagebox.showerror("Error", f"Failed to stop system: {e}"))
 
 if __name__ == "__main__":
     app = MainApp()

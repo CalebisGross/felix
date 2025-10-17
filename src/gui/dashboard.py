@@ -41,9 +41,7 @@ class DashboardFrame(ttk.Frame):
         self.stop_button.pack(pady=10)
 
         # Reference to main app for system state
-        self.main_app = None
-        if hasattr(parent.master, 'system_running'):
-            self.main_app = parent.master
+        self.main_app = parent.master if hasattr(parent, 'master') else None
 
         # Log display
         self.log_text = scrolledtext.ScrolledText(self, wrap=tk.WORD, height=20)
@@ -79,9 +77,13 @@ class DashboardFrame(ttk.Frame):
         if self.main_app:
             self.system_running = self.main_app.system_running
             if self.system_running:
-                self.start_button.config(state=tk.NORMAL)
                 self.stop_button.config(state=tk.NORMAL)
+                self.start_button.config(state=tk.DISABLED)
                 self._enable_other_tabs()
+                # Show system status
+                if self.main_app.felix_system:
+                    status = self.main_app.felix_system.get_system_status()
+                    logger.info(f"Felix system running: {status['agents']} agents active")
             else:
                 self.start_button.config(state=tk.NORMAL)
                 self.stop_button.config(state=tk.DISABLED)
