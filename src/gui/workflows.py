@@ -5,9 +5,10 @@ from .utils import ThreadManager, log_queue, logger
 from src.pipeline import linear_pipeline
 
 class WorkflowsFrame(ttk.Frame):
-    def __init__(self, parent, thread_manager):
+    def __init__(self, parent, thread_manager, main_app=None):
         super().__init__(parent)
         self.thread_manager = thread_manager
+        self.main_app = main_app  # Reference to main application for Felix system access
 
         # Task input
         ttk.Label(self, text="Task:").pack(pady=(10, 0))

@@ -670,7 +670,7 @@ class CentralPost:
             return []
         
         try:
-            from memory.knowledge_store import KnowledgeQuery
+            from src.memory.knowledge_store import KnowledgeQuery
             query = KnowledgeQuery(
                 knowledge_types=[knowledge_type] if knowledge_type else None,
                 domains=[domain] if domain else None,
@@ -701,7 +701,7 @@ class CentralPost:
             return {}
 
         try:
-            from memory.task_memory import TaskComplexity
+            from src.memory.task_memory import TaskComplexity
             # Convert string complexity to enum
             complexity_enum = TaskComplexity.MODERATE
             if complexity.upper() == "SIMPLE":
@@ -768,7 +768,7 @@ class CentralPost:
             
             if self.knowledge_store:
                 # Get knowledge entry count using proper query
-                from memory.knowledge_store import KnowledgeQuery
+                from src.memory.knowledge_store import KnowledgeQuery
                 query = KnowledgeQuery(limit=1000)
                 all_knowledge = self.knowledge_store.retrieve_knowledge(query)
                 summary["knowledge_entries"] = len(all_knowledge)
@@ -854,7 +854,7 @@ class AgentFactory:
         # Initialize dynamic spawning system if enabled
         if enable_dynamic_spawning:
             # Import here to avoid circular imports
-            from agents.dynamic_spawning import DynamicSpawning
+            from src.agents.dynamic_spawning import DynamicSpawning
             self.dynamic_spawner = DynamicSpawning(
                 agent_factory=self,
                 confidence_threshold=0.7,
@@ -867,10 +867,10 @@ class AgentFactory:
         if random_seed is not None:
             random.seed(random_seed)
     
-    def create_research_agent(self, domain: str = "general", 
+    def create_research_agent(self, domain: str = "general",
                             spawn_time_range: Tuple[float, float] = (0.0, 0.3)) -> "LLMAgent":
         """Create a research agent with random spawn time in specified range."""
-        from agents.specialized_agents import ResearchAgent
+        from src.agents.specialized_agents import ResearchAgent
         
         spawn_time = random.uniform(*spawn_time_range)
         agent_id = f"dynamic_research_{self._agent_counter:03d}"
@@ -889,7 +889,7 @@ class AgentFactory:
     def create_analysis_agent(self, analysis_type: str = "general",
                             spawn_time_range: Tuple[float, float] = (0.2, 0.7)) -> "LLMAgent":
         """Create an analysis agent with random spawn time in specified range."""
-        from agents.specialized_agents import AnalysisAgent
+        from src.agents.specialized_agents import AnalysisAgent
         
         spawn_time = random.uniform(*spawn_time_range)
         agent_id = f"dynamic_analysis_{self._agent_counter:03d}"
@@ -908,7 +908,7 @@ class AgentFactory:
     def create_critic_agent(self, review_focus: str = "general",
                           spawn_time_range: Tuple[float, float] = (0.5, 0.8)) -> "LLMAgent":
         """Create a critic agent with random spawn time in specified range."""
-        from agents.specialized_agents import CriticAgent
+        from src.agents.specialized_agents import CriticAgent
         
         spawn_time = random.uniform(*spawn_time_range)
         agent_id = f"dynamic_critic_{self._agent_counter:03d}"
@@ -927,7 +927,7 @@ class AgentFactory:
     def create_synthesis_agent(self, output_format: str = "general",
                              spawn_time_range: Tuple[float, float] = (0.7, 0.95)) -> "LLMAgent":
         """Create a synthesis agent with random spawn time in specified range."""
-        from agents.specialized_agents import SynthesisAgent
+        from src.agents.specialized_agents import SynthesisAgent
         
         spawn_time = random.uniform(*spawn_time_range)
         agent_id = f"dynamic_synthesis_{self._agent_counter:03d}"

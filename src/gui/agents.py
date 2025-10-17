@@ -96,10 +96,10 @@ class AgentsFrame(ttk.Frame):
 
     def _enable_features(self):
         """Enable agent features when system is running."""
-        if self.main_app and hasattr(self.main_app, 'dynamic_spawner') and hasattr(self.main_app, 'central_post'):
+        if self.main_app and hasattr(self.main_app, 'felix_system') and self.main_app.felix_system:
             self.spawn_button.config(state=tk.NORMAL)
             self.send_button.config(state=tk.NORMAL)
-            self._append_monitor("System ready - GUI connected to main Felix architecture")
+            self._append_monitor("System ready - GUI fully integrated with Felix architecture")
             self._start_polling()
         else:
             self._append_monitor("Main system components not available - some features disabled")
@@ -131,17 +131,11 @@ class AgentsFrame(ttk.Frame):
 
     def _update_agents_from_main(self):
         """Update local agent list from main system's agent manager."""
-        if not self.main_app:
+        if not self.main_app or not self.main_app.felix_system:
             return
 
-        # Try to get agents from main_app's agent_manager
-        if hasattr(self.main_app, 'agent_manager') and self.main_app.agent_manager:
-            self.agents = list(self.main_app.agent_manager.agents.values())
-        elif hasattr(self.main_app, 'agents'):
-            self.agents = self.main_app.agents
-        else:
-            # Fallback: keep local list if no main system agents available
-            pass
+        # Get agents from felix_system's agent_manager
+        self.agents = self.main_app.felix_system.agent_manager.get_all_agents()
 
     def _disable_features(self):
         """Disable agent features when system is not running."""
@@ -163,11 +157,10 @@ class AgentsFrame(ttk.Frame):
             messagebox.showwarning("Input Error", "Please select an agent type.")
             return
 
-        # Check if main system is available
-        if not self.main_app or not hasattr(self.main_app, 'dynamic_spawner'):
+        # Check if Felix system is available
+        if not self.main_app or not self.main_app.felix_system:
             messagebox.showerror("System Not Ready",
-                                "Main Felix system not available or DynamicSpawning not initialized.\n"
-                                "Please start the main system first.")
+                                "Felix system not available. Please start the system first.")
             return
 
         # Get specialized parameters
@@ -177,49 +170,36 @@ class AgentsFrame(ttk.Frame):
 
     def _spawn_thread(self, agent_type, domain):
         try:
-            # Check if main system is available
-            if not self.main_app or not hasattr(self.main_app, 'dynamic_spawner'):
-                self.after(0, lambda: messagebox.showerror("Error", "Main Felix system not available"))
+            # Check if Felix system is available
+            if not self.main_app or not self.main_app.felix_system:
+                self.after(0, lambda: messagebox.showerror("Error", "Felix system not available"))
                 return
 
-            # Send spawn request to main system's DynamicSpawning
-            spawn_request = {
-                'type': agent_type.lower(),
-                'domain': domain,
-                'source': 'gui'
-            }
+            # Spawn agent through the unified Felix system
+            agent = self.main_app.felix_system.spawn_agent(
+                agent_type=agent_type,
+                domain=domain
+            )
 
-            # Try to call analyze_and_spawn with the request
-            if hasattr(self.main_app.dynamic_spawner, 'analyze_and_spawn'):
-                # Get current agents from main system
-                current_agents = []
-                if hasattr(self.main_app, 'agent_manager') and self.main_app.agent_manager:
-                    current_agents = list(self.main_app.agent_manager.agents.values())
-
-                # Call dynamic spawning with request parameters
-                new_agents = self.main_app.dynamic_spawner.analyze_and_spawn(
-                    processed_messages=self.recent_messages,
-                    current_agents=current_agents,
-                    current_time=time.time(),
-                    spawn_request=spawn_request
-                )
-
-                if new_agents:
-                    logger.info(f"Dynamic spawning created {len(new_agents)} agents from GUI request")
-                    self.after(0, lambda: self._append_monitor(f"Spawned {len(new_agents)} {agent_type} agent(s)"))
-                else:
-                    self.after(0, lambda: self._append_monitor(f"No agents spawned - system may be at capacity or conditions not met"))
+            if agent:
+                logger.info(f"Spawned {agent_type} agent: {agent.agent_id} (domain: {domain})")
+                self.after(0, lambda: self._append_monitor(
+                    f"Successfully spawned {agent_type} agent: {agent.agent_id}\n"
+                    f"Domain: {domain}\n"
+                    f"Spawn time: {agent.spawn_time:.2f}"
+                ))
+                # Refresh agent list
+                self.after(0, self._update_treeview)
             else:
-                logger.warning("DynamicSpawning does not have analyze_and_spawn method")
-                self.after(0, lambda: self._append_monitor("Spawn request sent but spawning system unavailable"))
+                logger.warning(f"Failed to spawn {agent_type} agent")
+                self.after(0, lambda: self._append_monitor(
+                    f"Failed to spawn {agent_type} agent - check system logs"
+                ))
 
         except Exception as e:
-            logger.error(f"Error spawning agent: {e}")
+            logger.error(f"Error spawning agent: {e}", exc_info=True)
             error_msg = str(e)
             self.after(0, lambda: messagebox.showerror("Error", f"Failed to spawn agent: {error_msg}"))
-
-    # Manual agent creation removed - GUI should not create agents directly
-    # All spawning should go through main system's DynamicSpawning
 
     def _update_treeview(self):
         """Update treeview with current agent states."""
@@ -323,77 +303,38 @@ class AgentsFrame(ttk.Frame):
             messagebox.showwarning("Input Error", "Please enter a message.")
             return
 
-        # Check if main system is available
-        if not self.main_app or not hasattr(self.main_app, 'central_post'):
+        # Check if Felix system is available
+        if not self.main_app or not self.main_app.felix_system:
             messagebox.showerror("System Not Ready",
-                                "Main Felix system not available or CentralPost not initialized.")
+                                "Felix system not available. Please start the system first.")
             return
 
         item = selection[0]
         agent_id = self.tree.item(item, "tags")[0]
 
-        # Find agent in main system's agent list
-        agent = None
-        if hasattr(self.main_app, 'agent_manager') and self.main_app.agent_manager:
-            agent = self.main_app.agent_manager.agents.get(agent_id)
-        elif hasattr(self.main_app, 'agents'):
-            for a in self.main_app.agents:
-                if a.agent_id == agent_id:
-                    agent = a
-                    break
+        self.thread_manager.start_thread(self._send_thread, args=(agent_id, message))
 
-        if not agent:
-            messagebox.showerror("Agent Not Found", f"Agent {agent_id} not found in main system.")
-            return
-
-        self.thread_manager.start_thread(self._send_thread, args=(agent, message))
-
-    def _send_thread(self, agent, message):
+    def _send_thread(self, agent_id, message):
         try:
-            # Send task to main system's task processor
-            if hasattr(self.main_app, 'task_processor') and self.main_app.task_processor:
-                # Create task and send to main system's processor
-                task_data = {
-                    'agent_id': agent.agent_id,
-                    'task_type': 'message',
-                    'content': message,
-                    'source': 'gui'
-                }
+            # Send task through the unified Felix system
+            if not self.main_app or not self.main_app.felix_system:
+                self.after(0, lambda: messagebox.showerror("Error", "Felix system not available"))
+                return
 
-                # Queue task through main system's task processor
-                result = self.main_app.task_processor.process_task(task_data)
+            result = self.main_app.felix_system.send_task_to_agent(agent_id, message)
 
-                if result:
-                    response = f"[{agent.agent_type.upper()}] Task processed: {result.get('content', 'No response')}"
-                    if 'confidence' in result:
-                        response += f" (confidence: {result['confidence']:.2f})"
-                else:
-                    response = f"Task sent to {agent.agent_id} but no immediate response"
-
-            # Send message through central post for communication
-            elif hasattr(self.main_app, 'central_post') and self.main_app.central_post:
-                if Message and MessageType:
-                    msg = Message(
-                        sender_id="gui",
-                        message_type=MessageType.TASK_REQUEST,
-                        content={
-                            "target_agent": agent.agent_id,
-                            "task": message,
-                            "source": "gui"
-                        },
-                        timestamp=time.time()
-                    )
-                    self.main_app.central_post.queue_message(msg)
-                    self.recent_messages.append(msg)
-                    response = f"Message queued for {agent.agent_id}"
-                else:
-                    response = f"Message sent to {agent.agent_id}: {message}"
+            if result:
+                response = (
+                    f"[{agent_id}] Task processed\n"
+                    f"Content: {result.get('content', 'No response')[:200]}...\n"
+                    f"Confidence: {result.get('confidence', 0.0):.2f}"
+                )
+                self.after(0, lambda: self._append_monitor(response))
             else:
-                response = f"Message sent to {agent.agent_id}: {message}"
+                self.after(0, lambda: self._append_monitor(f"Failed to send task to {agent_id}"))
 
-            self.after(0, lambda: self._append_monitor(response))
         except Exception as e:
-            logger.error(f"Error sending message to agent: {e}")
+            logger.error(f"Error sending message to agent: {e}", exc_info=True)
             error_msg = str(e)
             self.after(0, lambda: messagebox.showerror("Error", f"Failed to send message to agent: {error_msg}"))
 
