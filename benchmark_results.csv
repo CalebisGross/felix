@@ -1,0 +1,9 @@
+component,time_seconds,positions_computed,top_radius,bottom_radius,radius_taper_ratio,accuracy_score
+helix_geometry,7.270100002187974e-05,100,0.5,3.0,6.0,0.5
+agent_lifecycle,0.00025286400000368303,,,,,
+communication,0.005296775000033449,,,,,
+memory,0.7705735949999735,,,,,
+llm_mock,5.363100001432031e-05,,,,,
+pipeline,0.11928972200001908,,,,,
+dynamic_spawning,9.579999982634035e-06,,,,,
+full_benchmark,0.0001675419999855876,,,,,
