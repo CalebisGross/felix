@@ -4,8 +4,10 @@ import time
 from .utils import ThreadManager, logger
 try:
     from ..agents import dynamic_spawning
+    from ..agents.agent import AgentState
 except ImportError:
     dynamic_spawning = None
+    AgentState = None
 try:
     from ..communication import mesh
 except ImportError:
@@ -203,7 +205,16 @@ class AgentsFrame(ttk.Frame):
             self.after(0, lambda: messagebox.showerror("Error", f"Failed to spawn agent: {error_msg}"))
 
     def _update_treeview(self):
-        """Update treeview with current agent states."""
+        """Update treeview with current agent states while preserving selection."""
+        # Remember current selection before clearing
+        selected_items = self.tree.selection()
+        selected_agent_id = None
+        if selected_items:
+            try:
+                selected_agent_id = self.tree.item(selected_items[0], "tags")[0]
+            except (IndexError, KeyError):
+                selected_agent_id = None
+
         # Clear existing items
         for item in self.tree.get_children():
             self.tree.delete(item)
@@ -214,7 +225,10 @@ class AgentsFrame(ttk.Frame):
                 # Get agent properties with safe access
                 agent_type = getattr(agent, 'agent_type', 'unknown')
                 agent_id = getattr(agent, 'agent_id', 'unknown')
+                # Convert AgentState enum to string value
                 state = getattr(agent, 'state', 'unknown')
+                if hasattr(state, 'value') and not isinstance(state, str):
+                    state = state.value
 
                 # Try to get position info
                 position_str = "N/A"
@@ -237,7 +251,7 @@ class AgentsFrame(ttk.Frame):
                 progress_str = f"{progress:.1%}" if isinstance(progress, (int, float)) else "N/A"
 
                 # Insert into treeview
-                self.tree.insert("", tk.END, values=(
+                item_id = self.tree.insert("", tk.END, values=(
                     agent_type.capitalize() if isinstance(agent_type, str) else str(agent_type),
                     position_str,
                     state,
@@ -245,6 +259,11 @@ class AgentsFrame(ttk.Frame):
                     confidence_str,
                     velocity_str
                 ), tags=(agent_id,))
+
+                # Restore selection if this was the selected agent
+                if selected_agent_id and agent_id == selected_agent_id:
+                    self.tree.selection_set(item_id)
+                    self.tree.see(item_id)  # Scroll into view if needed
 
             except Exception as e:
                 logger.warning(f"Error updating treeview for agent: {e}")
@@ -289,7 +308,11 @@ class AgentsFrame(ttk.Frame):
         # Basic info
         details.append(f"ID: {getattr(agent, 'agent_id', 'N/A')}")
         details.append(f"Type: {getattr(agent, 'agent_type', 'N/A')}")
-        details.append(f"State: {getattr(agent, 'state', 'N/A')}")
+        # Convert AgentState enum to string
+        state = getattr(agent, 'state', 'N/A')
+        if hasattr(state, 'value') and not isinstance(state, str):
+            state = state.value
+        details.append(f"State: {state}")
 
         # Position info
         try:

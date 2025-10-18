@@ -2,7 +2,6 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import logging
 from .utils import ThreadManager, log_queue, logger
-from src.pipeline import linear_pipeline
 
 class WorkflowsFrame(ttk.Frame):
     def __init__(self, parent, thread_manager, main_app=None):
@@ -10,10 +9,19 @@ class WorkflowsFrame(ttk.Frame):
         self.thread_manager = thread_manager
         self.main_app = main_app  # Reference to main application for Felix system access
 
-        # Task input
+        # Task input (multi-line text widget)
         ttk.Label(self, text="Task:").pack(pady=(10, 0))
-        self.task_entry = ttk.Entry(self, width=50)
-        self.task_entry.pack(pady=(0, 10))
+
+        # Frame to hold Text widget and scrollbar
+        task_input_frame = ttk.Frame(self)
+        task_input_frame.pack(pady=(0, 10), padx=10, fill=tk.X)
+
+        self.task_entry = tk.Text(task_input_frame, wrap=tk.WORD, height=10, width=60)
+        task_scrollbar = ttk.Scrollbar(task_input_frame, command=self.task_entry.yview)
+        self.task_entry.config(yscrollcommand=task_scrollbar.set)
+
+        self.task_entry.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        task_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
         # Run button
         self.run_button = ttk.Button(self, text="Run Workflow", command=self.run_workflow, state=tk.DISABLED)
@@ -39,22 +47,23 @@ class WorkflowsFrame(ttk.Frame):
 
     def _setup_logging(self):
         """Setup logging to route pipeline logs to output text widget."""
-        # Setup the entire Felix logging hierarchy properly
-        # This configures all Felix module loggers with proper levels and propagation
+        # Setup module-specific logger for workflows to avoid conflicts
         from .logging_handler import setup_gui_logging
-        setup_gui_logging(
+        self.workflow_logger = setup_gui_logging(
             text_widget=self.output_text,
             log_queue=None,
-            level=logging.INFO
+            level=logging.INFO,
+            module_name='felix_workflows'
         )
 
-        # Set root logger to INFO level (critical for propagation!)
+        # Also add a root logger handler to catch everything
         root_logger = logging.getLogger()
-        root_logger.setLevel(logging.INFO)
+        if not any(isinstance(h, logging.Handler) for h in root_logger.handlers):
+            # Only set if root logger has no handlers
+            root_logger.setLevel(logging.INFO)
 
-        # DEBUG: Confirm logging setup
-        print("DEBUG: Workflows logging setup complete")
-        root_logger.info("Workflows logging initialized successfully")
+        # Confirm logging setup
+        self.workflow_logger.info("Workflows logging initialized successfully")
 
     def _enable_features(self):
         """Enable workflow features when system is running."""
@@ -70,7 +79,7 @@ class WorkflowsFrame(ttk.Frame):
         self.output_text.see(tk.END)
 
     def run_workflow(self):
-        task_input = self.task_entry.get().strip()
+        task_input = self.task_entry.get("1.0", tk.END).strip()
         if not task_input:
             messagebox.showwarning("Input Error", "Please enter a task description.")
             return
@@ -90,7 +99,18 @@ class WorkflowsFrame(ttk.Frame):
             self.after(0, lambda: self._write_output(f"Starting workflow for task: {task_input}"))
             self.after(0, lambda: self._write_output("="*60))
 
-            result = linear_pipeline.run(task_input, progress_callback=progress_callback)
+            # Use Felix system's integrated workflow runner if available
+            if self.main_app and self.main_app.felix_system and self.main_app.system_running:
+                self.after(0, lambda: self._write_output("Running through Felix system..."))
+                result = self.main_app.felix_system.run_workflow(task_input, progress_callback=progress_callback)
+            else:
+                # Felix system not running - cannot run workflow
+                self.after(0, lambda: self._write_output("ERROR: Felix system not running"))
+                self.after(0, lambda: self._write_output("Please start the Felix system from the Dashboard tab first."))
+                result = {
+                    "status": "failed",
+                    "error": "Felix system not running. Start the system from Dashboard first."
+                }
 
             # Display summary results
             self.after(0, lambda: self._write_output("\n" + "="*60))
@@ -114,6 +134,18 @@ class WorkflowsFrame(ttk.Frame):
                             self.after(0, lambda aid=agent_id, rt=response_text: self._write_output(f"  [{aid}]: {rt}"))
 
                 self.after(0, lambda: self._write_output("\nWorkflow completed successfully!"))
+
+                # Refresh memory tab to show new knowledge entries
+                if self.main_app and hasattr(self.main_app, 'memory_frame'):
+                    try:
+                        # Get the notebook tabs from memory frame
+                        for child in self.main_app.memory_frame.notebook.winfo_children():
+                            if hasattr(child, 'refresh_entries'):
+                                child.refresh_entries()
+                    except Exception as refresh_error:
+                        # Don't fail workflow if refresh fails
+                        print(f"Warning: Could not refresh memory tab: {refresh_error}")
+
             else:
                 error_msg = result.get("error", "Unknown error")
                 self.after(0, lambda: self._write_output(f"Status: FAILED"))

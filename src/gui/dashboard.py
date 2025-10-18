@@ -62,12 +62,26 @@ class DashboardFrame(ttk.Frame):
             # Use main app's start_system method
             if self.main_app:
                 self.main_app.start_system()
-                # Update local state after a short delay to allow main app to process
-                self.after(500, self._update_local_state)
+                # Poll for system readiness instead of fixed delay
+                self._poll_system_ready(max_attempts=20, poll_interval=250)
             else:
                 logger.error("Cannot start system: main_app not available")
                 self.after(0, lambda: tk.messagebox.showerror("Error", "Main application reference not available"))
                 self.start_button.config(state=tk.NORMAL)
+
+    def _poll_system_ready(self, max_attempts=20, poll_interval=250, attempt=0):
+        """Poll for system ready state instead of using fixed delay."""
+        if attempt >= max_attempts:
+            logger.warning("System startup polling timed out")
+            self.start_button.config(state=tk.NORMAL)
+            return
+
+        if self.main_app and self.main_app.system_running and self.main_app.felix_system:
+            # System is ready
+            self._update_local_state()
+        else:
+            # Keep polling
+            self.after(poll_interval, lambda: self._poll_system_ready(max_attempts, poll_interval, attempt + 1))
 
     def _update_local_state(self):
         """Update local dashboard state based on main app state."""
@@ -108,9 +122,23 @@ class DashboardFrame(ttk.Frame):
             # Use main app's stop_system method
             if self.main_app:
                 self.main_app.stop_system()
-                # Update local state after a short delay
-                self.after(500, self._update_local_state)
+                # Poll for system stopped state
+                self._poll_system_stopped(max_attempts=20, poll_interval=250)
             else:
                 logger.error("Cannot stop system: main_app not available")
                 self.after(0, lambda: tk.messagebox.showerror("Error", "Main application reference not available"))
                 self.stop_button.config(state=tk.NORMAL)
+
+    def _poll_system_stopped(self, max_attempts=20, poll_interval=250, attempt=0):
+        """Poll for system stopped state."""
+        if attempt >= max_attempts:
+            logger.warning("System shutdown polling timed out")
+            self.stop_button.config(state=tk.NORMAL)
+            return
+
+        if self.main_app and not self.main_app.system_running:
+            # System is stopped
+            self._update_local_state()
+        else:
+            # Keep polling
+            self.after(poll_interval, lambda: self._poll_system_stopped(max_attempts, poll_interval, attempt + 1))

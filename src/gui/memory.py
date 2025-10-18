@@ -84,6 +84,10 @@ class MemorySubFrame(ttk.Frame):
     def load_entries(self):
         self.thread_manager.start_thread(self._load_entries_thread)
 
+    def refresh_entries(self):
+        """Manually refresh the entries list after workflow completes."""
+        self.load_entries()
+
     def _load_entries_thread(self):
         try:
             if self.table_name == 'knowledge' and knowledge_store:
@@ -254,28 +258,59 @@ class MemorySubFrame(ttk.Frame):
 
     def _delete_thread(self, id_):
         try:
-            if self.table_name == 'knowledge' and knowledge_store:
-                ks = knowledge_store.KnowledgeStore(self.db_name)
-                # KnowledgeStore doesn't have direct delete, use SQL
-                import sqlite3
-                conn = sqlite3.connect(self.db_name)
-                conn.execute("DELETE FROM knowledge WHERE knowledge_id = ?", (id_,))
-                conn.commit()
-                conn.close()
-                self.after(0, lambda: messagebox.showinfo("Success", "Knowledge entry deleted."))
-            elif self.table_name == 'tasks' and task_memory:
-                # TaskMemory doesn't have direct delete, use SQL
-                import sqlite3
-                conn = sqlite3.connect(self.db_name)
-                conn.execute("DELETE FROM task_patterns WHERE pattern_id = ?", (id_,))
-                conn.commit()
-                conn.close()
-                self.after(0, lambda: messagebox.showinfo("Success", "Task pattern deleted."))
-            else:
-                self.after(0, lambda: messagebox.showerror("Error", "Memory modules not available"))
+            # Use SQL for deletion since memory APIs don't provide delete methods
+            # But validate table structure first
+            import sqlite3
+            conn = sqlite3.connect(self.db_name)
+            cursor = conn.cursor()
 
+            # Validate table exists
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                          (self.table_name,))
+            if not cursor.fetchone():
+                self.after(0, lambda: messagebox.showerror("Error",
+                    f"Table '{self.table_name}' not found in database"))
+                conn.close()
+                return
+
+            # Determine correct column name and delete
+            if self.table_name == 'knowledge':
+                cursor.execute("DELETE FROM knowledge WHERE knowledge_id = ?", (id_,))
+                success_msg = "Knowledge entry deleted."
+            elif self.table_name == 'tasks':
+                # Check if table is 'tasks' or 'task_patterns'
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='task_patterns'")
+                if cursor.fetchone():
+                    cursor.execute("DELETE FROM task_patterns WHERE pattern_id = ?", (id_,))
+                else:
+                    cursor.execute("DELETE FROM tasks WHERE task_id = ?", (id_,))
+                success_msg = "Task entry deleted."
+            else:
+                self.after(0, lambda: messagebox.showerror("Error",
+                    f"Unknown table type: {self.table_name}"))
+                conn.close()
+                return
+
+            # Check if anything was deleted
+            if cursor.rowcount == 0:
+                self.after(0, lambda: messagebox.showwarning("Warning",
+                    "No entry found with that ID. It may have already been deleted."))
+            else:
+                self.after(0, lambda: messagebox.showinfo("Success", success_msg))
+
+            conn.commit()
+            conn.close()
+
+            # Reload entries
             self.after(0, self.load_entries)
+
+        except sqlite3.Error as e:
+            logger.error(f"SQLite error deleting entry: {e}", exc_info=True)
+            error_msg = str(e)
+            self.after(0, lambda: messagebox.showerror("Database Error",
+                f"Failed to delete entry: {error_msg}"))
         except Exception as e:
             logger.error(f"Error deleting: {e}", exc_info=True)
             error_msg = str(e)
-            self.after(0, lambda: messagebox.showerror("Error", f"Failed to delete: {error_msg}"))
+            self.after(0, lambda: messagebox.showerror("Error",
+                f"Failed to delete: {error_msg}"))
