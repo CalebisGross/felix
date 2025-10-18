@@ -20,6 +20,7 @@ from src.memory.knowledge_store import KnowledgeStore
 from src.memory.task_memory import TaskMemory
 from src.memory.context_compression import ContextCompressor, CompressionConfig, CompressionStrategy, CompressionLevel
 from src.agents import ResearchAgent, AnalysisAgent, SynthesisAgent, CriticAgent, PromptOptimizer
+from src.agents.agent import AgentState
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,7 @@ class FelixConfig:
     helix_turns: float = 2.0
 
     # System limits
-    max_agents: int = 15
+    max_agents: int = 25  # Increased from 15 to allow sufficient agents for collaboration
     base_token_budget: int = 2500
 
     # Memory
@@ -396,7 +397,7 @@ class FelixSystem:
             )
 
             # Spawn agent if not already spawned
-            if agent.state == "waiting":
+            if agent.state == AgentState.WAITING:
                 agent.spawn(self._current_time, task)
 
             # Process task
@@ -535,5 +536,50 @@ class FelixSystem:
 
         # Update all active agents
         for agent in self.agent_manager.get_all_agents():
-            if agent.state == "active":
+            if agent.state == AgentState.ACTIVE:
                 agent.update_position(self._current_time)
+
+    def run_workflow(self, task_input: str, progress_callback=None) -> Dict[str, Any]:
+        """
+        Run a workflow through the Felix system.
+
+        This method properly integrates workflows with the Felix system:
+        - Uses CentralPost for O(N) hub-spoke communication
+        - Uses AgentFactory for intelligent agent spawning
+        - Uses shared LLM client across all operations
+        - Uses memory systems for persistent knowledge
+        - Enables dynamic spawning based on confidence monitoring
+        - Agents spawned are visible in the Agents tab
+
+        Args:
+            task_input: Task description to process
+            progress_callback: Optional callback(status, progress_percentage)
+
+        Returns:
+            Dictionary with workflow results
+        """
+        if not self.running:
+            return {
+                "status": "failed",
+                "error": "Felix system not running"
+            }
+
+        try:
+            # Use proper Felix workflow implementation
+            from src.workflows.felix_workflow import run_felix_workflow
+
+            logger.info("Running workflow through Felix framework")
+
+            # Run workflow using Felix system components
+            result = run_felix_workflow(self, task_input, progress_callback)
+
+            logger.info(f"Workflow completed: {result.get('status')}")
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Error running workflow: {e}", exc_info=True)
+            return {
+                "status": "failed",
+                "error": str(e)
+            }

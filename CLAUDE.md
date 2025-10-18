@@ -36,7 +36,7 @@ python exp/example_workflow.py "Your task description here"
 cd exp && python benchmark_felix.py
 
 # Run the GUI interface (requires LM Studio running on port 1234)
-python -m src.gui.main
+python -m src.gui
 
 # Run basic tests
 python test_felix.py

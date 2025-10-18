@@ -52,8 +52,8 @@ class MainApp(tk.Tk):
         self.notebook.add(workflows_frame, text="Workflows")
 
         # Memory tab
-        memory_frame = MemoryFrame(self.notebook, self.thread_manager, self.db_helper)
-        self.notebook.add(memory_frame, text="Memory")
+        self.memory_frame = MemoryFrame(self.notebook, self.thread_manager, self.db_helper)
+        self.notebook.add(self.memory_frame, text="Memory")
 
         # Agents tab
         agents_frame = AgentsFrame(self.notebook, self.thread_manager, main_app=self)
@@ -80,7 +80,7 @@ class MainApp(tk.Tk):
             config = FelixConfig(
                 lm_host=self.lm_host,
                 lm_port=self.lm_port,
-                max_agents=15,
+                max_agents=25,  # Increased from 15 to allow sufficient agents for collaboration
                 enable_metrics=True,
                 enable_memory=True,
                 enable_dynamic_spawning=True
@@ -114,10 +114,33 @@ class MainApp(tk.Tk):
 
     def _enable_all_features(self):
         """Enable features in all frames when system is running."""
+        # Validate system health before enabling
+        if not self._validate_system_health():
+            logger.warning("System health check failed, not enabling features")
+            return
+
         # Enable agents frame features
         for child in self.notebook.winfo_children():
             if hasattr(child, '_enable_features') and callable(getattr(child, '_enable_features')):
                 child._enable_features()
+
+    def _validate_system_health(self) -> bool:
+        """Validate Felix system is healthy and ready."""
+        if not self.felix_system:
+            return False
+        if not self.felix_system.running:
+            return False
+        if not self.felix_system.lm_client:
+            return False
+        # Test LM client connection
+        try:
+            if not self.felix_system.lm_client.test_connection():
+                logger.error("LM client connection test failed")
+                return False
+        except Exception as e:
+            logger.error(f"LM client health check exception: {e}")
+            return False
+        return True
 
     def _disable_all_features(self):
         """Disable features in all frames when system is not running."""
