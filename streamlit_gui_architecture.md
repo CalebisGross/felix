@@ -1,9 +1,11 @@
 # Streamlit GUI Architecture for Felix Framework
 
-**Version:** 1.0  
-**Target Users:** Technical developers familiar with Felix internals  
-**Deployment:** Local development machines only  
+**Version:** 2.0
+**Target Users:** Technical developers familiar with Felix internals
+**Deployment:** Local development machines only
 **Last Updated:** 2025-10-17
+
+> **Note:** This Streamlit GUI complements the existing tkinter GUI (`src/gui/`) and runs completely independently without modifying any existing code.
 
 ---
 
@@ -11,7 +13,7 @@
 
 ### 1.1 High-Level Structure
 
-The Streamlit GUI will consist of a **web-based interface** running locally that integrates directly with Felix's Python backend modules. The architecture follows a modular design with clear separation of concerns:
+The Streamlit GUI runs independently alongside the existing tkinter GUI, sharing the same `FelixSystem` backend for consistency. The architecture follows a modular design with clear separation of concerns:
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -24,11 +26,17 @@ The Streamlit GUI will consist of a **web-based interface** running locally that
                        │ Python Function Calls
                        ▼
 ┌─────────────────────────────────────────────────────────┐
-│              Felix Backend Integration Layer             │
+│         Streamlit Backend Integration Layer              │
 │  ┌────────────┐  ┌─────────────┐  ┌──────────────────┐ │
-│  │Config      │  │Workflow     │  │Benchmark         │ │
-│  │Handler     │  │Executor     │  │Engine            │ │
+│  │System      │  │Config       │  │Benchmark         │ │
+│  │Manager     │  │Handler      │  │Runner            │ │
 │  └────────────┘  └─────────────┘  └──────────────────┘ │
+└──────────────────────┬──────────────────────────────────┘
+                       │ Wraps/Imports
+                       ▼
+┌─────────────────────────────────────────────────────────┐
+│         Shared FelixSystem (src/gui/felix_system.py)     │
+│  Provides unified interface to Felix core components     │
 └──────────────────────┬──────────────────────────────────┘
                        │ Direct Imports
                        ▼
@@ -37,6 +45,12 @@ The Streamlit GUI will consist of a **web-based interface** running locally that
 │  core/  agents/  communication/  memory/  llm/  pipeline/│
 └─────────────────────────────────────────────────────────┘
 ```
+
+**Key Design Principles:**
+- **Non-Interference:** Completely separate from tkinter GUI (`src/gui/`)
+- **Code Reuse:** Leverages existing `FelixSystem` class
+- **Complementary:** Focuses on visualization and benchmarking strengths
+- **Independent:** Can run simultaneously with tkinter GUI
 
 ### 1.2 Data Flow
 
@@ -131,7 +145,7 @@ graph TD
 ### 2.2 Dependencies
 
 ```bash
-# requirements.txt for Streamlit GUI
+# requirements_streamlit.txt - Separate requirements file to avoid conflicts
 streamlit>=1.28.0
 plotly>=5.17.0
 pandas>=2.0.0
@@ -139,39 +153,40 @@ pydantic>=2.4.0
 pyyaml>=6.0
 watchdog>=3.0.0  # For file monitoring
 
-# Existing Felix dependencies
-openai
-httpx
-numpy
-scipy
+# Note: Felix core dependencies should already be installed
+# If not, also install: openai, httpx, numpy, scipy
 ```
 
 ### 2.3 Basic App Structure
 
 ```
 felix/
-├── streamlit_app.py           # Main Streamlit entry point
-├── gui/
+├── streamlit_app.py              # Main Streamlit entry point
+├── streamlit_gui/                # Separate from src/gui to avoid conflicts with tkinter
 │   ├── __init__.py
 │   ├── pages/
-│   │   ├── 1_Dashboard.py     # Overview & metrics
-│   │   ├── 2_Configuration.py # Config editor
-│   │   ├── 3_Testing.py       # Interactive testing
-│   │   └── 4_Benchmarking.py  # Performance benchmarks
+│   │   ├── 1_🏠_Dashboard.py    # Overview & metrics
+│   │   ├── 2_⚙️_Configuration.py # Config editor
+│   │   ├── 3_🧪_Testing.py       # Interactive testing
+│   │   └── 4_📊_Benchmarking.py  # Performance benchmarks
 │   ├── components/
-│   │   ├── config_editor.py   # Config widgets
-│   │   ├── log_viewer.py      # Real-time logs
-│   │   └── results_viz.py     # Visualization components
+│   │   ├── config_editor.py     # Config widgets
+│   │   ├── log_viewer.py        # Real-time logs
+│   │   └── results_viz.py       # Visualization components
 │   ├── backend/
-│   │   ├── config_handler.py  # Config validation & I/O
-│   │   ├── workflow_runner.py # Test execution
-│   │   └── benchmark_runner.py# Benchmark execution
+│   │   ├── system_manager.py    # Wrapper around FelixSystem
+│   │   ├── config_handler.py    # Config validation & I/O
+│   │   └── benchmark_runner.py  # Benchmark execution
 │   └── utils/
-│       ├── validators.py      # Pydantic schemas
-│       └── state_manager.py   # Session state helpers
+│       ├── validators.py        # Pydantic schemas
+│       └── state_manager.py     # Session state helpers
+├── src/gui/                      # Existing tkinter GUI (DO NOT MODIFY)
+│   ├── main.py
+│   ├── felix_system.py          # Shared FelixSystem class we'll import
+│   └── ...
 └── configs/
     ├── default_config.yaml
-    └── user_configs/          # User-saved configs
+    └── user_configs/            # User-saved configs
 ```
 
 ### 2.4 Running Locally
@@ -180,13 +195,16 @@ felix/
 # Activate Felix environment
 source .venv/bin/activate  # or .venv\Scripts\activate on Windows
 
-# Install GUI dependencies
-pip install streamlit plotly pydantic pyyaml
+# Install Streamlit GUI dependencies (separate from tkinter GUI)
+pip install -r requirements_streamlit.txt
 
 # Launch Streamlit app
 streamlit run streamlit_app.py
 
 # Opens browser at http://localhost:8501
+
+# Note: tkinter GUI can still be run separately with:
+# python -m src.gui.main
 ```
 
 ### 2.5 Pain Points & Mitigations
@@ -707,10 +725,113 @@ def render_log_viewer():
 
 ### 4.1 Backend Module Structure
 
-Create `gui/backend/` with three core modules:
+Create `streamlit_gui/backend/` with modules that wrap the existing FelixSystem:
 
 ```python
-# gui/backend/config_handler.py
+# streamlit_gui/backend/system_manager.py
+"""
+Wrapper around the existing FelixSystem class to provide
+Streamlit-specific functionality without modifying the original.
+"""
+from src.gui.felix_system import FelixSystem, FelixConfig
+import threading
+import logging
+
+logger = logging.getLogger(__name__)
+
+class StreamlitSystemManager:
+    """Manages FelixSystem instance for Streamlit GUI."""
+
+    def __init__(self):
+        self.felix_system = None
+        self.is_running = False
+        self._lock = threading.Lock()
+
+    def start_system(self, config: dict = None):
+        """Start Felix system with given configuration."""
+        with self._lock:
+            if self.is_running:
+                return True
+
+            # Convert dict config to FelixConfig
+            felix_config = FelixConfig(
+                lm_host=config.get('lm_host', '127.0.0.1'),
+                lm_port=config.get('lm_port', 1234),
+                helix_top_radius=config.get('helix', {}).get('top_radius', 3.0),
+                helix_bottom_radius=config.get('helix', {}).get('bottom_radius', 0.5),
+                helix_height=config.get('helix', {}).get('height', 8.0),
+                helix_turns=config.get('helix', {}).get('turns', 2.0),
+                max_agents=config.get('spawning', {}).get('max_agents', 15),
+                base_token_budget=config.get('llm', {}).get('token_budget', 2048),
+                enable_metrics=True,
+                enable_memory=True,
+                enable_dynamic_spawning=True
+            )
+
+            # Initialize FelixSystem
+            self.felix_system = FelixSystem(felix_config)
+
+            # Start the system
+            if self.felix_system.start():
+                self.is_running = True
+                logger.info("FelixSystem started successfully via Streamlit")
+                return True
+            else:
+                self.felix_system = None
+                logger.error("Failed to start FelixSystem")
+                return False
+
+    def stop_system(self):
+        """Stop the Felix system."""
+        with self._lock:
+            if self.felix_system:
+                self.felix_system.stop()
+                self.felix_system = None
+                self.is_running = False
+                logger.info("FelixSystem stopped")
+
+    def get_status(self):
+        """Get current system status."""
+        if self.felix_system and self.is_running:
+            return self.felix_system.get_system_status()
+        return {"running": False, "agents": 0, "messages": 0}
+
+    def run_workflow(self, query: str, num_agents: int = 5, callback=None):
+        """Run a complete workflow using FelixSystem."""
+        if not self.felix_system:
+            raise RuntimeError("System not started")
+
+        results = []
+
+        # Spawn agents
+        if callback:
+            callback(0.1, "Spawning agents", [])
+
+        agents = []
+        for i in range(num_agents):
+            agent_type = ["research", "analysis", "synthesis", "critic"][i % 4]
+            agent = self.felix_system.spawn_agent(agent_type, f"domain_{i}")
+            if agent:
+                agents.append(agent)
+
+        # Process tasks
+        for i, agent in enumerate(agents):
+            if callback:
+                progress = 0.1 + (i+1)/len(agents) * 0.8
+                callback(progress, f"Processing agent {i+1}", [])
+
+            result = self.felix_system.send_task_to_agent(
+                agent.agent_id,
+                query
+            )
+            results.append(result)
+
+        if callback:
+            callback(1.0, "Complete", ["Workflow finished"])
+
+        return results
+
+# streamlit_gui/backend/config_handler.py
 from pydantic import BaseModel, Field, validator
 import yaml
 
@@ -719,97 +840,30 @@ class HelixConfig(BaseModel):
     bottom_radius: float = Field(gt=0, le=10)
     height: float = Field(gt=0, le=50)
     turns: int = Field(ge=1, le=10)
-    
+
     @validator('bottom_radius')
     def validate_radius_relationship(cls, v, values):
         if 'top_radius' in values and v >= values['top_radius']:
             raise ValueError('bottom_radius must be < top_radius')
         return v
 
-class FelixConfig(BaseModel):
+class StreamlitFelixConfig(BaseModel):
+    """Config schema for Streamlit GUI that maps to FelixConfig."""
     helix: HelixConfig
     spawning: dict
     llm: dict
     memory: dict
+    lm_host: str = '127.0.0.1'
+    lm_port: int = 1234
 
-def load_config(path: str) -> FelixConfig:
+def load_config(path: str) -> StreamlitFelixConfig:
     with open(path) as f:
         data = yaml.safe_load(f)
-    return FelixConfig(**data)
+    return StreamlitFelixConfig(**data)
 
-def save_config(config: FelixConfig, path: str):
+def save_config(config: StreamlitFelixConfig, path: str):
     with open(path, 'w') as f:
         yaml.dump(config.dict(), f)
-```
-
-```python
-# gui/backend/workflow_runner.py
-from src.core.helix_geometry import HelixGeometry
-from src.communication.central_post import CentralPost, AgentFactory
-from src.agents.specialized_agents import *
-import threading
-
-class WorkflowRunner:
-    def __init__(self, config: FelixConfig, llm_client):
-        self.config = config
-        self.llm_client = llm_client
-        self.central_post = None
-        self.agents = []
-    
-    def setup(self):
-        """Initialize Felix components from config."""
-        helix = HelixGeometry(**self.config.helix.dict())
-        self.central_post = CentralPost(
-            max_agents=self.config.spawning['max_agents'],
-            enable_metrics=True,
-            enable_memory=True
-        )
-        return helix
-    
-    def run_workflow(self, query: str, callback=None):
-        """
-        Run complete workflow with optional progress callback.
-        
-        Args:
-            query: User's research query
-            callback: Function called with (progress, status, logs)
-        """
-        helix = self.setup()
-        factory = AgentFactory(helix, self.llm_client)
-        
-        # Spawn agents
-        if callback:
-            callback(0.1, "Spawning agents", [])
-        
-        for i in range(5):
-            agent = factory.create_research_agent()
-            self.central_post.register_agent(agent)
-            self.agents.append(agent)
-        
-        # Process workflow
-        results = []
-        for i, agent in enumerate(self.agents):
-            if callback:
-                callback(0.1 + (i+1)/len(self.agents)*0.8, 
-                        f"Processing agent {i+1}", 
-                        [f"Agent {agent.agent_id} active"])
-            
-            result = agent.process_task(query)
-            results.append(result)
-        
-        if callback:
-            callback(1.0, "Complete", ["Workflow finished"])
-        
-        return results
-    
-    def run_workflow_async(self, query: str, callback=None):
-        """Run workflow in background thread."""
-        thread = threading.Thread(
-            target=self.run_workflow, 
-            args=(query, callback)
-        )
-        thread.start()
-        return thread
 ```
 
 ```python
@@ -866,17 +920,21 @@ class BenchmarkRunner:
 
 ### 4.2 Direct Backend Integration Pattern
 
-**Step 1:** Import Felix modules directly:
+**Step 1:** Import the shared FelixSystem and wrap it:
 ```python
 # In streamlit_app.py
 import sys
+import os
 sys.path.insert(0, os.path.dirname(__file__))
 
-from src.core.helix_geometry import HelixGeometry
-from src.communication.central_post import CentralPost
-from src.agents.specialized_agents import ResearchAgent
-from gui.backend.config_handler import load_config
-from gui.backend.workflow_runner import WorkflowRunner
+from src.gui.felix_system import FelixSystem, FelixConfig
+from streamlit_gui.backend.system_manager import StreamlitSystemManager
+from streamlit_gui.backend.config_handler import load_config, save_config
+
+# Create singleton system manager
+@st.cache_resource
+def get_system_manager():
+    return StreamlitSystemManager()
 ```
 
 **Step 2:** Use Streamlit callbacks to invoke backend:
@@ -884,14 +942,19 @@ from gui.backend.workflow_runner import WorkflowRunner
 # Config page
 if st.button("Apply Config"):
     config = load_config("configs/current.yaml")
-    st.session_state.helix = HelixGeometry(**config.helix.dict())
-    st.success("Config applied!")
+    system_manager = get_system_manager()
+    system_manager.stop_system()  # Stop if running
+    system_manager.start_system(config.dict())
+    st.success("Config applied and system restarted!")
 
 # Testing page
 if st.button("Run Test"):
-    runner = WorkflowRunner(st.session_state.config, llm_client)
-    results = runner.run_workflow(query)
-    st.session_state.test_results = results
+    system_manager = get_system_manager()
+    if not system_manager.is_running:
+        st.error("Please start the system first")
+    else:
+        results = system_manager.run_workflow(query, num_agents=5)
+        st.session_state.test_results = results
 ```
 
 ### 4.3 Handling Long-Running Tasks
@@ -1399,67 +1462,79 @@ if st.button("Load"):
 
 ## Implementation Roadmap
 
-### Phase 1: Core Infrastructure (Week 1)
-- [ ] Set up Streamlit project structure
-- [ ] Create Pydantic schemas for config validation
-- [ ] Implement config_handler.py (load/save/validate)
-- [ ] Build basic dashboard with metrics display
-- [ ] Integrate with existing felix_memory.db
+### Phase 1: Core Infrastructure (Day 1-2)
+- [ ] Create `streamlit_gui/` directory structure (separate from `src/gui/`)
+- [ ] Set up `streamlit_app.py` entry point
+- [ ] Create `StreamlitSystemManager` wrapper around `FelixSystem`
+- [ ] Implement Pydantic schemas for config validation
+- [ ] Build basic dashboard with system status display
+- [ ] Test integration with existing `FelixSystem` class
 
-### Phase 2: Configuration Editor (Week 2)
-- [ ] Build helix parameter editor with sliders
+### Phase 2: Configuration Editor (Day 3-4)
+- [ ] Build helix parameter editor with interactive sliders
 - [ ] Add agent spawning config UI
-- [ ] Implement LLM settings editor
-- [ ] Add memory config controls
-- [ ] Create save/load/export functionality
+- [ ] Implement LLM settings editor (host/port for LM Studio)
+- [ ] Add memory configuration controls
+- [ ] Create YAML save/load/export functionality
+- [ ] Add visual feedback for helix geometry changes
 
-### Phase 3: Testing Interface (Week 3)
-- [ ] Implement complete workflow runner
+### Phase 3: Testing Interface (Day 5-6)
+- [ ] Implement workflow runner using `FelixSystem.run_workflow()`
 - [ ] Add component isolation testing
-- [ ] Build real-time log viewer
-- [ ] Create results visualization (confidence, agent outputs)
-- [ ] Add step-by-step execution mode
+- [ ] Build real-time log viewer with `st.empty()` placeholders
+- [ ] Create results visualization (confidence scores, agent outputs)
+- [ ] Add progress tracking for long-running workflows
 
-### Phase 4: Benchmarking (Week 4)
-- [ ] Integrate exp/benchmark_felix.py
-- [ ] Build benchmark parameter UI
+### Phase 4: Benchmarking (Day 7-8)
+- [ ] Integrate with `exp/benchmark_felix.py`
+- [ ] Build benchmark parameter selection UI
 - [ ] Implement real-time progress tracking
-- [ ] Create interactive result visualizations (Plotly)
-- [ ] Add CSV export and historical comparison
+- [ ] Create Plotly-based interactive visualizations
+- [ ] Add H1/H2/H3 hypothesis validation charts
+- [ ] Enable CSV export and comparison features
 
-### Phase 5: Polish & Documentation (Week 5)
-- [ ] Add error handling and validation feedback
-- [ ] Improve responsive design
-- [ ] Create user guide (markdown in app)
-- [ ] Add keyboard shortcuts
-- [ ] Performance optimization (caching, pagination)
+### Phase 5: Polish & Documentation (Day 9-10)
+- [ ] Add comprehensive error handling
+- [ ] Implement session state persistence
+- [ ] Create in-app user guide
+- [ ] Optimize performance with `@st.cache_data` and `@st.cache_resource`
+- [ ] Add requirements_streamlit.txt file
+- [ ] Test coexistence with tkinter GUI
 
 ---
 
 ## Technical Specifications Summary
 
-**Language:** Python 3.8+  
-**Framework:** Streamlit 1.28+  
+**Language:** Python 3.8+
+**Framework:** Streamlit 1.28+
 **Key Dependencies:**
 - streamlit, plotly, pandas, pydantic, pyyaml
 - Existing Felix modules (src/)
+- Shared FelixSystem class (src/gui/felix_system.py)
 
 **File Structure:**
 ```
 streamlit_app.py              # Entry point
-gui/
+streamlit_gui/                # Separate from src/gui (tkinter)
 ├── pages/                    # Multi-page sections
 ├── components/               # Reusable UI components
-├── backend/                  # Backend integration
+├── backend/                  # Wrappers around FelixSystem
 └── utils/                    # Helpers
 configs/                      # YAML configs
+requirements_streamlit.txt   # Separate requirements file
 ```
 
+**Integration Approach:**
+- Import and wrap existing `FelixSystem` class
+- No modifications to tkinter GUI (`src/gui/`)
+- Separate directory structure (`streamlit_gui/`)
+- Can run simultaneously with tkinter GUI
+
 **Key Design Patterns:**
-- Session state for persistence
+- `@st.cache_resource` for singleton FelixSystem
+- Session state for UI persistence
 - Threading for long-running tasks
-- Caching for expensive operations
-- Pydantic for validation
+- Pydantic for config validation
 - Callback pattern for progress updates
 
 **Performance Targets:**
@@ -1473,14 +1548,22 @@ configs/                      # YAML configs
 
 ## Conclusion
 
-This architecture provides a **practical, focused design** for a Streamlit-based GUI tailored to Felix Framework's technical user base. Key strengths:
+This updated architecture provides a **complementary Streamlit GUI** that works alongside the existing tkinter GUI without any interference. Key strengths:
 
-1. **Direct Python Integration:** No API layer—GUI calls Felix modules directly
-2. **Real-Time Monitoring:** Progress bars, live logs, streaming metrics
-3. **Comprehensive Testing:** Complete workflows + component isolation
-4. **Benchmark-First:** H1/H2/H3 hypothesis validation is central
-5. **Local-Optimized:** No auth, no cloud—just `streamlit run`
+1. **Non-Invasive Integration:** Reuses existing `FelixSystem` class without modifying any tkinter code
+2. **Complementary Focus:** Streamlit excels at visualization/benchmarking, tkinter at direct control
+3. **Independent Operation:** Can run both GUIs simultaneously on different ports
+4. **Shared Backend:** Both GUIs use the same `FelixSystem` for consistency
+5. **Clean Separation:** Separate directories (`streamlit_gui/` vs `src/gui/`) prevent conflicts
 
-The design learns from MLflow's experiment tracking, W&B's real-time visualization, and avoids pitfalls like Superset's static dashboards and JupyterLab's non-linear execution.
+**GUI Comparison:**
+| Feature | Tkinter GUI | Streamlit GUI |
+|---------|-------------|---------------|
+| **Best For** | Direct agent control, real-time interaction | Visualization, benchmarking, analysis |
+| **Interface** | Desktop native | Web-based (localhost:8501) |
+| **Strengths** | Fast response, native widgets | Better charts, easier data export |
+| **Target Users** | Developers needing control | Developers needing insights |
 
-**Next Steps:** Implement Phase 1 (core infrastructure) and iterate based on user feedback from technical developers.
+The design maintains all the original benefits (MLflow-style tracking, W&B visualization patterns) while ensuring zero impact on the existing tkinter implementation.
+
+**Next Steps:** Implement Phase 1 (core infrastructure) starting with the `streamlit_gui/` directory structure and `StreamlitSystemManager` wrapper.
