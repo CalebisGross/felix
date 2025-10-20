@@ -1,0 +1,23 @@
+# Streamlit GUI Dependencies for Felix Framework
+# Install with: pip install -r requirements_streamlit.txt
+
+# Core Streamlit framework
+streamlit>=1.28.0
+
+# Data visualization libraries
+plotly>=5.17.0
+altair>=5.0.0
+
+# Data manipulation
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Configuration and validation
+pydantic>=2.4.0
+pyyaml>=6.0
+
+# File monitoring for auto-refresh
+watchdog>=3.0.0
+
+# Additional utilities
+python-dateutil>=2.8.2
