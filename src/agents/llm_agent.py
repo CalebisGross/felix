@@ -42,7 +42,9 @@ class LLMTask:
     description: str
     context: str = ""
     metadata: Optional[Dict[str, Any]] = None
-    
+    context_history: Optional[List[Dict[str, Any]]] = None  # Previous agent outputs
+    knowledge_entries: Optional[List[Any]] = None  # Relevant knowledge from memory
+
     def __post_init__(self):
         if self.metadata is None:
             self.metadata = {}
@@ -60,7 +62,14 @@ class LLMResult:
     timestamp: float
     confidence: float = 0.0  # Confidence score (0.0 to 1.0)
     processing_stage: int = 1  # Stage number in helix descent
-    
+
+    # Prompt and settings used for this processing
+    system_prompt: str = ""  # System prompt sent to LLM
+    user_prompt: str = ""  # User prompt sent to LLM
+    temperature_used: float = 0.0  # Temperature setting used
+    token_budget_allocated: int = 0  # Token budget allocated for this stage
+    collaborative_context_count: int = 0  # Number of previous agent outputs used
+
     # Chunking support fields
     is_chunked: bool = False  # Whether this result contains chunked output
     chunk_results: Optional[List[ChunkedResult]] = None  # List of chunk results if chunked
@@ -187,15 +196,15 @@ class LLMAgent(Agent):
         
         if max_tokens is None:
             if agent_type == "research":
-                self.max_tokens = 200  # Small for bullet points
+                self.max_tokens = 1000  # Expanded for comprehensive research findings
             elif agent_type == "analysis":
-                self.max_tokens = 400  # Medium for structured analysis
+                self.max_tokens = 1000  # Expanded for detailed structured analysis
             elif agent_type == "synthesis":
-                self.max_tokens = 1000  # Large for comprehensive output
+                self.max_tokens = 20000  # Very large for comprehensive final output
             elif agent_type == "critic":
-                self.max_tokens = 150  # Small for focused feedback
+                self.max_tokens = 1000  # Expanded for thorough critique
             else:
-                self.max_tokens = 500  # Default fallback
+                self.max_tokens = 1000  # Default fallback
         else:
             self.max_tokens = max_tokens
             
@@ -272,21 +281,24 @@ class LLMAgent(Agent):
         
         return max(min_temp, min(max_temp, temperature))
     
-    def calculate_confidence(self, current_time: float, content: str, stage: int) -> float:
+    def calculate_confidence(self, current_time: float, content: str, stage: int, task: Optional[LLMTask] = None) -> float:
         """
-        Calculate confidence score based on agent type, helix position, and content quality.
-        
+        Calculate confidence score based on agent type, helix position, content quality, and collaboration.
+
         Agent types have different confidence ranges to ensure proper workflow:
         - Research agents: 0.3-0.6 (gather info, don't make final decisions)
-        - Analysis agents: 0.4-0.7 (process info, prepare for synthesis)
+        - Analysis agents: 0.4-0.8 (process info, prepare for synthesis)
         - Synthesis agents: 0.6-0.95 (create final output)
         - Critic agents: 0.5-0.8 (provide feedback)
-        
+
+        Collaborative bonus can add up to 0.15 additional confidence when agents
+        synthesize multiple perspectives and build consensus.
+
         Args:
             current_time: Current simulation time
             content: Generated content to evaluate
             stage: Processing stage number
-            
+
         Returns:
             Confidence score (0.0 to 1.0)
         """
@@ -299,9 +311,10 @@ class LLMAgent(Agent):
             base_confidence = 0.3 + (depth_ratio * 0.3)  # 0.3-0.6 range
             max_confidence = 0.6
         elif self.agent_type == "analysis":
-            # Analysis agents: 0.4-0.7 - process info but don't synthesize
-            base_confidence = 0.4 + (depth_ratio * 0.3)  # 0.4-0.7 range
-            max_confidence = 0.7
+            # Analysis agents: 0.4-0.8 - process info but don't synthesize
+            # Raised from 0.7 to allow collaborative analysis to exceed consensus threshold
+            base_confidence = 0.4 + (depth_ratio * 0.4)  # 0.4-0.8 range
+            max_confidence = 0.8
         elif self.agent_type == "synthesis":
             # Synthesis agents: 0.6-0.95 - create final comprehensive output
             base_confidence = 0.6 + (depth_ratio * 0.35)  # 0.6-0.95 range
@@ -321,11 +334,17 @@ class LLMAgent(Agent):
         
         # Processing stage bonus (up to 0.05 additional)
         stage_bonus = min(stage * 0.005, 0.05)
-        
+
         # Historical consistency bonus (up to 0.05 additional)
         consistency_bonus = self._calculate_consistency_bonus() * 0.05
-        
-        total_confidence = base_confidence + content_bonus + stage_bonus + consistency_bonus
+
+        # Collaborative context bonus (up to 0.15 additional) - NEW
+        # Rewards agents that synthesize multiple perspectives and build consensus
+        collaborative_bonus = 0.0
+        if task is not None:
+            collaborative_bonus = self._calculate_collaborative_bonus(task, current_time) * 0.15
+
+        total_confidence = base_confidence + content_bonus + stage_bonus + consistency_bonus + collaborative_bonus
         
         # Store debug info for potential display
         self._last_confidence_breakdown = {
@@ -333,6 +352,7 @@ class LLMAgent(Agent):
             "content_bonus": content_bonus,
             "stage_bonus": stage_bonus,
             "consistency_bonus": consistency_bonus,
+            "collaborative_bonus": collaborative_bonus,
             "total_before_cap": total_confidence,
             "max_confidence": max_confidence,
             "final_confidence": min(max(total_confidence, 0.0), max_confidence)
@@ -417,7 +437,48 @@ class LLMAgent(Agent):
         consistency_bonus = max(0.0, 1.0 - (variance * 10))  # Scale variance appropriately
         
         return min(consistency_bonus, 1.0)
-    
+
+    def _calculate_collaborative_bonus(self, task: LLMTask, current_time: float) -> float:
+        """
+        Calculate confidence bonus for leveraging collaborative context.
+
+        This rewards agents that synthesize multiple perspectives and
+        build on previous work, enabling confidence to rise over time.
+
+        Args:
+            task: Current task being processed
+            current_time: Current simulation time
+
+        Returns:
+            Bonus factor from 0.0 to 1.0
+        """
+        if not hasattr(task, 'context_history') or not task.context_history:
+            return 0.0
+
+        context_count = len(task.context_history)
+
+        # Bonus for number of collaborators (0.0-0.4)
+        # More perspectives = more confidence in synthesis
+        count_bonus = min(context_count / 5.0, 0.4)
+
+        # Bonus for consensus (0.0-0.3)
+        # Low variance in previous confidence = team converging
+        confidences = [c.get('confidence', 0.5) for c in task.context_history]
+        if confidences:
+            avg_confidence = sum(confidences) / len(confidences)
+            variance = sum((c - avg_confidence) ** 2 for c in confidences) / len(confidences)
+            consensus_bonus = max(0, 0.3 - variance * 3)  # Low variance = high bonus
+        else:
+            consensus_bonus = 0.0
+
+        # Bonus for synthesis agents (0.0-0.3)
+        # Synthesis agents should have highest confidence
+        synthesis_bonus = 0.3 if self.agent_type == "synthesis" else 0.0
+
+        # Total normalized to 0.0-1.0
+        total = (count_bonus + consensus_bonus + synthesis_bonus) / 1.0
+        return min(total, 1.0)
+
     def create_position_aware_prompt(self, task: LLMTask, current_time: float) -> tuple[str, int]:
         """
         Create system prompt that adapts to agent's helix position with token budget.
@@ -553,7 +614,110 @@ class LLMAgent(Agent):
         
         if optimization_result.get("optimization_triggered"):
             logger.info(f"Prompt optimization triggered for {prompt_id}")
-    
+
+    def _build_collaborative_prompt(self, original_task: str,
+                                    context_history: List[Dict[str, Any]],
+                                    agent_type: str) -> str:
+        """
+        Build collaborative prompt incorporating previous agent outputs.
+
+        This creates prompts that reference and build upon previous agents' work,
+        enabling true multi-agent collaboration rather than isolated processing.
+
+        Args:
+            original_task: The original user task
+            context_history: List of previous agent outputs
+            agent_type: Type of current agent (research, critic, analysis, synthesis)
+
+        Returns:
+            Enhanced prompt that incorporates collaborative context
+        """
+        if not context_history:
+            return original_task
+
+        # Build context summary from previous agents
+        context_parts = [f"Original Task: {original_task}", "\nPrevious Agent Outputs:"]
+
+        for i, entry in enumerate(context_history, 1):
+            prev_agent_type = entry.get('agent_type', 'unknown')
+            prev_response = entry.get('response', '')
+            prev_confidence = entry.get('confidence', 0.0)
+
+            # Truncate very long responses but allow more detail with higher token budgets
+            if len(prev_response) > 1000:
+                prev_response = prev_response[:1000] + "..."
+
+            context_parts.append(
+                f"\n{i}. {prev_agent_type.upper()} Agent (confidence: {prev_confidence:.2f}):\n{prev_response}"
+            )
+
+        # Add agent-type-specific instructions with confidence improvement guidance
+        context_parts.append("\n---")
+        context_parts.append("\n**COLLABORATIVE CONTEXT AVAILABLE**: You have access to previous agents' outputs above. "
+                           "Use this collaborative context to produce a MORE CONFIDENT and COMPREHENSIVE response "
+                           "than any single agent could provide alone.\n\n"
+                           "**CRITICAL**: Do NOT simply repeat what previous agents have already said. "
+                           "BUILD UPON their work by:\n"
+                           "- Adding NEW information, insights, or perspectives\n"
+                           "- Resolving contradictions or uncertainties\n"
+                           "- Deepening the analysis with additional detail\n"
+                           "- Synthesizing multiple perspectives into a coherent whole")
+
+        if agent_type == "research":
+            context_parts.append(
+                "\n\nAs a RESEARCH agent with collaborative context:\n"
+                "1. Review what previous agents have already discovered\n"
+                "2. Identify gaps, uncertainties, or areas needing deeper investigation\n"
+                "3. Expand on those gaps with NEW research findings\n"
+                "4. Build confidence by resolving uncertainties identified by critics\n"
+                "5. Your output should be MORE CONFIDENT because you're addressing known gaps"
+            )
+        elif agent_type == "critic":
+            # Add agent-specific focus for diversity
+            import random
+            focus_areas = [
+                "logical consistency and reasoning",
+                "factual accuracy and evidence quality",
+                "completeness and coverage of key points",
+                "clarity and communication effectiveness",
+                "novelty and originality of insights"
+            ]
+            # Use agent_id as seed for deterministic but varied focus
+            random.seed(hash(self.agent_id))
+            focus = random.choice(focus_areas)
+
+            context_parts.append(
+                f"\n\nAs a CRITIC agent with collaborative context:\n"
+                f"**YOUR SPECIFIC FOCUS**: Prioritize evaluation of {focus}.\n"
+                "1. Evaluate ALL previous outputs collectively for accuracy and consistency\n"
+                "2. Identify contradictions between different agents' findings\n"
+                "3. Assess whether previous critics' concerns have been addressed\n"
+                "4. If multiple agents agree on findings, your confidence should be HIGHER\n"
+                "5. Provide constructive critique that helps the team reach consensus\n"
+                "6. If team is converging on consistent conclusions, validate with high confidence"
+            )
+        elif agent_type == "analysis":
+            context_parts.append(
+                "\n\nAs an ANALYSIS agent with collaborative context:\n"
+                "1. SYNTHESIZE all previous outputs into coherent insights\n"
+                "2. Identify patterns and connections across multiple agents' findings\n"
+                "3. Resolve contradictions by weighing evidence from multiple sources\n"
+                "4. Build on critiques to produce more robust analysis\n"
+                "5. Your confidence should be HIGHER when multiple agents' findings align\n"
+                "6. Produce insights that are MORE CERTAIN than any individual agent's output"
+            )
+        elif agent_type == "synthesis":
+            context_parts.append(
+                "\n\nAs a SYNTHESIS agent with collaborative context:\n"
+                "1. Create a comprehensive response integrating ALL previous findings\n"
+                "2. Resolve any remaining contradictions using consensus from multiple agents\n"
+                "3. Build on the collective knowledge to produce a definitive answer\n"
+                "4. Your confidence should be HIGHEST because you have the full collaborative context\n"
+                "5. Produce a unified, authoritative response that represents team consensus"
+            )
+
+        return "\n".join(context_parts)
+
     async def process_task_with_llm_async(self, task: LLMTask, current_time: float, 
                                          priority: RequestPriority = RequestPriority.NORMAL) -> LLMResult:
         """
@@ -568,15 +732,28 @@ class LLMAgent(Agent):
             LLM processing result
         """
         start_time = time.perf_counter()
-        
+
         # Get position-aware prompts, token budget, and temperature
         system_prompt, stage_token_budget = self.create_position_aware_prompt(task, current_time)
         temperature = self.get_adaptive_temperature(current_time)
         position_info = self.get_position_info(current_time)
-        
+
         # Ensure stage budget doesn't exceed agent's max_tokens
         effective_token_budget = min(stage_token_budget, self.max_tokens)
-        
+
+        # Build collaborative prompt if context history available
+        if hasattr(task, 'context_history') and task.context_history:
+            logger.info(f"Agent {self.agent_id} using collaborative context: "
+                       f"{len(task.context_history)} previous outputs")
+            user_prompt = self._build_collaborative_prompt(
+                original_task=task.description,
+                context_history=task.context_history,
+                agent_type=self.agent_type
+            )
+        else:
+            logger.info(f"Agent {self.agent_id} processing without collaborative context")
+            user_prompt = task.description
+
         # Process with LLM using coordinated token budget (ASYNC)
         # Use multi-server client pool if available, otherwise use regular client
         if isinstance(self.llm_client, LMStudioClientPool):
@@ -584,7 +761,7 @@ class LLMAgent(Agent):
                 agent_type=self.agent_type,
                 agent_id=self.agent_id,
                 system_prompt=system_prompt,
-                user_prompt=task.description,
+                user_prompt=user_prompt,
                 temperature=temperature,
                 max_tokens=effective_token_budget,
                 priority=priority
@@ -593,7 +770,7 @@ class LLMAgent(Agent):
             llm_response = await self.llm_client.complete_async(
                 agent_id=self.agent_id,
                 system_prompt=system_prompt,
-                user_prompt=task.description,
+                user_prompt=user_prompt,
                 temperature=temperature,
                 max_tokens=effective_token_budget,
                 priority=priority
@@ -604,14 +781,19 @@ class LLMAgent(Agent):
         
         # Increment processing stage
         self.processing_stage += 1
-        
-        # Calculate confidence based on position and content
-        confidence = self.calculate_confidence(current_time, llm_response.content, self.processing_stage)
-        
+
+        # Calculate confidence based on position, content, and collaborative context
+        confidence = self.calculate_confidence(current_time, llm_response.content, self.processing_stage, task)
+
         # Record confidence for adaptive progression
         self.record_confidence(confidence)
-        
-        # Create result
+
+        # Calculate collaborative context count
+        collaborative_count = 0
+        if hasattr(task, 'context_history') and task.context_history:
+            collaborative_count = len(task.context_history)
+
+        # Create result with prompt and settings metadata
         result = LLMResult(
             agent_id=self.agent_id,
             task_id=task.task_id,
@@ -621,7 +803,12 @@ class LLMAgent(Agent):
             processing_time=processing_time,
             timestamp=time.time(),
             confidence=confidence,
-            processing_stage=self.processing_stage
+            processing_stage=self.processing_stage,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            temperature_used=temperature,
+            token_budget_allocated=effective_token_budget,
+            collaborative_context_count=collaborative_count
         )
         
         # Record token usage with budget manager
@@ -655,15 +842,28 @@ class LLMAgent(Agent):
             LLM processing result
         """
         start_time = time.perf_counter()
-        
+
         # Get position-aware prompts, token budget, and temperature
         system_prompt, stage_token_budget = self.create_position_aware_prompt(task, current_time)
         temperature = self.get_adaptive_temperature(current_time)
         position_info = self.get_position_info(current_time)
-        
+
         # Ensure stage budget doesn't exceed agent's max_tokens
         effective_token_budget = min(stage_token_budget, self.max_tokens)
-        
+
+        # Build collaborative prompt if context history available
+        if hasattr(task, 'context_history') and task.context_history:
+            logger.info(f"Agent {self.agent_id} using collaborative context: "
+                       f"{len(task.context_history)} previous outputs")
+            user_prompt = self._build_collaborative_prompt(
+                original_task=task.description,
+                context_history=task.context_history,
+                agent_type=self.agent_type
+            )
+        else:
+            logger.info(f"Agent {self.agent_id} processing without collaborative context")
+            user_prompt = task.description
+
         # Process with LLM using coordinated token budget (SYNC)
         # Note: Multi-server client pool requires async, so fall back to first available server
         if isinstance(self.llm_client, LMStudioClientPool):
@@ -674,7 +874,7 @@ class LLMAgent(Agent):
                 llm_response = client.complete(
                     agent_id=self.agent_id,
                     system_prompt=system_prompt,
-                    user_prompt=task.description,
+                    user_prompt=user_prompt,
                     temperature=temperature,
                     max_tokens=effective_token_budget
                 )
@@ -684,7 +884,7 @@ class LLMAgent(Agent):
             llm_response = self.llm_client.complete(
                 agent_id=self.agent_id,
                 system_prompt=system_prompt,
-                user_prompt=task.description,
+                user_prompt=user_prompt,
                 temperature=temperature,
                 max_tokens=effective_token_budget
             )
@@ -694,14 +894,19 @@ class LLMAgent(Agent):
         
         # Increment processing stage
         self.processing_stage += 1
-        
-        # Calculate confidence based on position and content
-        confidence = self.calculate_confidence(current_time, llm_response.content, self.processing_stage)
-        
+
+        # Calculate confidence based on position, content, and collaborative context
+        confidence = self.calculate_confidence(current_time, llm_response.content, self.processing_stage, task)
+
         # Record confidence for adaptive progression
         self.record_confidence(confidence)
-        
-        # Create result
+
+        # Calculate collaborative context count
+        collaborative_count = 0
+        if hasattr(task, 'context_history') and task.context_history:
+            collaborative_count = len(task.context_history)
+
+        # Create result with prompt and settings metadata
         result = LLMResult(
             agent_id=self.agent_id,
             task_id=task.task_id,
@@ -711,7 +916,12 @@ class LLMAgent(Agent):
             processing_time=processing_time,
             timestamp=time.time(),
             confidence=confidence,
-            processing_stage=self.processing_stage
+            processing_stage=self.processing_stage,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            temperature_used=temperature,
+            token_budget_allocated=effective_token_budget,
+            collaborative_context_count=collaborative_count
         )
         
         # Record token usage with budget manager

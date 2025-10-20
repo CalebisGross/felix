@@ -385,7 +385,7 @@ Your Synthesis Approach:
 - Ensure completeness and quality
 - Focus on clarity and actionability
 
-STRICT MODE OVERRIDE: If token budget < 150, provide ONLY final output in 2-3 paragraphs, NO explanations.
+STRICT MODE OVERRIDE: If token budget < 5000, provide focused final output in 3-5 paragraphs. Otherwise, provide comprehensive executive summary.
 
 Previous Agent Work:
 """
@@ -510,7 +510,7 @@ Your Critical Review Approach:
 - Ensure quality standards are maintained
 - Be constructive but thorough in your criticism
 
-STRICT MODE OVERRIDE: If token budget < 100, list ONLY 3 specific issues in numbered format, NO background.
+STRICT MODE OVERRIDE: If token budget < 300, list key issues in numbered format with brief explanations. Otherwise, provide comprehensive detailed critique.
 
 Work to Review:
 """

@@ -23,10 +23,6 @@ Key Features:
 This implementation supports Hypothesis H2 validation by providing measurable
 communication overhead characteristics that demonstrate the complexity
 advantage of spoke-based architecture.
-
-Mathematical references:
-- docs/hypothesis_mathematics.md, Section H2: Communication complexity analysis
-- docs/mathematical_model.md: Theoretical foundations for comparison framework
 """
 
 import time

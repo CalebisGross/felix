@@ -104,51 +104,60 @@ class QueueHandler(logging.Handler):
 
 def setup_gui_logging(text_widget: Optional[tk.Text] = None,
                      log_queue: Optional[Queue] = None,
-                     level: int = logging.INFO) -> None:
+                     level: int = logging.INFO,
+                     module_name: str = 'felix_gui') -> logging.Logger:
     """
     Setup logging to route to GUI components.
 
-    This function configures the root logger and all Felix module loggers
-    to output to GUI components instead of console.
+    This function configures a module-specific logger instead of the root logger
+    to avoid conflicts between different GUI components.
 
     Args:
         text_widget: Optional text widget to write logs to
         log_queue: Optional queue to write logs to
         level: Logging level (default: INFO)
-    """
-    # Get root logger
-    root_logger = logging.getLogger()
-    root_logger.setLevel(level)
+        module_name: Name for the logger (default: 'felix_gui')
 
-    # Remove existing handlers to avoid duplicates
-    root_logger.handlers.clear()
+    Returns:
+        Configured logger instance
+    """
+    # Create or get module-specific logger (NOT root logger)
+    logger = logging.getLogger(module_name)
+    logger.setLevel(level)
+
+    # Remove existing handlers to avoid duplicates for THIS logger only
+    logger.handlers.clear()
+
+    # Disable propagation to avoid conflicts with root logger
+    logger.propagate = False
 
     # Add handlers based on what was provided
     if text_widget:
         handler = TkinterTextHandler(text_widget)
         handler.setLevel(level)
-        root_logger.addHandler(handler)
+        logger.addHandler(handler)
 
     if log_queue:
         handler = QueueHandler(log_queue)
         handler.setLevel(level)
-        root_logger.addHandler(handler)
+        logger.addHandler(handler)
 
-    # Also setup for specific Felix modules
+    # Setup Felix module loggers to propagate to this logger
     felix_modules = [
         'src.agents',
         'src.communication',
         'src.llm',
         'src.memory',
         'src.pipeline',
-        'src.core',
-        'src.gui'
+        'src.core'
     ]
 
-    for module_name in felix_modules:
-        module_logger = logging.getLogger(module_name)
+    for mod_name in felix_modules:
+        module_logger = logging.getLogger(mod_name)
         module_logger.setLevel(level)
-        module_logger.propagate = True  # Propagate to root logger
+        module_logger.propagate = True  # Will propagate to root, which then goes to our handlers
+
+    return logger
 
 
 def add_text_widget_to_logger(logger: logging.Logger, text_widget: tk.Text,
