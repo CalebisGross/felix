@@ -10,10 +10,11 @@ from .utils import logger
 class SettingsFrame(ttk.Frame):
     """Settings tab for configuring Felix framework parameters."""
 
-    def __init__(self, parent, thread_manager, main_app=None):
+    def __init__(self, parent, thread_manager, main_app=None, theme_manager=None):
         super().__init__(parent)
         self.thread_manager = thread_manager
         self.main_app = main_app
+        self.theme_manager = theme_manager
         self.config_file = "felix_gui_config.json"
 
         # Dictionary to store all setting widgets
@@ -29,15 +30,23 @@ class SettingsFrame(ttk.Frame):
             lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
         )
 
-        self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        self.canvas_window = self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
         self.canvas.configure(yscrollcommand=self.scrollbar.set)
+
+        # Bind canvas resize to update inner frame width
+        self.canvas.bind("<Configure>", self._on_canvas_configure)
 
         # Build settings UI
         self._build_settings_ui()
 
-        # Pack scrollbar and canvas
+        # Pack scrollbar and canvas with proper expansion
         self.scrollbar.pack(side="right", fill="y")
         self.canvas.pack(side="left", fill="both", expand=True)
+
+        # Bind mousewheel for scrolling
+        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+        self.canvas.bind_all("<Button-4>", self._on_mousewheel)  # Linux scroll up
+        self.canvas.bind_all("<Button-5>", self._on_mousewheel)  # Linux scroll down
 
         # Load settings from file
         self.load_settings()
@@ -116,6 +125,12 @@ class SettingsFrame(ttk.Frame):
                                                    "Use O(N) hub-spoke communication")
         current_row = self._create_checkbox_field(current_row, "verbose_llm_logging", "Verbose LLM Logging", True,
                                                    "Log detailed LLM requests/responses")
+        current_row += 1
+
+        # Appearance Section
+        current_row = self._create_section(current_row, "Appearance")
+        current_row = self._create_checkbox_field(current_row, "dark_mode", "Dark Mode", False,
+                                                   "Use dark color scheme for the GUI")
         current_row += 1
 
         # Action Buttons
@@ -309,6 +324,11 @@ class SettingsFrame(ttk.Frame):
                 self.main_app.lm_host = typed_settings["lm_host"]
                 self.main_app.lm_port = typed_settings["lm_port"]
 
+            # Apply dark mode if theme manager is available
+            if self.theme_manager and "dark_mode" in typed_settings:
+                theme_name = "dark" if typed_settings["dark_mode"] else "light"
+                self.theme_manager.set_theme(theme_name)
+
             self.status_label.config(text="Settings saved successfully!", foreground="green")
             logger.info(f"Settings saved to {self.config_file}")
 
@@ -387,7 +407,8 @@ class SettingsFrame(ttk.Frame):
                 "enable_dynamic_spawning": True,
                 "enable_compression": True,
                 "enable_spoke_topology": True,
-                "verbose_llm_logging": True
+                "verbose_llm_logging": True,
+                "dark_mode": False
             }
 
             self.set_settings_dict(defaults)
@@ -444,3 +465,25 @@ class SettingsFrame(ttk.Frame):
                 widget.config(state="readonly")
             elif isinstance(widget, ttk.Checkbutton):
                 widget.config(state=tk.NORMAL)
+
+    def _on_canvas_configure(self, event):
+        """Update the inner frame width when canvas is resized."""
+        # Make the scrollable frame match the canvas width
+        canvas_width = event.width
+        self.canvas.itemconfig(self.canvas_window, width=canvas_width)
+
+    def _on_mousewheel(self, event):
+        """Handle mousewheel scrolling."""
+        if event.num == 5 or event.delta < 0:
+            # Scroll down
+            self.canvas.yview_scroll(1, "units")
+        elif event.num == 4 or event.delta > 0:
+            # Scroll up
+            self.canvas.yview_scroll(-1, "units")
+
+    def apply_theme(self):
+        """Apply current theme to settings widgets."""
+        if self.theme_manager:
+            theme = self.theme_manager.get_current_theme()
+            # Apply theme to canvas
+            self.canvas.configure(bg=theme["bg_primary"])

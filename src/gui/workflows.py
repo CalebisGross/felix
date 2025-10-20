@@ -6,10 +6,11 @@ from datetime import datetime
 from .utils import ThreadManager, log_queue, logger
 
 class WorkflowsFrame(ttk.Frame):
-    def __init__(self, parent, thread_manager, main_app=None):
+    def __init__(self, parent, thread_manager, main_app=None, theme_manager=None):
         super().__init__(parent)
         self.thread_manager = thread_manager
         self.main_app = main_app  # Reference to main application for Felix system access
+        self.theme_manager = theme_manager
         self.last_workflow_result = None  # Store last workflow result for saving
 
         # Task input (multi-line text widget)
@@ -55,6 +56,9 @@ class WorkflowsFrame(ttk.Frame):
         # Setup logging handler for this output text widget
         self.log_handler = None
         self._setup_logging()
+
+        # Apply initial theme
+        self.apply_theme()
 
     def _setup_logging(self):
         """Setup logging to route pipeline logs to output text widget."""
@@ -357,3 +361,9 @@ class WorkflowsFrame(ttk.Frame):
         """Update progress bar and status display."""
         # Update progress bar
         self.progress['value'] = progress_percentage
+
+    def apply_theme(self):
+        """Apply current theme to the workflow widgets."""
+        if self.theme_manager:
+            self.theme_manager.apply_to_text_widget(self.task_entry)
+            self.theme_manager.apply_to_text_widget(self.output_text)

@@ -15,11 +15,6 @@ Key Features:
 - Performance metrics collection (throughput, latency, overhead ratios)
 - Scalability up to 133 agents (matching OpenSCAD model parameters)
 
-Mathematical references:
-- docs/architecture/core/mathematical_model.md, Section 5: Spoke geometry and communication complexity
-- docs/architecture/core/hypothesis_mathematics.md, Section H2: Communication overhead analysis and proofs
-- Theoretical proof of O(N) vs O(N²) scaling advantage in hypothesis documentation
-
 Implementation supports rigorous testing of Hypothesis H2 communication efficiency claims.
 """
 

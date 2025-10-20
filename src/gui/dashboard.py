@@ -12,10 +12,11 @@ except ImportError as e:
     lm_studio_client = None
 
 class DashboardFrame(ttk.Frame):
-    def __init__(self, parent, thread_manager, main_app=None):
+    def __init__(self, parent, thread_manager, main_app=None, theme_manager=None):
         super().__init__(parent)
         self.thread_manager = thread_manager
         self.main_app = main_app
+        self.theme_manager = theme_manager
         self.system_running = False
 
         # Info label
@@ -36,6 +37,9 @@ class DashboardFrame(ttk.Frame):
         # Log display
         self.log_text = scrolledtext.ScrolledText(self, wrap=tk.WORD, height=20)
         self.log_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Apply initial theme
+        self.apply_theme()
 
         # Poll log queue
         self.poll_log_queue()
@@ -136,3 +140,8 @@ class DashboardFrame(ttk.Frame):
         else:
             # Keep polling
             self.after(poll_interval, lambda: self._poll_system_stopped(max_attempts, poll_interval, attempt + 1))
+
+    def apply_theme(self):
+        """Apply current theme to the dashboard widgets."""
+        if self.theme_manager:
+            self.theme_manager.apply_to_text_widget(self.log_text)

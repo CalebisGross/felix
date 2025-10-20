@@ -9,6 +9,7 @@ from .memory import MemoryFrame
 from .agents import AgentsFrame
 from .settings import SettingsFrame
 from .felix_system import FelixSystem, FelixConfig
+from .themes import ThemeManager
 
 class MainApp(tk.Tk):
     def __init__(self):
@@ -27,6 +28,14 @@ class MainApp(tk.Tk):
         # LM connection settings (loaded from config)
         self.lm_host = self.app_config.get('lm_host', '127.0.0.1')
         self.lm_port = self.app_config.get('lm_port', 1234)
+
+        # Initialize theme manager
+        self.theme_manager = ThemeManager(self)
+
+        # Load and apply saved theme
+        dark_mode = self.app_config.get('dark_mode', False)
+        theme_name = "dark" if dark_mode else "light"
+        self.theme_manager.set_theme(theme_name)
 
         # Menu bar
         menubar = tk.Menu(self)
@@ -51,24 +60,27 @@ class MainApp(tk.Tk):
         self.db_helper = DBHelper()
 
         # Dashboard tab
-        dashboard_frame = DashboardFrame(self.notebook, self.thread_manager, main_app=self)
-        self.notebook.add(dashboard_frame, text="Dashboard")
+        self.dashboard_frame = DashboardFrame(self.notebook, self.thread_manager, main_app=self, theme_manager=self.theme_manager)
+        self.notebook.add(self.dashboard_frame, text="Dashboard")
 
         # Workflows tab
-        workflows_frame = WorkflowsFrame(self.notebook, self.thread_manager, main_app=self)
-        self.notebook.add(workflows_frame, text="Workflows")
+        self.workflows_frame = WorkflowsFrame(self.notebook, self.thread_manager, main_app=self, theme_manager=self.theme_manager)
+        self.notebook.add(self.workflows_frame, text="Workflows")
 
         # Memory tab
-        self.memory_frame = MemoryFrame(self.notebook, self.thread_manager, self.db_helper)
+        self.memory_frame = MemoryFrame(self.notebook, self.thread_manager, self.db_helper, theme_manager=self.theme_manager)
         self.notebook.add(self.memory_frame, text="Memory")
 
         # Agents tab
-        agents_frame = AgentsFrame(self.notebook, self.thread_manager, main_app=self)
-        self.notebook.add(agents_frame, text="Agents")
+        self.agents_frame = AgentsFrame(self.notebook, self.thread_manager, main_app=self, theme_manager=self.theme_manager)
+        self.notebook.add(self.agents_frame, text="Agents")
 
         # Settings tab
-        self.settings_frame = SettingsFrame(self.notebook, self.thread_manager, main_app=self)
+        self.settings_frame = SettingsFrame(self.notebook, self.thread_manager, main_app=self, theme_manager=self.theme_manager)
         self.notebook.add(self.settings_frame, text="Settings")
+
+        # Register theme change callback to update all frames
+        self.theme_manager.register_callback(self._on_theme_changed)
 
         # Status bar
         self.status_var = tk.StringVar()
@@ -78,6 +90,20 @@ class MainApp(tk.Tk):
 
     def show_about(self):
         messagebox.showinfo("About", "Felix GUI - Version 1.0")
+
+    def _on_theme_changed(self, theme):
+        """Called when theme changes to update all frames."""
+        # Each frame will handle its own theme application
+        if hasattr(self.dashboard_frame, 'apply_theme'):
+            self.dashboard_frame.apply_theme()
+        if hasattr(self.workflows_frame, 'apply_theme'):
+            self.workflows_frame.apply_theme()
+        if hasattr(self.memory_frame, 'apply_theme'):
+            self.memory_frame.apply_theme()
+        if hasattr(self.agents_frame, 'apply_theme'):
+            self.agents_frame.apply_theme()
+        if hasattr(self.settings_frame, 'apply_theme'):
+            self.settings_frame.apply_theme()
 
     def _load_config(self):
         """Load configuration from file."""

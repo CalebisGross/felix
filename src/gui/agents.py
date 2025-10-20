@@ -23,10 +23,11 @@ except ImportError:
     CentralPost = Message = MessageType = None
 
 class AgentsFrame(ttk.Frame):
-    def __init__(self, parent, thread_manager, main_app=None):
+    def __init__(self, parent, thread_manager, main_app=None, theme_manager=None):
         super().__init__(parent)
         self.thread_manager = thread_manager
         self.main_app = main_app  # Reference to main application for core system access
+        self.theme_manager = theme_manager
         self.agents = []  # Reference to main system's agent list
         self.agent_counter = 0
         self.recent_messages = []  # For dynamic spawning analysis
@@ -98,6 +99,9 @@ class AgentsFrame(ttk.Frame):
         self.grid_rowconfigure(2, weight=1)
         self.grid_rowconfigure(5, weight=1)
         self.grid_columnconfigure(1, weight=1)
+
+        # Apply initial theme
+        self.apply_theme()
 
     def _enable_features(self):
         """Enable agent features when system is running."""
@@ -498,3 +502,8 @@ class AgentsFrame(ttk.Frame):
         self.monitor_text.insert(tk.END, text + '\n')
         self.monitor_text.config(state='disabled')
         self.monitor_text.see(tk.END)
+
+    def apply_theme(self):
+        """Apply current theme to the agents frame widgets."""
+        if self.theme_manager:
+            self.theme_manager.apply_to_text_widget(self.monitor_text)
