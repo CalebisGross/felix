@@ -62,7 +62,14 @@ class LLMResult:
     timestamp: float
     confidence: float = 0.0  # Confidence score (0.0 to 1.0)
     processing_stage: int = 1  # Stage number in helix descent
-    
+
+    # Prompt and settings used for this processing
+    system_prompt: str = ""  # System prompt sent to LLM
+    user_prompt: str = ""  # User prompt sent to LLM
+    temperature_used: float = 0.0  # Temperature setting used
+    token_budget_allocated: int = 0  # Token budget allocated for this stage
+    collaborative_context_count: int = 0  # Number of previous agent outputs used
+
     # Chunking support fields
     is_chunked: bool = False  # Whether this result contains chunked output
     chunk_results: Optional[List[ChunkedResult]] = None  # List of chunk results if chunked
@@ -189,15 +196,15 @@ class LLMAgent(Agent):
         
         if max_tokens is None:
             if agent_type == "research":
-                self.max_tokens = 200  # Small for bullet points
+                self.max_tokens = 1000  # Expanded for comprehensive research findings
             elif agent_type == "analysis":
-                self.max_tokens = 400  # Medium for structured analysis
+                self.max_tokens = 1000  # Expanded for detailed structured analysis
             elif agent_type == "synthesis":
-                self.max_tokens = 1000  # Large for comprehensive output
+                self.max_tokens = 20000  # Very large for comprehensive final output
             elif agent_type == "critic":
-                self.max_tokens = 150  # Small for focused feedback
+                self.max_tokens = 1000  # Expanded for thorough critique
             else:
-                self.max_tokens = 500  # Default fallback
+                self.max_tokens = 1000  # Default fallback
         else:
             self.max_tokens = max_tokens
             
@@ -636,9 +643,9 @@ class LLMAgent(Agent):
             prev_response = entry.get('response', '')
             prev_confidence = entry.get('confidence', 0.0)
 
-            # Truncate long responses
-            if len(prev_response) > 300:
-                prev_response = prev_response[:300] + "..."
+            # Truncate very long responses but allow more detail with higher token budgets
+            if len(prev_response) > 1000:
+                prev_response = prev_response[:1000] + "..."
 
             context_parts.append(
                 f"\n{i}. {prev_agent_type.upper()} Agent (confidence: {prev_confidence:.2f}):\n{prev_response}"
@@ -648,7 +655,13 @@ class LLMAgent(Agent):
         context_parts.append("\n---")
         context_parts.append("\n**COLLABORATIVE CONTEXT AVAILABLE**: You have access to previous agents' outputs above. "
                            "Use this collaborative context to produce a MORE CONFIDENT and COMPREHENSIVE response "
-                           "than any single agent could provide alone.")
+                           "than any single agent could provide alone.\n\n"
+                           "**CRITICAL**: Do NOT simply repeat what previous agents have already said. "
+                           "BUILD UPON their work by:\n"
+                           "- Adding NEW information, insights, or perspectives\n"
+                           "- Resolving contradictions or uncertainties\n"
+                           "- Deepening the analysis with additional detail\n"
+                           "- Synthesizing multiple perspectives into a coherent whole")
 
         if agent_type == "research":
             context_parts.append(
@@ -771,11 +784,16 @@ class LLMAgent(Agent):
 
         # Calculate confidence based on position, content, and collaborative context
         confidence = self.calculate_confidence(current_time, llm_response.content, self.processing_stage, task)
-        
+
         # Record confidence for adaptive progression
         self.record_confidence(confidence)
-        
-        # Create result
+
+        # Calculate collaborative context count
+        collaborative_count = 0
+        if hasattr(task, 'context_history') and task.context_history:
+            collaborative_count = len(task.context_history)
+
+        # Create result with prompt and settings metadata
         result = LLMResult(
             agent_id=self.agent_id,
             task_id=task.task_id,
@@ -785,7 +803,12 @@ class LLMAgent(Agent):
             processing_time=processing_time,
             timestamp=time.time(),
             confidence=confidence,
-            processing_stage=self.processing_stage
+            processing_stage=self.processing_stage,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            temperature_used=temperature,
+            token_budget_allocated=effective_token_budget,
+            collaborative_context_count=collaborative_count
         )
         
         # Record token usage with budget manager
@@ -874,11 +897,16 @@ class LLMAgent(Agent):
 
         # Calculate confidence based on position, content, and collaborative context
         confidence = self.calculate_confidence(current_time, llm_response.content, self.processing_stage, task)
-        
+
         # Record confidence for adaptive progression
         self.record_confidence(confidence)
-        
-        # Create result
+
+        # Calculate collaborative context count
+        collaborative_count = 0
+        if hasattr(task, 'context_history') and task.context_history:
+            collaborative_count = len(task.context_history)
+
+        # Create result with prompt and settings metadata
         result = LLMResult(
             agent_id=self.agent_id,
             task_id=task.task_id,
@@ -888,7 +916,12 @@ class LLMAgent(Agent):
             processing_time=processing_time,
             timestamp=time.time(),
             confidence=confidence,
-            processing_stage=self.processing_stage
+            processing_stage=self.processing_stage,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            temperature_used=temperature,
+            token_budget_allocated=effective_token_budget,
+            collaborative_context_count=collaborative_count
         )
         
         # Record token usage with budget manager

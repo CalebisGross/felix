@@ -186,7 +186,8 @@ class CollaborativeContextBuilder:
                 logger.info(f"  Retrieved {len(knowledge_entries)} relevant knowledge entries from store")
                 if knowledge_entries:
                     for ke in knowledge_entries:
-                        logger.info(f"    - Knowledge: {ke.content[:50]}... (conf: {ke.confidence})")
+                        content_str = str(ke.content)
+                        logger.info(f"    - Knowledge: {content_str[:50]}... (conf: {ke.confidence_level.value})")
             except Exception as e:
                 logger.warning(f"  Knowledge retrieval failed: {e}")
 

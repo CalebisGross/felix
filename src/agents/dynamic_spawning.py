@@ -83,7 +83,7 @@ class ConfidenceMonitor:
     agents should be spawned to improve performance.
     """
     
-    def __init__(self, confidence_threshold: float = 0.7, 
+    def __init__(self, confidence_threshold: float = 0.8,
                  volatility_threshold: float = 0.15,
                  time_window_minutes: float = 5.0):
         """
@@ -703,7 +703,7 @@ class DynamicSpawning:
     to make intelligent spawning decisions.
     """
     
-    def __init__(self, agent_factory, confidence_threshold: float = 0.7,
+    def __init__(self, agent_factory, confidence_threshold: float = 0.8,
                  max_agents: int = 25, token_budget_limit: int = 10000):
         """
         Initialize dynamic spawning system.
