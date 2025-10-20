@@ -10,10 +10,6 @@ Mathematical Foundation:
 - Tapering function R(t) = R_bottom * (R_top/R_bottom)^t
 - Angular function θ(t) = 2πnt where n is number of turns
 
-For complete mathematical specification, see:
-- docs/mathematical_model.md: Formal parametric equations and geometric properties
-- docs/hypothesis_mathematics.md: Statistical formulations for research hypotheses
-
 """
 
 import math

@@ -12,29 +12,38 @@ except ImportError as e:
     task_memory = None
 
 class MemoryFrame(ttk.Frame):
-    def __init__(self, parent, thread_manager, db_helper):
+    def __init__(self, parent, thread_manager, db_helper, theme_manager=None):
         super().__init__(parent)
         self.thread_manager = thread_manager
         self.db_helper = db_helper
+        self.theme_manager = theme_manager
 
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill=tk.BOTH, expand=True)
 
         # Memory tab
-        memory_frame = MemorySubFrame(self.notebook, self.thread_manager, self.db_helper, 'felix_memory.db', 'tasks')
-        self.notebook.add(memory_frame, text="Memory")
+        self.memory_subframe = MemorySubFrame(self.notebook, self.thread_manager, self.db_helper, 'felix_memory.db', 'tasks', theme_manager=self.theme_manager)
+        self.notebook.add(self.memory_subframe, text="Memory")
 
         # Knowledge tab
-        knowledge_frame = MemorySubFrame(self.notebook, self.thread_manager, self.db_helper, 'felix_knowledge.db', 'knowledge')
-        self.notebook.add(knowledge_frame, text="Knowledge")
+        self.knowledge_subframe = MemorySubFrame(self.notebook, self.thread_manager, self.db_helper, 'felix_knowledge.db', 'knowledge', theme_manager=self.theme_manager)
+        self.notebook.add(self.knowledge_subframe, text="Knowledge")
+
+    def apply_theme(self):
+        """Apply current theme to memory frame widgets."""
+        if hasattr(self.memory_subframe, 'apply_theme'):
+            self.memory_subframe.apply_theme()
+        if hasattr(self.knowledge_subframe, 'apply_theme'):
+            self.knowledge_subframe.apply_theme()
 
 class MemorySubFrame(ttk.Frame):
-    def __init__(self, parent, thread_manager, db_helper, db_name, table_name):
+    def __init__(self, parent, thread_manager, db_helper, db_name, table_name, theme_manager=None):
         super().__init__(parent)
         self.thread_manager = thread_manager
         self.db_helper = db_helper
         self.db_name = db_name
         self.table_name = table_name
+        self.theme_manager = theme_manager
         self.entries = []  # list of (id, content)
 
         # Listbox with scrollbar
@@ -77,6 +86,9 @@ class MemorySubFrame(ttk.Frame):
         self.grid_rowconfigure(3, weight=1)
         self.grid_columnconfigure(0, weight=1)
         self.grid_columnconfigure(1, weight=1)
+
+        # Apply initial theme
+        self.apply_theme()
 
         # Load initial entries
         self.load_entries()
@@ -314,3 +326,18 @@ class MemorySubFrame(ttk.Frame):
             error_msg = str(e)
             self.after(0, lambda: messagebox.showerror("Error",
                 f"Failed to delete: {error_msg}"))
+
+    def apply_theme(self):
+        """Apply current theme to memory sub-frame widgets."""
+        if self.theme_manager:
+            # Apply theme to listbox - note: Listbox doesn't inherit from Text
+            # so we need to configure it directly
+            theme = self.theme_manager.get_current_theme()
+            self.listbox.configure(
+                bg=theme["text_bg"],
+                fg=theme["text_fg"],
+                selectbackground=theme["text_select_bg"],
+                selectforeground=theme["text_select_fg"]
+            )
+            # Apply theme to view text widget
+            self.theme_manager.apply_to_text_widget(self.view_text)
