@@ -12,29 +12,38 @@ except ImportError as e:
     task_memory = None
 
 class MemoryFrame(ttk.Frame):
-    def __init__(self, parent, thread_manager, db_helper):
+    def __init__(self, parent, thread_manager, db_helper, theme_manager=None):
         super().__init__(parent)
         self.thread_manager = thread_manager
         self.db_helper = db_helper
+        self.theme_manager = theme_manager
 
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill=tk.BOTH, expand=True)
 
         # Memory tab
-        memory_frame = MemorySubFrame(self.notebook, self.thread_manager, self.db_helper, 'felix_memory.db', 'tasks')
-        self.notebook.add(memory_frame, text="Memory")
+        self.memory_subframe = MemorySubFrame(self.notebook, self.thread_manager, self.db_helper, 'felix_memory.db', 'tasks', theme_manager=self.theme_manager)
+        self.notebook.add(self.memory_subframe, text="Memory")
 
         # Knowledge tab
-        knowledge_frame = MemorySubFrame(self.notebook, self.thread_manager, self.db_helper, 'felix_knowledge.db', 'knowledge')
-        self.notebook.add(knowledge_frame, text="Knowledge")
+        self.knowledge_subframe = MemorySubFrame(self.notebook, self.thread_manager, self.db_helper, 'felix_knowledge.db', 'knowledge', theme_manager=self.theme_manager)
+        self.notebook.add(self.knowledge_subframe, text="Knowledge")
+
+    def apply_theme(self):
+        """Apply current theme to memory frame widgets."""
+        if hasattr(self.memory_subframe, 'apply_theme'):
+            self.memory_subframe.apply_theme()
+        if hasattr(self.knowledge_subframe, 'apply_theme'):
+            self.knowledge_subframe.apply_theme()
 
 class MemorySubFrame(ttk.Frame):
-    def __init__(self, parent, thread_manager, db_helper, db_name, table_name):
+    def __init__(self, parent, thread_manager, db_helper, db_name, table_name, theme_manager=None):
         super().__init__(parent)
         self.thread_manager = thread_manager
         self.db_helper = db_helper
         self.db_name = db_name
         self.table_name = table_name
+        self.theme_manager = theme_manager
         self.entries = []  # list of (id, content)
 
         # Listbox with scrollbar
@@ -78,11 +87,18 @@ class MemorySubFrame(ttk.Frame):
         self.grid_columnconfigure(0, weight=1)
         self.grid_columnconfigure(1, weight=1)
 
+        # Apply initial theme
+        self.apply_theme()
+
         # Load initial entries
         self.load_entries()
 
     def load_entries(self):
         self.thread_manager.start_thread(self._load_entries_thread)
+
+    def refresh_entries(self):
+        """Manually refresh the entries list after workflow completes."""
+        self.load_entries()
 
     def _load_entries_thread(self):
         try:
@@ -109,8 +125,8 @@ class MemorySubFrame(ttk.Frame):
                     full_content = json.dumps({
                         "keywords": p.keywords,
                         "task_type": p.task_type,
-                        "success_count": p.success_count,
-                        "avg_duration": p.avg_duration
+                        "success_rate": p.success_rate,
+                        "typical_duration": p.typical_duration
                     })
                     display = f"{p.task_type}: {keywords_str}"
                     self.entries.append((p.pattern_id, full_content, display))
@@ -174,8 +190,8 @@ class MemorySubFrame(ttk.Frame):
                     full_content = json.dumps({
                         "keywords": p.keywords,
                         "task_type": p.task_type,
-                        "success_count": p.success_count,
-                        "avg_duration": p.avg_duration
+                        "success_rate": p.success_rate,
+                        "typical_duration": p.typical_duration
                     })
                     display = f"{p.task_type}: {keywords_str}"
                     self.entries.append((p.pattern_id, full_content, display))
@@ -254,28 +270,74 @@ class MemorySubFrame(ttk.Frame):
 
     def _delete_thread(self, id_):
         try:
-            if self.table_name == 'knowledge' and knowledge_store:
-                ks = knowledge_store.KnowledgeStore(self.db_name)
-                # KnowledgeStore doesn't have direct delete, use SQL
-                import sqlite3
-                conn = sqlite3.connect(self.db_name)
-                conn.execute("DELETE FROM knowledge WHERE knowledge_id = ?", (id_,))
-                conn.commit()
-                conn.close()
-                self.after(0, lambda: messagebox.showinfo("Success", "Knowledge entry deleted."))
-            elif self.table_name == 'tasks' and task_memory:
-                # TaskMemory doesn't have direct delete, use SQL
-                import sqlite3
-                conn = sqlite3.connect(self.db_name)
-                conn.execute("DELETE FROM task_patterns WHERE pattern_id = ?", (id_,))
-                conn.commit()
-                conn.close()
-                self.after(0, lambda: messagebox.showinfo("Success", "Task pattern deleted."))
-            else:
-                self.after(0, lambda: messagebox.showerror("Error", "Memory modules not available"))
+            # Use SQL for deletion since memory APIs don't provide delete methods
+            # But validate table structure first
+            import sqlite3
+            conn = sqlite3.connect(self.db_name)
+            cursor = conn.cursor()
 
+            # Validate table exists
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                          (self.table_name,))
+            if not cursor.fetchone():
+                self.after(0, lambda: messagebox.showerror("Error",
+                    f"Table '{self.table_name}' not found in database"))
+                conn.close()
+                return
+
+            # Determine correct column name and delete
+            if self.table_name == 'knowledge':
+                cursor.execute("DELETE FROM knowledge WHERE knowledge_id = ?", (id_,))
+                success_msg = "Knowledge entry deleted."
+            elif self.table_name == 'tasks':
+                # Check if table is 'tasks' or 'task_patterns'
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='task_patterns'")
+                if cursor.fetchone():
+                    cursor.execute("DELETE FROM task_patterns WHERE pattern_id = ?", (id_,))
+                else:
+                    cursor.execute("DELETE FROM tasks WHERE task_id = ?", (id_,))
+                success_msg = "Task entry deleted."
+            else:
+                self.after(0, lambda: messagebox.showerror("Error",
+                    f"Unknown table type: {self.table_name}"))
+                conn.close()
+                return
+
+            # Check if anything was deleted
+            if cursor.rowcount == 0:
+                self.after(0, lambda: messagebox.showwarning("Warning",
+                    "No entry found with that ID. It may have already been deleted."))
+            else:
+                self.after(0, lambda: messagebox.showinfo("Success", success_msg))
+
+            conn.commit()
+            conn.close()
+
+            # Reload entries
             self.after(0, self.load_entries)
+
+        except sqlite3.Error as e:
+            logger.error(f"SQLite error deleting entry: {e}", exc_info=True)
+            error_msg = str(e)
+            self.after(0, lambda: messagebox.showerror("Database Error",
+                f"Failed to delete entry: {error_msg}"))
         except Exception as e:
             logger.error(f"Error deleting: {e}", exc_info=True)
             error_msg = str(e)
-            self.after(0, lambda: messagebox.showerror("Error", f"Failed to delete: {error_msg}"))
+            self.after(0, lambda: messagebox.showerror("Error",
+                f"Failed to delete: {error_msg}"))
+
+    def apply_theme(self):
+        """Apply current theme to memory sub-frame widgets."""
+        if self.theme_manager:
+            # Apply theme to listbox - note: Listbox doesn't inherit from Text
+            # so we need to configure it directly
+            theme = self.theme_manager.get_current_theme()
+            self.listbox.configure(
+                bg=theme["text_bg"],
+                fg=theme["text_fg"],
+                selectbackground=theme["text_select_bg"],
+                selectforeground=theme["text_select_fg"]
+            )
+            # Apply theme to view text widget
+            self.theme_manager.apply_to_text_widget(self.view_text)

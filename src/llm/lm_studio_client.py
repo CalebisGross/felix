@@ -130,8 +130,7 @@ class LMStudioClient:
             True if connection successful, False otherwise
         """
         try:
-            response = httpx.get(f"{self.base_url.rstrip('/v1')}/health", 
-                               timeout=5.0)
+            response = httpx.get(f"{self.base_url}/models", timeout=5.0)
             self._connection_verified = response.status_code == 200
             return self._connection_verified
         except Exception as e:

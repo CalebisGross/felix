@@ -12,25 +12,20 @@ except ImportError as e:
     lm_studio_client = None
 
 class DashboardFrame(ttk.Frame):
-    def __init__(self, parent, thread_manager, main_app=None):
+    def __init__(self, parent, thread_manager, main_app=None, theme_manager=None):
         super().__init__(parent)
         self.thread_manager = thread_manager
         self.main_app = main_app
+        self.theme_manager = theme_manager
         self.system_running = False
-        self.lm_host = "127.0.0.1"
-        self.lm_port = "1234"
 
-        # LM Studio config
-        config_frame = ttk.Frame(self)
-        config_frame.pack(pady=5)
-        ttk.Label(config_frame, text="LM Studio Host:").grid(row=0, column=0, padx=5)
-        self.host_entry = ttk.Entry(config_frame, width=15)
-        self.host_entry.insert(0, self.lm_host)
-        self.host_entry.grid(row=0, column=1, padx=5)
-        ttk.Label(config_frame, text="Port:").grid(row=0, column=2, padx=5)
-        self.port_entry = ttk.Entry(config_frame, width=6)
-        self.port_entry.insert(0, self.lm_port)
-        self.port_entry.grid(row=0, column=3, padx=5)
+        # Info label
+        info_frame = ttk.Frame(self)
+        info_frame.pack(pady=10)
+        ttk.Label(info_frame, text="Felix Framework Dashboard",
+                 font=("TkDefaultFont", 12, "bold")).pack()
+        ttk.Label(info_frame, text="Configure LM Studio connection in the Settings tab",
+                 foreground="gray").pack()
 
         # Start/Stop buttons
         self.start_button = ttk.Button(self, text="Start Felix", command=self.start_system)
@@ -42,6 +37,9 @@ class DashboardFrame(ttk.Frame):
         # Log display
         self.log_text = scrolledtext.ScrolledText(self, wrap=tk.WORD, height=20)
         self.log_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Apply initial theme
+        self.apply_theme()
 
         # Poll log queue
         self.poll_log_queue()
@@ -62,12 +60,26 @@ class DashboardFrame(ttk.Frame):
             # Use main app's start_system method
             if self.main_app:
                 self.main_app.start_system()
-                # Update local state after a short delay to allow main app to process
-                self.after(500, self._update_local_state)
+                # Poll for system readiness instead of fixed delay
+                self._poll_system_ready(max_attempts=20, poll_interval=250)
             else:
                 logger.error("Cannot start system: main_app not available")
                 self.after(0, lambda: tk.messagebox.showerror("Error", "Main application reference not available"))
                 self.start_button.config(state=tk.NORMAL)
+
+    def _poll_system_ready(self, max_attempts=20, poll_interval=250, attempt=0):
+        """Poll for system ready state instead of using fixed delay."""
+        if attempt >= max_attempts:
+            logger.warning("System startup polling timed out")
+            self.start_button.config(state=tk.NORMAL)
+            return
+
+        if self.main_app and self.main_app.system_running and self.main_app.felix_system:
+            # System is ready
+            self._update_local_state()
+        else:
+            # Keep polling
+            self.after(poll_interval, lambda: self._poll_system_ready(max_attempts, poll_interval, attempt + 1))
 
     def _update_local_state(self):
         """Update local dashboard state based on main app state."""
@@ -108,9 +120,28 @@ class DashboardFrame(ttk.Frame):
             # Use main app's stop_system method
             if self.main_app:
                 self.main_app.stop_system()
-                # Update local state after a short delay
-                self.after(500, self._update_local_state)
+                # Poll for system stopped state
+                self._poll_system_stopped(max_attempts=20, poll_interval=250)
             else:
                 logger.error("Cannot stop system: main_app not available")
                 self.after(0, lambda: tk.messagebox.showerror("Error", "Main application reference not available"))
                 self.stop_button.config(state=tk.NORMAL)
+
+    def _poll_system_stopped(self, max_attempts=20, poll_interval=250, attempt=0):
+        """Poll for system stopped state."""
+        if attempt >= max_attempts:
+            logger.warning("System shutdown polling timed out")
+            self.stop_button.config(state=tk.NORMAL)
+            return
+
+        if self.main_app and not self.main_app.system_running:
+            # System is stopped
+            self._update_local_state()
+        else:
+            # Keep polling
+            self.after(poll_interval, lambda: self._poll_system_stopped(max_attempts, poll_interval, attempt + 1))
+
+    def apply_theme(self):
+        """Apply current theme to the dashboard widgets."""
+        if self.theme_manager:
+            self.theme_manager.apply_to_text_widget(self.log_text)

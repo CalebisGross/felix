@@ -20,6 +20,7 @@ from src.memory.knowledge_store import KnowledgeStore
 from src.memory.task_memory import TaskMemory
 from src.memory.context_compression import ContextCompressor, CompressionConfig, CompressionStrategy, CompressionLevel
 from src.agents import ResearchAgent, AnalysisAgent, SynthesisAgent, CriticAgent, PromptOptimizer
+from src.agents.agent import AgentState
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,7 @@ class FelixConfig:
     helix_turns: float = 2.0
 
     # System limits
-    max_agents: int = 15
+    max_agents: int = 25  # Increased from 15 to allow sufficient agents for collaboration
     base_token_budget: int = 2500
 
     # Memory
@@ -64,6 +65,7 @@ class AgentManager:
 
     def __init__(self):
         self.agents: Dict[str, Any] = {}  # agent_id -> agent instance
+        self.agent_outputs: Dict[str, Dict[str, Any]] = {}  # agent_id -> output data
         self._agent_counter = 0
 
     def register_agent(self, agent) -> None:
@@ -96,6 +98,36 @@ class AgentManager:
         agent_id = f"{agent_type}_{self._agent_counter:03d}"
         self._agent_counter += 1
         return agent_id
+
+    def store_agent_output(self, agent_id: str, result) -> None:
+        """
+        Store comprehensive agent output including prompts and metrics for display in GUI.
+
+        Args:
+            agent_id: Agent identifier
+            result: LLMResult object containing all processing data
+        """
+        self.agent_outputs[agent_id] = {
+            "output": result.content,
+            "confidence": result.confidence,
+            "timestamp": result.timestamp,
+            "system_prompt": result.system_prompt,
+            "user_prompt": result.user_prompt,
+            "temperature": result.temperature_used,
+            "tokens_used": result.llm_response.tokens_used if result.llm_response else 0,
+            "token_budget": result.token_budget_allocated,
+            "processing_time": result.processing_time,
+            "position_info": result.position_info,
+            "collaborative_count": result.collaborative_context_count,
+            "model": result.llm_response.model if result.llm_response else "unknown",
+            "processing_stage": result.processing_stage
+        }
+        logger.debug(f"Stored output for agent {agent_id} (confidence: {result.confidence:.2f}, "
+                    f"tokens: {result.llm_response.tokens_used if result.llm_response else 0}/{result.token_budget_allocated})")
+
+    def get_agent_output(self, agent_id: str) -> Optional[Dict[str, Any]]:
+        """Get stored output for an agent."""
+        return self.agent_outputs.get(agent_id)
 
 
 class FelixSystem:
@@ -396,7 +428,7 @@ class FelixSystem:
             )
 
             # Spawn agent if not already spawned
-            if agent.state == "waiting":
+            if agent.state == AgentState.WAITING:
                 agent.spawn(self._current_time, task)
 
             # Process task
@@ -535,5 +567,50 @@ class FelixSystem:
 
         # Update all active agents
         for agent in self.agent_manager.get_all_agents():
-            if agent.state == "active":
+            if agent.state == AgentState.ACTIVE:
                 agent.update_position(self._current_time)
+
+    def run_workflow(self, task_input: str, progress_callback=None) -> Dict[str, Any]:
+        """
+        Run a workflow through the Felix system.
+
+        This method properly integrates workflows with the Felix system:
+        - Uses CentralPost for O(N) hub-spoke communication
+        - Uses AgentFactory for intelligent agent spawning
+        - Uses shared LLM client across all operations
+        - Uses memory systems for persistent knowledge
+        - Enables dynamic spawning based on confidence monitoring
+        - Agents spawned are visible in the Agents tab
+
+        Args:
+            task_input: Task description to process
+            progress_callback: Optional callback(status, progress_percentage)
+
+        Returns:
+            Dictionary with workflow results
+        """
+        if not self.running:
+            return {
+                "status": "failed",
+                "error": "Felix system not running"
+            }
+
+        try:
+            # Use proper Felix workflow implementation
+            from src.workflows.felix_workflow import run_felix_workflow
+
+            logger.info("Running workflow through Felix framework")
+
+            # Run workflow using Felix system components
+            result = run_felix_workflow(self, task_input, progress_callback)
+
+            logger.info(f"Workflow completed: {result.get('status')}")
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Error running workflow: {e}", exc_info=True)
+            return {
+                "status": "failed",
+                "error": str(e)
+            }

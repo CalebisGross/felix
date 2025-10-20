@@ -15,11 +15,6 @@ Key Features:
 - Performance metrics collection (throughput, latency, overhead ratios)
 - Scalability up to 133 agents (matching OpenSCAD model parameters)
 
-Mathematical references:
-- docs/architecture/core/mathematical_model.md, Section 5: Spoke geometry and communication complexity
-- docs/architecture/core/hypothesis_mathematics.md, Section H2: Communication overhead analysis and proofs
-- Theoretical proof of O(N) vs O(N²) scaling advantage in hypothesis documentation
-
 Implementation supports rigorous testing of Hypothesis H2 communication efficiency claims.
 """
 
@@ -78,7 +73,7 @@ class CentralPost:
     processing messages from agents and coordinating task assignments.
     """
     
-    def __init__(self, max_agents: int = 133, enable_metrics: bool = False,
+    def __init__(self, max_agents: int = 25, enable_metrics: bool = False,
                  enable_memory: bool = True, memory_db_path: str = "felix_memory.db"):
         """
         Initialize central post with configuration parameters.
@@ -114,8 +109,9 @@ class CentralPost:
         # Memory systems (Priority 5: Memory and Context Persistence)
         self._memory_enabled = enable_memory
         if enable_memory:
-            self.knowledge_store = KnowledgeStore(memory_db_path)
-            self.task_memory = TaskMemory(memory_db_path)
+            # Use separate database files to match GUI expectations
+            self.knowledge_store = KnowledgeStore("felix_knowledge.db")  # GUI reads from this
+            self.task_memory = TaskMemory(memory_db_path)  # Uses felix_memory.db or felix_task_memory.db
             self.context_compressor = ContextCompressor()
         else:
             self.knowledge_store = None
@@ -406,7 +402,56 @@ class CentralPost:
         """Handle error report from agent asynchronously."""
         # Async error handling logic
         pass
-    
+
+    def get_recent_messages(self,
+                           limit: int = 10,
+                           since_time: Optional[float] = None,
+                           message_types: Optional[List[MessageType]] = None,
+                           exclude_sender: Optional[str] = None) -> List[Message]:
+        """
+        Retrieve recent messages from central post for agent collaboration.
+
+        This enables agents to read accumulated messages from previous agents,
+        supporting the O(N) hub-spoke communication architecture where agents
+        retrieve context through the central hub rather than peer-to-peer.
+
+        Args:
+            limit: Maximum number of messages to retrieve (default: 10)
+            since_time: Only return messages after this timestamp (Unix time)
+            message_types: Filter by specific message types (e.g., [MessageType.TASK_COMPLETE])
+            exclude_sender: Exclude messages from specific agent_id
+
+        Returns:
+            List of messages (newest first), limited by 'limit' parameter
+
+        Example:
+            >>> # Get last 5 task completion messages
+            >>> messages = central_post.get_recent_messages(
+            ...     limit=5,
+            ...     message_types=[MessageType.TASK_COMPLETE]
+            ... )
+            >>> for msg in messages:
+            ...     print(f"{msg.sender_id}: {msg.content.get('content')}")
+        """
+        filtered_messages = self._processed_messages.copy()
+
+        # Filter by timestamp if specified
+        if since_time is not None:
+            filtered_messages = [msg for msg in filtered_messages if msg.timestamp >= since_time]
+
+        # Filter by message types if specified
+        if message_types is not None:
+            filtered_messages = [msg for msg in filtered_messages if msg.message_type in message_types]
+
+        # Exclude specific sender if specified
+        if exclude_sender is not None:
+            filtered_messages = [msg for msg in filtered_messages if msg.sender_id != exclude_sender]
+
+        # Sort by timestamp (newest first) and limit
+        filtered_messages.sort(key=lambda m: m.timestamp, reverse=True)
+
+        return filtered_messages[:limit]
+
     # Performance metrics methods (for Hypothesis H2)
     
     def get_current_time(self) -> float:
@@ -831,7 +876,7 @@ class AgentFactory:
     def __init__(self, helix: "HelixGeometry", llm_client: "LMStudioClient",
                  token_budget_manager: Optional["TokenBudgetManager"] = None,
                  random_seed: Optional[int] = None, enable_dynamic_spawning: bool = True,
-                 max_agents: int = 15, token_budget_limit: int = 10000):
+                 max_agents: int = 25, token_budget_limit: int = 10000):
         """
         Initialize the agent factory.
         
@@ -857,7 +902,7 @@ class AgentFactory:
             from src.agents.dynamic_spawning import DynamicSpawning
             self.dynamic_spawner = DynamicSpawning(
                 agent_factory=self,
-                confidence_threshold=0.7,
+                confidence_threshold=0.8,
                 max_agents=max_agents,
                 token_budget_limit=token_budget_limit
             )
@@ -883,7 +928,7 @@ class AgentFactory:
             llm_client=self.llm_client,
             research_domain=domain,
             token_budget_manager=self.token_budget_manager,
-            max_tokens=800
+            max_tokens=1200
         )
     
     def create_analysis_agent(self, analysis_type: str = "general",
@@ -902,7 +947,7 @@ class AgentFactory:
             llm_client=self.llm_client,
             analysis_type=analysis_type,
             token_budget_manager=self.token_budget_manager,
-            max_tokens=800
+            max_tokens=1200
         )
     
     def create_critic_agent(self, review_focus: str = "general",
@@ -921,7 +966,7 @@ class AgentFactory:
             llm_client=self.llm_client,
             review_focus=review_focus,
             token_budget_manager=self.token_budget_manager,
-            max_tokens=800
+            max_tokens=1200
         )
     
     def create_synthesis_agent(self, output_format: str = "general",

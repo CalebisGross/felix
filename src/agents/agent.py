@@ -16,17 +16,12 @@ Key Features:
 - State machine for lifecycle management (WAITING → ACTIVE → COMPLETED)
 - Task assignment and processing with performance measurement
 
-Mathematical references:
-- docs/architecture/core/mathematical_model.md, Section 4: Agent distribution functions and density evolution
-- docs/architecture/core/hypothesis_mathematics.md, Section H1: Workload distribution statistical analysis
-- docs/architecture/core/hypothesis_mathematics.md, Section H3: Attention focusing mechanism and agent density
-
 Implementation supports testing of Hypotheses H1 (task distribution) and H3 (attention focusing).
 """
 
 import random
 from enum import Enum
-from typing import Optional, List, Tuple, Any
+from typing import Optional, List, Tuple, Any, Dict
 from src.core.helix_geometry import HelixGeometry
 
 
@@ -62,7 +57,7 @@ class Agent:
             ValueError: If parameters are invalid
         """
         self._validate_initialization(agent_id, spawn_time)
-        
+
         self.agent_id = agent_id
         self.spawn_time = spawn_time
         self.helix = helix
@@ -71,7 +66,11 @@ class Agent:
         self.current_position: Optional[Tuple[float, float, float]] = None
         self._progress: float = 0.0
         self._spawn_timestamp: Optional[float] = None
-        
+
+        # GUI compatibility properties - can be overridden by subclasses
+        self.agent_type: str = "generic"  # Default type, overridden by LLMAgent
+        self.confidence: float = 0.0  # Current confidence level
+
         # Non-linear progression mechanics
         self._velocity: float = velocity if velocity is not None else random.uniform(0.7, 1.3)  # Base velocity multiplier
         self._pause_until: Optional[float] = None  # Pause agent until this time
@@ -223,6 +222,7 @@ class Agent:
     
     def record_confidence(self, confidence: float) -> None:
         """Record confidence score for adaptive progression."""
+        self.confidence = confidence  # Update current confidence
         self._confidence_history.append(confidence)
         # Keep only recent history to prevent memory bloat
         if len(self._confidence_history) > 10:

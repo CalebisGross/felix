@@ -58,7 +58,7 @@ Felix uses YAML configuration files for parameterization. Load configuration usi
 | HelixGeometry | bottom_radius | 0.5 | Radius at bottom for focused precision (H3) |
 | HelixGeometry | height | 8.0 | Total progression depth |
 | HelixGeometry | turns | 2 | Number of helical spirals for complexity |
-| Agent Spawning | confidence_threshold | 0.75 | Trigger for dynamic spawning |
+| Agent Spawning | confidence_threshold | 0.80 | Trigger for dynamic spawning |
 | Agent Spawning | max_agents | 10 | Maximum team size |
 | Agent Spawning | spawn_time_ranges | Research: [0.0, 0.25], Analysis: [0.2, 0.6], Synthesis: [0.6, 0.9], Critic: [0.4, 0.7] | Normalized time ranges for agent types |
 | LLM | temperature_range | Research: [0.5, 1.0], Analysis: [0.3, 0.7], Synthesis: [0.2, 0.4], Critic: [0.2, 0.5] | Creativity vs focus gradient |
@@ -80,7 +80,7 @@ helix:
   turns: 2
 
 spawning:
-  confidence_threshold: 0.75
+  confidence_threshold: 0.80
   max_agents: 10
   spawn_ranges:
     research: [0.0, 0.25]

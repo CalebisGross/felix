@@ -87,7 +87,7 @@ OPTIMAL_CONFIG = {
         "turns": 2
     },
     "spawning": {
-        "confidence_threshold": 0.75,
+        "confidence_threshold": 0.80,
         "max_agents": 10,  # Base, scale to 50 for large scenarios
         "spawn_time_ranges": {
             "research": [0.0, 0.25],
