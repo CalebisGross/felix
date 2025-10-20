@@ -113,8 +113,8 @@ class MemorySubFrame(ttk.Frame):
                     full_content = json.dumps({
                         "keywords": p.keywords,
                         "task_type": p.task_type,
-                        "success_count": p.success_count,
-                        "avg_duration": p.avg_duration
+                        "success_rate": p.success_rate,
+                        "typical_duration": p.typical_duration
                     })
                     display = f"{p.task_type}: {keywords_str}"
                     self.entries.append((p.pattern_id, full_content, display))
@@ -178,8 +178,8 @@ class MemorySubFrame(ttk.Frame):
                     full_content = json.dumps({
                         "keywords": p.keywords,
                         "task_type": p.task_type,
-                        "success_count": p.success_count,
-                        "avg_duration": p.avg_duration
+                        "success_rate": p.success_rate,
+                        "typical_duration": p.typical_duration
                     })
                     display = f"{p.task_type}: {keywords_str}"
                     self.entries.append((p.pattern_id, full_content, display))

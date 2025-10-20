@@ -16,11 +16,6 @@ Key Features:
 - State machine for lifecycle management (WAITING → ACTIVE → COMPLETED)
 - Task assignment and processing with performance measurement
 
-Mathematical references:
-- docs/architecture/core/mathematical_model.md, Section 4: Agent distribution functions and density evolution
-- docs/architecture/core/hypothesis_mathematics.md, Section H1: Workload distribution statistical analysis
-- docs/architecture/core/hypothesis_mathematics.md, Section H3: Attention focusing mechanism and agent density
-
 Implementation supports testing of Hypotheses H1 (task distribution) and H3 (attention focusing).
 """
 

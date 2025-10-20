@@ -65,6 +65,7 @@ class AgentManager:
 
     def __init__(self):
         self.agents: Dict[str, Any] = {}  # agent_id -> agent instance
+        self.agent_outputs: Dict[str, Dict[str, Any]] = {}  # agent_id -> output data
         self._agent_counter = 0
 
     def register_agent(self, agent) -> None:
@@ -97,6 +98,36 @@ class AgentManager:
         agent_id = f"{agent_type}_{self._agent_counter:03d}"
         self._agent_counter += 1
         return agent_id
+
+    def store_agent_output(self, agent_id: str, result) -> None:
+        """
+        Store comprehensive agent output including prompts and metrics for display in GUI.
+
+        Args:
+            agent_id: Agent identifier
+            result: LLMResult object containing all processing data
+        """
+        self.agent_outputs[agent_id] = {
+            "output": result.content,
+            "confidence": result.confidence,
+            "timestamp": result.timestamp,
+            "system_prompt": result.system_prompt,
+            "user_prompt": result.user_prompt,
+            "temperature": result.temperature_used,
+            "tokens_used": result.llm_response.tokens_used if result.llm_response else 0,
+            "token_budget": result.token_budget_allocated,
+            "processing_time": result.processing_time,
+            "position_info": result.position_info,
+            "collaborative_count": result.collaborative_context_count,
+            "model": result.llm_response.model if result.llm_response else "unknown",
+            "processing_stage": result.processing_stage
+        }
+        logger.debug(f"Stored output for agent {agent_id} (confidence: {result.confidence:.2f}, "
+                    f"tokens: {result.llm_response.tokens_used if result.llm_response else 0}/{result.token_budget_allocated})")
+
+    def get_agent_output(self, agent_id: str) -> Optional[Dict[str, Any]]:
+        """Get stored output for an agent."""
+        return self.agent_outputs.get(agent_id)
 
 
 class FelixSystem:

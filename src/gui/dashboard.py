@@ -17,20 +17,14 @@ class DashboardFrame(ttk.Frame):
         self.thread_manager = thread_manager
         self.main_app = main_app
         self.system_running = False
-        self.lm_host = "127.0.0.1"
-        self.lm_port = "1234"
 
-        # LM Studio config
-        config_frame = ttk.Frame(self)
-        config_frame.pack(pady=5)
-        ttk.Label(config_frame, text="LM Studio Host:").grid(row=0, column=0, padx=5)
-        self.host_entry = ttk.Entry(config_frame, width=15)
-        self.host_entry.insert(0, self.lm_host)
-        self.host_entry.grid(row=0, column=1, padx=5)
-        ttk.Label(config_frame, text="Port:").grid(row=0, column=2, padx=5)
-        self.port_entry = ttk.Entry(config_frame, width=6)
-        self.port_entry.insert(0, self.lm_port)
-        self.port_entry.grid(row=0, column=3, padx=5)
+        # Info label
+        info_frame = ttk.Frame(self)
+        info_frame.pack(pady=10)
+        ttk.Label(info_frame, text="Felix Framework Dashboard",
+                 font=("TkDefaultFont", 12, "bold")).pack()
+        ttk.Label(info_frame, text="Configure LM Studio connection in the Settings tab",
+                 foreground="gray").pack()
 
         # Start/Stop buttons
         self.start_button = ttk.Button(self, text="Start Felix", command=self.start_system)

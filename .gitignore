@@ -30,6 +30,13 @@ wheels/
 *.db-journal
 *.log
 
+# User-specific configuration
+felix_gui_config.json
+
+# Results and outputs
+results/
+*_workflow_results_*.txt
+
 # IDE
 .vscode/
 .idea/

@@ -1,10 +1,13 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
+import json
+import os
 from .utils import ThreadManager, DBHelper, logger
 from .dashboard import DashboardFrame
 from .workflows import WorkflowsFrame
 from .memory import MemoryFrame
 from .agents import AgentsFrame
+from .settings import SettingsFrame
 from .felix_system import FelixSystem, FelixConfig
 
 class MainApp(tk.Tk):
@@ -17,9 +20,13 @@ class MainApp(tk.Tk):
         self.felix_system = None
         self.system_running = False
 
-        # Legacy compatibility properties
-        self.lm_host = '127.0.0.1'
-        self.lm_port = 1234
+        # Configuration file
+        self.config_file = "felix_gui_config.json"
+        self.app_config = self._load_config()
+
+        # LM connection settings (loaded from config)
+        self.lm_host = self.app_config.get('lm_host', '127.0.0.1')
+        self.lm_port = self.app_config.get('lm_port', 1234)
 
         # Menu bar
         menubar = tk.Menu(self)
@@ -59,6 +66,10 @@ class MainApp(tk.Tk):
         agents_frame = AgentsFrame(self.notebook, self.thread_manager, main_app=self)
         self.notebook.add(agents_frame, text="Agents")
 
+        # Settings tab
+        self.settings_frame = SettingsFrame(self.notebook, self.thread_manager, main_app=self)
+        self.notebook.add(self.settings_frame, text="Settings")
+
         # Status bar
         self.status_var = tk.StringVar()
         self.status_var.set("Ready")
@@ -68,6 +79,21 @@ class MainApp(tk.Tk):
     def show_about(self):
         messagebox.showinfo("About", "Felix GUI - Version 1.0")
 
+    def _load_config(self):
+        """Load configuration from file."""
+        try:
+            if os.path.exists(self.config_file):
+                with open(self.config_file, 'r') as f:
+                    config = json.load(f)
+                logger.info(f"Configuration loaded from {self.config_file}")
+                return config
+            else:
+                logger.info("No config file found, using defaults")
+                return {}
+        except Exception as e:
+            logger.error(f"Failed to load config: {e}")
+            return {}
+
     def start_system(self):
         """Start the Felix system with full integration."""
         if not self.system_running:
@@ -76,14 +102,32 @@ class MainApp(tk.Tk):
     def _start_system_thread(self):
         """Thread function to start system components."""
         try:
-            # Create Felix configuration
+            # Reload config from settings
+            self.app_config = self._load_config()
+            self.lm_host = self.app_config.get('lm_host', '127.0.0.1')
+            self.lm_port = self.app_config.get('lm_port', 1234)
+
+            # Create Felix configuration from saved settings
             config = FelixConfig(
                 lm_host=self.lm_host,
                 lm_port=self.lm_port,
-                max_agents=25,  # Increased from 15 to allow sufficient agents for collaboration
-                enable_metrics=True,
-                enable_memory=True,
-                enable_dynamic_spawning=True
+                helix_top_radius=self.app_config.get('helix_top_radius', 3.0),
+                helix_bottom_radius=self.app_config.get('helix_bottom_radius', 0.5),
+                helix_height=self.app_config.get('helix_height', 8.0),
+                helix_turns=self.app_config.get('helix_turns', 2.0),
+                max_agents=self.app_config.get('max_agents', 25),
+                base_token_budget=self.app_config.get('base_token_budget', 2500),
+                memory_db_path=self.app_config.get('memory_db_path', 'felix_memory.db'),
+                knowledge_db_path=self.app_config.get('knowledge_db_path', 'felix_knowledge.db'),
+                compression_target_length=self.app_config.get('compression_target_length', 100),
+                compression_ratio=self.app_config.get('compression_ratio', 0.3),
+                compression_strategy=self.app_config.get('compression_strategy', 'abstractive'),
+                enable_metrics=self.app_config.get('enable_metrics', True),
+                enable_memory=self.app_config.get('enable_memory', True),
+                enable_dynamic_spawning=self.app_config.get('enable_dynamic_spawning', True),
+                enable_compression=self.app_config.get('enable_compression', True),
+                enable_spoke_topology=self.app_config.get('enable_spoke_topology', True),
+                verbose_llm_logging=self.app_config.get('verbose_llm_logging', True)
             )
 
             # Initialize unified Felix system

@@ -907,7 +907,7 @@ class AgentFactory:
             from src.agents.dynamic_spawning import DynamicSpawning
             self.dynamic_spawner = DynamicSpawning(
                 agent_factory=self,
-                confidence_threshold=0.75,
+                confidence_threshold=0.8,
                 max_agents=max_agents,
                 token_budget_limit=token_budget_limit
             )

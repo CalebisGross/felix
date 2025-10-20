@@ -16,7 +16,7 @@ This section lists all major tunable parameters identified from the codebase, in
 | Parameter | Type | Default/Example | Description |
 |-----------|------|-----------------|-------------|
 | spawn_time_ranges | Dict[str, Tuple[float, float]] | Research: (0.0, 0.3), Analysis: (0.2, 0.7), Synthesis: (0.7, 0.95), Critic: (0.5, 0.8) | Normalized time ranges for agent types |
-| confidence_threshold | float | 0.7 | Trigger for dynamic spawning |
+| confidence_threshold | float | 0.8 | Trigger for dynamic spawning |
 | volatility_threshold | float | 0.15 | High volatility triggers stabilizing agents |
 | time_window_minutes | float | 5.0 | Window for confidence trend analysis |
 | max_agents | int | 15 (CentralPost: 10) | Maximum team size (scalability limit) |
@@ -72,9 +72,9 @@ The Felix framework's helical design supports three key hypotheses: H1 (workload
   - Trade-off: For 5-10 agents, balance wide top for H1 with moderate turns to avoid excessive computation (16GB RAM constraint).
 
 - **Agent Spawning Parameters**:
-  - Lower `confidence_threshold` (e.g., <0.7) promotes H1 (more dynamic spawning for even distribution) but harms H2 (more agents increase comm overhead) and resource use. Wider `spawn_time_ranges` (e.g., overlap Research/Analysis) aids H1 but may cause early overload.
+  - Lower `confidence_threshold` (e.g., <0.8) promotes H1 (more dynamic spawning for even distribution) but harms H2 (more agents increase comm overhead) and resource use. Wider `spawn_time_ranges` (e.g., overlap Research/Analysis) aids H1 but may cause early overload.
   - Higher `max_agents` supports H1 scalability but violates H2 (O(N) scaling in hub-spoke) and memory limits. `volatility_threshold` too low triggers unnecessary critics, wasting tokens.
-  - Trade-off: Tune for 5-10 agents to maximize collaboration without overwhelming local LLM (e.g., threshold 0.75 to spawn judiciously).
+  - Trade-off: Tune for 5-10 agents to maximize collaboration without overwhelming local LLM (e.g., threshold 0.80 to spawn judiciously).
 
 - **LLM Integration (Temperature, Tokens)**:
   - High top `temperature_range` (e.g., 0.9) boosts H1 creativity (diverse workloads) but reduces H3 consistency (scattered attention). Type-specific `max_tokens` (higher for Synthesis) aids H3 focusing but increases H2 latency.
@@ -102,7 +102,7 @@ For a general multi-agent research synthesis use case (5-10 agents, e.g., litera
 | HelixGeometry | height | 8.0 | Moderate depth for progression; balances H1 adaptation with runtime (avoids >10s latency on local LLM). |
 | HelixGeometry | turns | 2 | Fewer spirals reduce computation (H2) while providing non-linear H1/H3 benefits over linear (1 turn). |
 | Agent Spawning | spawn_time_ranges | Research: (0.0,0.25), Analysis: (0.2,0.6), Synthesis: (0.6,0.9), Critic: (0.4,0.7) | Tighter ranges for sequential H1 distribution; overlaps minimize idle time, aids H3 progression. |
-| Agent Spawning | confidence_threshold | 0.75 | Higher than default to reduce over-spawning (H2 efficiency); triggers only real gaps for H1 collaboration. |
+| Agent Spawning | confidence_threshold | 0.80 | Higher than default to reduce over-spawning (H2 efficiency); triggers only real gaps for H1 collaboration. |
 | Agent Spawning | max_agents | 10 | Caps at use case size; prevents H2 overload while allowing dynamic H1 scaling. |
 | LLMAgent | temperature_range | Research: (0.5,1.0), Analysis: (0.3,0.7), Synthesis: (0.2,0.4), Critic: (0.2,0.5) | Gradient from high (H1 creativity) to low (H3 focus); formula: 1.0 - (depth * 0.8) for adaptation. |
 | TokenBudgetManager | base_budget | 2048 | Fits local LLM context (e.g., 7B model); type multipliers ensure H1 depth without H2 exhaustion. |
@@ -138,7 +138,7 @@ helix:
   turns: 2
 
 spawning:
-  confidence_threshold: 0.75
+  confidence_threshold: 0.80
   max_agents: 10
   spawn_ranges:
     research: [0.0, 0.25]

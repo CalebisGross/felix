@@ -65,7 +65,7 @@ Agents move down the helix from exploration to synthesis, with their behavior (t
    - `Agent`: Base class for all agents
    - `LLMAgent`: Agents with LLM integration and position-aware prompting
    - `specialized_agents.py`: Role-specific agents (Research, Analysis, Synthesis, Critic)
-   - `dynamic_spawning.py`: Confidence-based agent spawning (threshold: 0.75)
+   - `dynamic_spawning.py`: Confidence-based agent spawning (threshold: 0.80)
 
 2. **Communication Hub** ([src/communication/central_post.py](src/communication/central_post.py))
    - `CentralPost`: O(N) hub-spoke message routing (vs O(N²) mesh)
@@ -105,7 +105,7 @@ helix:
   turns: 2            # Spiral complexity
 
 spawning:
-  confidence_threshold: 0.75  # Trigger for dynamic spawning
+  confidence_threshold: 0.80  # Trigger for dynamic spawning
   max_agents: 10             # Team size limit
 
 llm:

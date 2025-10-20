@@ -106,7 +106,8 @@ def run_felix_workflow(felix_system, task_input: str,
             "messages_processed": [],
             "llm_responses": [],
             "knowledge_entries": [],
-            "status": "in_progress"
+            "status": "in_progress",
+            "final_synthesis": None  # Will store the final synthesis output
         }
 
         # Track ALL processed messages for dynamic spawning (REAL messages, not mocks!)
@@ -202,6 +203,12 @@ def run_felix_workflow(felix_system, task_input: str,
 
                         logger.info(f"Agent {agent.agent_id} completed: confidence={result.confidence:.2f}")
 
+                        # Store agent output with full metrics for GUI display
+                        agent_manager.store_agent_output(
+                            agent_id=agent.agent_id,
+                            result=result
+                        )
+
                         # Share result via CentralPost
                         message = agent.share_result_to_central(result)
                         central_post.queue_message(message)
@@ -228,6 +235,18 @@ def run_felix_workflow(felix_system, task_input: str,
                             "response": result.content,  # Changed from "content_preview" to "response"
                             "time": current_time
                         })
+
+                        # Track synthesis agent outputs for final synthesis
+                        if agent.agent_type.lower() == "synthesis":
+                            # Keep the most recent or highest confidence synthesis
+                            if results["final_synthesis"] is None or result.confidence > results["final_synthesis"]["confidence"]:
+                                results["final_synthesis"] = {
+                                    "agent_id": agent.agent_id,
+                                    "content": result.content,
+                                    "confidence": result.confidence,
+                                    "time": current_time
+                                }
+                                logger.info(f"Updated final synthesis from {agent.agent_id} (confidence: {result.confidence:.2f})")
 
                         if progress_callback:
                             progress_callback(f"{agent.agent_type} agent completed", progress_pct + 5)
@@ -353,7 +372,7 @@ def run_felix_workflow(felix_system, task_input: str,
             felix_system.advance_time(time_step)
 
             # Check if we've reached confident consensus (early exit)
-            if step >= 5:  # After minimum processing time
+            if step >= 8:  # After minimum processing time (extended to ensure synthesis phase)
                 if all_processed_messages:
                     # Get recent confidence scores
                     recent_confidence = [
@@ -365,17 +384,28 @@ def run_felix_workflow(felix_system, task_input: str,
                     # Debug: Always log consensus check
                     logger.info(f"--- Consensus Check (step {step}) ---")
                     logger.info(f"  Recent confidence scores: {[f'{c:.2f}' for c in recent_confidence]}")
-                    logger.info(f"  Average: {avg_recent:.2f} (threshold: 0.70)")
+                    logger.info(f"  Average: {avg_recent:.2f} (threshold: 0.80)")
                     logger.info(f"  Team size: {len(results['agents_spawned'])} (minimum: 3)")
+                    logger.info(f"  Synthesis output: {'Yes' if results['final_synthesis'] else 'No'}")
 
-                    # Exit if high confidence + sufficient agents (aligned with spawning threshold: 0.70)
-                    if avg_recent >= 0.70 and len(results["agents_spawned"]) >= 3:
-                        logger.info(f"\n✓ Confident consensus reached!")
-                        logger.info(f"  Confidence: {avg_recent:.2f} >= threshold (0.70)")
+                    # Exit if high confidence + sufficient agents + synthesis agent has run
+                    if avg_recent >= 0.80 and len(results["agents_spawned"]) >= 3 and results["final_synthesis"] is not None:
+                        logger.info(f"\n✓ Confident consensus reached with synthesis output!")
+                        logger.info(f"  Confidence: {avg_recent:.2f} >= threshold (0.80)")
                         logger.info(f"  Team size: {len(results['agents_spawned'])} >= minimum (3)")
+                        logger.info(f"  Synthesis agent: {results['final_synthesis']['agent_id']}")
                         if progress_callback:
                             progress_callback(f"Consensus reached!", 100.0)
                         break  # Early exit - consensus achieved!
+                    elif avg_recent >= 0.80 and results["final_synthesis"] is None:
+                        logger.info(f"  ⚠ Confidence threshold met but no synthesis output yet - continuing...")
+                        # Force spawn synthesis agent if approaching consensus without one
+                        synthesis_agents = [a for a in active_agents if a.agent_type.lower() == "synthesis"]
+                        if not synthesis_agents:
+                            logger.info(f"  → Spawning synthesis agent to generate final output...")
+                            synthesis_agent = felix_system.central_post.create_synthesis_agent()
+                            active_agents.append(synthesis_agent)
+                            results["agents_spawned"].append(synthesis_agent.agent_id)
 
         # Final processing
         logger.info("\n--- Final Processing ---")
@@ -395,6 +425,22 @@ def run_felix_workflow(felix_system, task_input: str,
         results["status"] = "completed"
         results["completed_agents"] = len(results["llm_responses"])  # Agents that processed
         results["total_agents"] = len(active_agents)
+
+        # Check for synthesis agent output (required for proper final output)
+        if results["final_synthesis"] is None:
+            if results["llm_responses"]:
+                # Use highest confidence output as last resort, but log warning
+                highest_confidence_response = max(results["llm_responses"], key=lambda r: r.get("confidence", 0.0))
+                results["final_synthesis"] = {
+                    "agent_id": highest_confidence_response["agent_id"],
+                    "content": highest_confidence_response["response"],
+                    "confidence": highest_confidence_response["confidence"],
+                    "time": highest_confidence_response["time"]
+                }
+                logger.warning(f"⚠ WARNING: No synthesis agent output! Using fallback from {highest_confidence_response['agent_id']}")
+                logger.warning(f"   This indicates workflow completed before synthesis phase - consider increasing max_steps")
+            else:
+                logger.error(f"✗ ERROR: No agent outputs available for final synthesis!")
 
         logger.info("="*60)
         logger.info("FELIX WORKFLOW COMPLETED")
