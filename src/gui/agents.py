@@ -61,7 +61,7 @@ class AgentsFrame(ttk.Frame):
 
         # Set column widths
         self.tree.column("Type", width=80)
-        self.tree.column("Position", width=80)
+        self.tree.column("Position", width=100)  # Wider for "r=X.XX (YY%)"
         self.tree.column("State", width=80)
         self.tree.column("Progress", width=80)
         self.tree.column("Confidence", width=80)
@@ -145,6 +145,12 @@ class AgentsFrame(ttk.Frame):
 
         # Get agents from felix_system's agent_manager
         self.agents = self.main_app.felix_system.agent_manager.get_all_agents()
+
+    def _get_current_time(self) -> float:
+        """Get current simulation time from Felix system, or default to 0.0."""
+        if self.main_app and self.main_app.felix_system:
+            return self.main_app.felix_system._current_time
+        return 0.0
 
     def _disable_features(self):
         """Disable agent features when system is not running."""
@@ -240,13 +246,17 @@ class AgentsFrame(ttk.Frame):
                 if hasattr(state, 'value') and not isinstance(state, str):
                     state = state.value
 
-                # Try to get position info
+                # Try to get position info using actual system time
+                # Display as "r=X.XX (YY%)" showing both radius and depth
                 position_str = "N/A"
                 try:
                     if hasattr(agent, 'get_position_info'):
-                        position_info = agent.get_position_info(0.1)
+                        current_time = self._get_current_time()
+                        position_info = agent.get_position_info(current_time)
+                        radius = position_info.get("radius", 0.0)
                         depth_ratio = position_info.get("depth_ratio", 0.0)
-                        position_str = f"{depth_ratio:.2f}"
+                        # Show radius (physical position on helix) and depth percentage
+                        position_str = f"r={radius:.2f} ({depth_ratio*100:.0f}%)"
                 except Exception:
                     pass
 
@@ -334,10 +344,11 @@ class AgentsFrame(ttk.Frame):
             state = state.value
         details.append(f"State: {state}")
 
-        # Position info
+        # Position info using actual system time
         try:
             if hasattr(agent, 'get_position_info'):
-                position_info = agent.get_position_info(0.1)
+                current_time = self._get_current_time()
+                position_info = agent.get_position_info(current_time)
                 depth_ratio = position_info.get('depth_ratio', 'N/A')
                 if isinstance(depth_ratio, (int, float)):
                     details.append(f"Position: Depth {depth_ratio:.2f}")
