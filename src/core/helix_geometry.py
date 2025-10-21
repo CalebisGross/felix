@@ -57,30 +57,31 @@ class HelixGeometry:
     def get_position(self, t: float) -> Tuple[float, float, float]:
         """
         Calculate 3D position along helix path.
-        
+
         Implements the parametric helix equation:
-        r(t) = (R(t)cos(θ(t)), R(t)sin(θ(t)), Ht)
-        
+        r(t) = (R(t)cos(θ(t)), R(t)sin(θ(t)), H(1-t))
+
         Where:
-        - R(t) = R_bottom * (R_top/R_bottom)^t (exponential tapering)
+        - R(t) = R_bottom * (R_top/R_bottom)^(1-t) (exponential tapering)
         - θ(t) = 2πnt (angular progression)
-        - z(t) = Ht (linear height progression)
-        
-        
+        - z(t) = H(1-t) (inverted height: agents descend from top to bottom)
+
+
         Args:
-            t: Parameter value between 0 (bottom) and 1 (top)
-            
+            t: Parameter value between 0 (top/wide) and 1 (bottom/narrow)
+
         Returns:
             Tuple of (x, y, z) coordinates
-            
+
         Raises:
             ValueError: If t is outside [0,1] range
         """
         if not (0.0 <= t <= 1.0):
             raise ValueError("t must be between 0 and 1")
-        
-        # Calculate height (linear interpolation: t=0 is bottom, t=1 is top)
-        z = self.height * t
+
+        # Calculate height (inverted: t=0 is top/wide, t=1 is bottom/narrow)
+        # Agents start at the top (wide exploration) and descend to bottom (narrow synthesis)
+        z = self.height * (1.0 - t)
         
         # Calculate radius at this height (exponential tapering)
         radius = self.get_radius(z)

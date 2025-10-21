@@ -751,7 +751,21 @@ class DynamicSpawning:
         # Update team optimizer state
         current_token_usage = sum(getattr(agent, 'max_tokens', 800) for agent in current_agents)
         self.team_optimizer.update_current_state(len(current_agents), current_token_usage)
-        
+
+        # FELIX NATURAL SELECTION CHECK: Stop spawning if we have valid synthesis output
+        # Check if any synthesis outputs pass natural selection criteria (depth >= 0.7, confidence >= 0.8)
+        synthesis_outputs = [
+            msg for msg in processed_messages
+            if msg.content.get("agent_type") == "synthesis"
+            and msg.content.get("position_info", {}).get("depth_ratio", 0.0) >= 0.7
+            and msg.content.get("confidence", 0.0) >= 0.8
+        ]
+        if synthesis_outputs:
+            logger.info(f"✓ Natural selection complete: {len(synthesis_outputs)} valid synthesis output(s) exist - stopping spawning")
+            logger.info(f"  Best synthesis: confidence={max(s.content.get('confidence', 0.0) for s in synthesis_outputs):.2f}, "
+                       f"depth={max(s.content.get('position_info', {}).get('depth_ratio', 0.0) for s in synthesis_outputs):.2f}")
+            return []  # No more spawning needed - natural selection criteria met
+
         # Make spawning decisions
         spawning_decisions = self._make_spawning_decisions(
             confidence_metrics, content_analysis, current_agents, current_time
