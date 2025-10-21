@@ -229,34 +229,7 @@ class LLMAgent(Agent):
         self.influenced_by: List[str] = []  # Agent IDs that influenced this agent
         self.influence_strength: Dict[str, float] = {}  # How much each agent influenced this one
         self.collaboration_history: List[Dict[str, Any]] = []  # History of collaborations
-    
-    def get_position_info(self, current_time: float) -> Dict[str, float]:
-        """
-        Get detailed position information for the agent.
-        
-        Args:
-            current_time: Current simulation time
-            
-        Returns:
-            Dictionary with position details
-        """
-        position = self.get_position(current_time)
-        if position is None:
-            return {}
-        
-        x, y, z = position
-        radius = self.helix.get_radius(z)
-        depth_ratio = z / self.helix.height
-        
-        return {
-            "x": x,
-            "y": y, 
-            "z": z,
-            "radius": radius,
-            "depth_ratio": depth_ratio,
-            "progress": self._progress
-        }
-    
+
     def get_adaptive_temperature(self, current_time: float) -> float:
         """
         Calculate temperature based on helix position.
