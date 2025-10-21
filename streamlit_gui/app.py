@@ -2,16 +2,17 @@
 Streamlit GUI for Felix Framework
 
 This is the main entry point for the Streamlit monitoring and visualization interface.
-Run with: streamlit run streamlit_app.py
+Run with: streamlit run streamlit_gui/app.py
 """
 
 import streamlit as st
 import sys
 import os
+import warnings
 from pathlib import Path
 
 # Add the project root to the Python path
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Configure Streamlit page
 st.set_page_config(
@@ -45,7 +46,13 @@ st.markdown("""
             margin: 20px;
         }
         .stSidebar {
-            background-color: rgba(255, 255, 255, 0.9);
+            background-color: rgba(40, 44, 52, 0.95) !important;
+        }
+        .stSidebar [data-testid="stMarkdownContainer"] {
+            color: #ffffff !important;
+        }
+        .stSidebar .stRadio label {
+            color: #ffffff !important;
         }
         .metric-card {
             background: white;
@@ -60,6 +67,17 @@ st.markdown("""
         .stAlert {
             background-color: #f8f9fa;
             border-left: 4px solid #4CAF50;
+        }
+        /* Improve info/warning/success box contrast */
+        div[data-testid="stAlert"] {
+            background-color: rgba(255, 255, 255, 0.95) !important;
+        }
+        div[data-testid="stAlert"] p {
+            color: #1a1a1a !important;
+            font-weight: 500;
+        }
+        div[data-testid="stAlert"] strong {
+            color: #000000 !important;
         }
     </style>
 """, unsafe_allow_html=True)
@@ -185,7 +203,7 @@ def main():
     with col2:
         # Check system status
         try:
-            from streamlit_gui.backend.system_monitor import SystemMonitor
+            from backend.system_monitor import SystemMonitor
             monitor = SystemMonitor()
             is_running = monitor.check_felix_running()
 

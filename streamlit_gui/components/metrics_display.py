@@ -210,17 +210,19 @@ def create_agent_network_graph(agents: List[Dict[str, Any]]) -> go.Figure:
     )
 
     # Create figure
-    fig = go.Figure(data=[node_trace],
-                   layout=go.Layout(
-                       title="Agent Network",
-                       titlefont_size=16,
-                       showlegend=False,
-                       hovermode='closest',
-                       margin=dict(b=20, l=5, r=5, t=40),
-                       xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-                       yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-                       height=400
-                   ))
+    fig = go.Figure(data=[node_trace])
+
+    # Update layout using modern approach
+    fig.update_layout(
+        title="Agent Network",
+        titlefont_size=16,
+        showlegend=False,
+        hovermode='closest',
+        margin=dict(b=20, l=5, r=5, t=40),
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        height=400
+    )
 
     return fig
 

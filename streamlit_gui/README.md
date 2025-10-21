@@ -67,17 +67,20 @@ The Streamlit GUI will open in your browser at `http://localhost:8501`
 ### 1. Dashboard (🏠)
 
 Real-time system monitoring with:
-- System status indicators
+- System status indicators (✅ **Real Data**)
 - Agent activity visualization
 - Performance trend charts
 - Database status monitoring
 - Auto-refresh capability
+- Interactive tooltips explaining all metrics
 
 Key Metrics:
-- Knowledge entries count
-- Task patterns
-- Average confidence scores
+- Knowledge entries count (from real database)
+- Task patterns (from task memory)
+- Average confidence scores (computed from agent entries)
 - Agent performance matrix
+
+**Data Source**: All data pulled from actual Felix databases (`felix_knowledge.db`, `felix_memory.db`)
 
 ### 2. Configuration (⚙️)
 
@@ -95,31 +98,60 @@ Visualization includes:
 
 ### 3. Testing (🧪)
 
-Workflow analysis tools:
-- Workflow execution timeline
+Workflow analysis tools (✅ **Real Data**):
+- Workflow execution timeline from actual runs
 - Success/failure pattern analysis
 - Performance metrics over time
-- Test report generation
-- Export capabilities
+- Test report generation with multiple formats
+- Export capabilities (JSON, CSV, Markdown)
+- Interactive tooltips for all metrics
 
 Report Types:
-- Summary
-- Detailed
-- Performance
-- Confidence Analysis
+- **Summary**: High-level overview with key metrics and trends
+- **Detailed**: Complete breakdown with timestamps
+- **Performance**: Focus on execution times and bottlenecks
+- **Confidence**: Agent confidence scores and progression
+
+**Data Source**: All workflow data pulled from Felix databases (real execution history)
 
 ### 4. Benchmarking (📊)
 
-Hypothesis validation and performance testing:
-- **H1**: Helical progression (20% improvement expected)
-- **H2**: Hub-spoke communication (15% efficiency gain)
-- **H3**: Memory compression (25% latency reduction)
+Hypothesis validation and performance testing with **dual-mode operation**:
+
+**Benchmark Modes**:
+- **Demo Mode** (🎲 Simulated): Uses statistical models for quick demonstration
+- **Real Mode** (✅ Actual Components): Tests actual Felix components (HelixGeometry, CentralPost, ContextCompressor)
+
+**Core Hypotheses (with detailed explanations)**:
+- **H1**: Helical progression enhances agent adaptation (20% improvement expected)
+  - Tests workload distribution along helical geometry
+  - Compares linear vs. helical agent progression
+  - **Real mode**: Actually creates helix positions and measures geometric optimization
+- **H2**: Hub-spoke communication optimizes resource allocation (15% efficiency gain)
+  - Tests message routing efficiency (O(N) vs O(N²))
+  - Measures latency and throughput
+  - **Real mode**: Uses actual CentralPost for hub-spoke communication
+- **H3**: Memory compression reduces latency (25% attention improvement)
+  - Tests context compression impact
+  - Measures information retention
+  - **Real mode**: Uses actual ContextCompressor with real compression
 
 Features:
-- Statistical significance testing
-- Performance comparison charts
+- **Mode selector**: Toggle between Demo and Real benchmarks
+- **Availability detection**: Automatically detects if Felix components are importable
+- **Graceful fallback**: Falls back to simulated data if real components unavailable
+- Interactive tooltips explaining each hypothesis
+- Statistical significance testing (t-tests, p-values)
+- Performance comparison charts with box plots
+- **Data source badges**: Clear labeling of REAL vs SIMULATED data
 - Scaling analysis
 - Comprehensive benchmark reports
+- Configurable sample sizes for statistical rigor
+
+**Data Source**:
+- Demo mode: Simulated using statistical models (np.random.normal)
+- Real mode: Actual Felix components (HelixGeometry, CentralPost, ContextCompressor)
+- Each result clearly labeled with its data source
 
 ## Directory Structure
 
@@ -314,7 +346,7 @@ ts_data = reader.get_time_series_metrics(hours=24)
 ```python
 runner = BenchmarkRunner()
 
-# Validate hypotheses
+# Validate hypotheses (simulated)
 h1_result = runner.validate_hypothesis_h1(samples=100)
 h2_result = runner.validate_hypothesis_h2(samples=100)
 h3_result = runner.validate_hypothesis_h3(samples=100)
@@ -324,6 +356,36 @@ perf = runner.run_performance_benchmark("agent_spawning", iterations=100)
 
 # Generate report
 report = runner.generate_report()
+```
+
+### RealBenchmarkRunner
+
+```python
+from streamlit_gui.backend.real_benchmark_runner import RealBenchmarkRunner
+
+runner = RealBenchmarkRunner()
+
+# Check if real mode is available
+if runner.is_real_mode_available():
+    print("✅ Real benchmark mode available")
+else:
+    print("⚠️ Will use simulated fallback")
+
+# Get availability message
+message = runner.get_availability_message()
+
+# Validate hypotheses with REAL Felix components
+# Automatically falls back to simulated if components unavailable
+h1_result = runner.validate_hypothesis_h1_real(samples=100)
+h2_result = runner.validate_hypothesis_h2_real(samples=100)
+h3_result = runner.validate_hypothesis_h3_real(samples=100)
+
+# Each result includes 'data_source' field:
+# - 'REAL': Used actual Felix components
+# - 'SIMULATED (components unavailable)': Fell back to simulation
+print(f"H1 used: {h1_result['data_source']}")
+print(f"H1 gain: {h1_result['actual_gain']:.1%}")
+print(f"H1 validated: {h1_result['validated']}")
 ```
 
 ## Contributing

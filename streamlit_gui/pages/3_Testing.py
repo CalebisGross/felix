@@ -217,6 +217,9 @@ def main():
     st.title("🧪 Testing & Analysis")
     st.markdown("Analyze workflow results and test execution performance")
 
+    # Real data indicator
+    st.success("✅ **Real Data**: This page displays actual workflow execution data from Felix databases.")
+
     monitor = get_monitor()
     db_reader = get_db_reader()
 
@@ -231,6 +234,11 @@ def main():
     with tab1:
         st.subheader("Workflow Execution Results")
 
+        st.info("""
+        **What this shows**: Historical results from workflows executed through the tkinter GUI or command line.
+        Each workflow represents a complete task processed by Felix's multi-agent system.
+        """)
+
         # Get workflow data
         workflows = monitor.get_workflow_results(limit=50)
 
@@ -242,14 +250,14 @@ def main():
             col1, col2, col3, col4 = st.columns(4)
 
             with col1:
-                st.metric("Total Workflows", analysis['total_workflows'])
+                st.metric("Total Workflows", analysis['total_workflows'], help="Number of complete workflow executions recorded in database")
             with col2:
-                st.metric("Success Rate", f"{analysis['success_rate']:.1f}%")
+                st.metric("Success Rate", f"{analysis['success_rate']:.1f}%", help="Percentage of workflows that completed successfully without errors")
             with col3:
-                st.metric("Avg Agents/Workflow", f"{analysis['avg_agents']:.1f}")
+                st.metric("Avg Agents/Workflow", f"{analysis['avg_agents']:.1f}", help="Average number of agents spawned per workflow (Research, Analysis, Synthesis, Critic)")
             with col4:
                 duration_str = f"{analysis['avg_duration']:.1f}s" if analysis['avg_duration'] > 0 else "N/A"
-                st.metric("Avg Duration", duration_str)
+                st.metric("Avg Duration", duration_str, help="Average time from workflow start to completion (if timestamp data available)")
 
             # Common patterns
             if analysis['common_patterns']:
@@ -260,7 +268,7 @@ def main():
             # Workflow timeline
             st.subheader("Execution Timeline")
             timeline_fig = create_workflow_timeline(workflows)
-            st.plotly_chart(timeline_fig, use_container_width=True)
+            st.plotly_chart(timeline_fig, width='stretch')
 
             # Workflow details table
             st.subheader("Recent Workflows")
@@ -293,7 +301,7 @@ def main():
                             lambda x: x[:50] + '...' if len(str(x)) > 50 else x
                         )
 
-                    st.dataframe(display_df, use_container_width=True, hide_index=True)
+                    st.dataframe(display_df, width='stretch', hide_index=True)
 
         else:
             st.info("No workflow results available. Run workflows from the tkinter GUI to see results here.")
@@ -307,7 +315,7 @@ def main():
         if not knowledge_df.empty:
             # Confidence distribution
             conf_fig = create_confidence_distribution_chart(knowledge_df)
-            st.plotly_chart(conf_fig, use_container_width=True)
+            st.plotly_chart(conf_fig, width='stretch')
 
             # Performance over time
             st.subheader("Performance Trends")
@@ -357,7 +365,7 @@ def main():
                     height=400
                 )
 
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
 
             # Agent performance comparison
             st.subheader("Agent Performance Comparison")
@@ -382,12 +390,12 @@ def main():
                 )
 
                 fig.update_layout(height=400)
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
 
                 # Performance table
                 st.dataframe(
                     agent_metrics[['agent_id', 'output_count', 'avg_confidence']],
-                    use_container_width=True,
+                    width='stretch',
                     hide_index=True
                 )
 
@@ -456,7 +464,7 @@ def main():
                 if not recent_knowledge.empty:
                     st.dataframe(
                         recent_knowledge[['agent_id', 'domain', 'confidence', 'content_preview']],
-                        use_container_width=True,
+                        width='stretch',
                         hide_index=True
                     )
 
@@ -466,23 +474,33 @@ def main():
     with tab4:
         st.subheader("Test Reports")
 
+        st.info("""
+        **Report Types Explained**:
+        - **Summary**: High-level overview with key metrics and trends
+        - **Detailed**: Complete breakdown of all workflow executions with timestamps
+        - **Performance**: Focus on execution times, resource usage, and bottlenecks
+        - **Confidence**: Agent confidence scores and progression analysis
+        """)
+
         # Report generation options
         col1, col2 = st.columns(2)
 
         with col1:
             report_type = st.selectbox(
                 "Report Type",
-                options=["Summary", "Detailed", "Performance", "Confidence"]
+                options=["Summary", "Detailed", "Performance", "Confidence"],
+                help="Choose the level of detail and focus area for the report"
             )
 
             time_range = st.selectbox(
                 "Time Range",
-                options=["Last Hour", "Last 24 Hours", "Last Week", "All Time"]
+                options=["Last Hour", "Last 24 Hours", "Last Week", "All Time"],
+                help="Filter workflows by execution time"
             )
 
         with col2:
-            include_charts = st.checkbox("Include Charts", value=True)
-            include_raw_data = st.checkbox("Include Raw Data", value=False)
+            include_charts = st.checkbox("Include Charts", value=True, help="Add visualizations to the report")
+            include_raw_data = st.checkbox("Include Raw Data", value=False, help="Include raw database entries (increases report size)")
 
         if st.button("Generate Report"):
             st.markdown("### Test Execution Report")
@@ -514,7 +532,7 @@ def main():
                     if include_charts:
                         # Include timeline chart
                         timeline_fig = create_workflow_timeline(workflows[:10])
-                        st.plotly_chart(timeline_fig, use_container_width=True)
+                        st.plotly_chart(timeline_fig, width='stretch')
 
             elif report_type == "Performance":
                 # Performance report
@@ -544,7 +562,7 @@ def main():
                             y='avg_confidence',
                             title='Agent Performance Distribution'
                         )
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, width='stretch')
 
             elif report_type == "Confidence":
                 # Confidence analysis report
@@ -555,11 +573,11 @@ def main():
                     confidence_stats = knowledge_df['confidence'].describe()
 
                     st.markdown("##### Confidence Statistics")
-                    st.dataframe(confidence_stats, use_container_width=False)
+                    st.dataframe(confidence_stats, width='content')
 
                     if include_charts:
                         conf_fig = create_confidence_distribution_chart(knowledge_df)
-                        st.plotly_chart(conf_fig, use_container_width=True)
+                        st.plotly_chart(conf_fig, width='stretch')
 
             else:
                 # Detailed report

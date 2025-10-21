@@ -104,21 +104,21 @@ class SystemMonitor:
                 cursor = conn.cursor()
 
                 # Count total entries
-                cursor.execute("SELECT COUNT(*) FROM knowledge")
+                cursor.execute("SELECT COUNT(*) FROM knowledge_entries")
                 count = cursor.fetchone()
                 if count:
                     metrics["knowledge_entries"] = count[0]
 
                 # Get average confidence
-                cursor.execute("SELECT AVG(confidence) FROM knowledge WHERE confidence IS NOT NULL")
+                cursor.execute("SELECT AVG(confidence) FROM knowledge_entries WHERE confidence IS NOT NULL")
                 avg_conf = cursor.fetchone()
                 if avg_conf and avg_conf[0]:
                     metrics["confidence_avg"] = avg_conf[0]
 
                 # Count recent entries (last hour)
                 cursor.execute("""
-                    SELECT COUNT(*) FROM knowledge
-                    WHERE timestamp > (strftime('%s', 'now') - 3600)
+                    SELECT COUNT(*) FROM knowledge_entries
+                    WHERE timestamp > datetime('now', '-1 hour')
                 """)
                 new_count = cursor.fetchone()
                 if new_count:
@@ -135,7 +135,7 @@ class SystemMonitor:
                 conn = sqlite3.connect("felix_memory.db")
                 cursor = conn.cursor()
 
-                cursor.execute("SELECT COUNT(*) FROM tasks")
+                cursor.execute("SELECT COUNT(*) FROM task_patterns")
                 count = cursor.fetchone()
                 if count:
                     metrics["task_patterns"] = count[0]
@@ -156,14 +156,19 @@ class SystemMonitor:
                 conn = sqlite3.connect("felix_knowledge.db")
                 cursor = conn.cursor()
 
-                # Get recent agent activities
-                cursor.execute("""
-                    SELECT agent_id, domain, confidence, timestamp, content
-                    FROM knowledge
-                    WHERE agent_id IS NOT NULL
-                    ORDER BY timestamp DESC
-                    LIMIT 100
-                """)
+                # Get recent agent activities - check column names
+                # First check if these columns exist
+                cursor.execute("PRAGMA table_info(knowledge_entries)")
+                columns = [col[1] for col in cursor.fetchall()]
+
+                # Build query based on available columns
+                if 'entry_id' in columns and 'domain' in columns and 'confidence' in columns:
+                    cursor.execute("""
+                        SELECT entry_id, domain, confidence, timestamp, content
+                        FROM knowledge_entries
+                        ORDER BY timestamp DESC
+                        LIMIT 100
+                    """)
 
                 for row in cursor.fetchall():
                     agents.append({
@@ -226,8 +231,8 @@ class SystemMonitor:
                 cursor = conn.cursor()
 
                 cursor.execute(f"""
-                    SELECT task, timestamp
-                    FROM tasks
+                    SELECT pattern, timestamp
+                    FROM task_patterns
                     ORDER BY timestamp DESC
                     LIMIT {limit}
                 """)

@@ -22,6 +22,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 
 from streamlit_gui.backend.system_monitor import SystemMonitor
 from streamlit_gui.backend.db_reader import DatabaseReader
+from streamlit_gui.backend.real_benchmark_runner import RealBenchmarkRunner
 
 st.set_page_config(
     page_title="Felix Benchmarking",
@@ -38,6 +39,11 @@ def get_monitor():
 def get_db_reader():
     """Get cached DatabaseReader instance."""
     return DatabaseReader()
+
+@st.cache_resource
+def get_real_benchmark_runner():
+    """Get cached RealBenchmarkRunner instance."""
+    return RealBenchmarkRunner()
 
 
 def validate_hypothesis(
@@ -185,10 +191,14 @@ def create_hypothesis_comparison_chart(hypotheses: Dict[str, Dict[str, Any]]) ->
     colors = []
 
     for h_id, h_data in hypotheses.items():
-        names.append(f"{h_id}: {h_data['name']}")
-        expected.append(h_data['expected'] * 100)
-        actual.append(h_data['actual'] * 100)
-        colors.append('green' if h_data['validated'] else 'red')
+        # Support both old format (name/expected/actual) and new format (hypothesis/expected_gain/actual_gain)
+        hypothesis_name = h_data.get('name') or h_data.get('hypothesis', h_id)
+        names.append(f"{h_id}: {hypothesis_name}")
+        expected_val = h_data.get('expected') or h_data.get('expected_gain', 0)
+        actual_val = h_data.get('actual') or h_data.get('actual_gain', 0)
+        expected.append(expected_val * 100)
+        actual.append(actual_val * 100)
+        colors.append('green' if h_data.get('validated', False) else 'red')
 
     fig = go.Figure()
 
@@ -307,63 +317,193 @@ def main():
     with tab1:
         st.subheader("Hypothesis Validation")
 
+        # Get real benchmark runner
+        real_runner = get_real_benchmark_runner()
+
+        # Mode selector
+        col_mode1, col_mode2 = st.columns([3, 1])
+
+        with col_mode1:
+            benchmark_mode = st.radio(
+                "Benchmark Mode",
+                options=["Demo Mode (Simulated)", "Real Mode (Actual Components)"],
+                index=0,
+                help="Demo mode uses statistical models. Real mode tests actual Felix components.",
+                horizontal=True
+            )
+
+        with col_mode2:
+            if real_runner.is_real_mode_available():
+                st.success("✅ Real mode available")
+            else:
+                st.warning("⚠️ Components unavailable")
+
+        # Display mode information
+        use_real_mode = "Real Mode" in benchmark_mode
+
+        if use_real_mode:
+            if real_runner.is_real_mode_available():
+                st.success("✅ **Real Benchmarks**: Using actual Felix components (HelixGeometry, CentralPost, ContextCompressor)")
+            else:
+                st.error("❌ **Real mode unavailable**: Felix components could not be imported. Falling back to simulated data.")
+                use_real_mode = False
+        else:
+            st.warning("⚠️ **Demo Mode**: Results are generated using statistical models to approximate expected performance.")
+
         st.markdown("""
         ### Felix Framework Core Hypotheses
 
-        1. **H1**: Helical progression enhances agent adaptation (20% workload distribution improvement)
-        2. **H2**: Hub-spoke communication optimizes resource allocation (15% efficiency gain)
-        3. **H3**: Memory compression reduces latency (25% attention focus improvement)
+        The Felix framework is built on three core architectural hypotheses that drive its performance:
         """)
+
+        # H1 Explanation
+        with st.expander("ℹ️ **H1: Helical Progression** (Expected: 20% improvement)", expanded=False):
+            st.markdown("""
+            **What it tests**: Agent adaptation and workload distribution along helical geometry
+
+            **How it works**: Agents move through a 3D helix from wide exploration (top radius: 3.0) to focused synthesis (bottom radius: 0.5). Position along the helix determines agent behavior, temperature, and token budget.
+
+            **Measured by**:
+            - Workload distribution variance across agents
+            - Task completion time compared to linear approaches
+            - Agent confidence progression
+
+            **Why 20%**: Helical geometry reduces redundant exploration and optimizes agent specialization at each spiral level.
+            """)
+
+        # H2 Explanation
+        with st.expander("ℹ️ **H2: Hub-Spoke Communication** (Expected: 15% improvement)", expanded=False):
+            st.markdown("""
+            **What it tests**: Message routing efficiency and resource allocation
+
+            **How it works**: Central post (hub) routes messages between agents (spokes) instead of peer-to-peer mesh networking. Reduces communication complexity from O(N²) to O(N).
+
+            **Measured by**:
+            - Message routing latency
+            - Network overhead (message count)
+            - Resource utilization efficiency
+
+            **Why 15%**: Eliminates redundant messages and centralizes routing logic, especially beneficial with 10+ agents.
+            """)
+
+        # H3 Explanation
+        with st.expander("ℹ️ **H3: Memory Compression** (Expected: 25% improvement)", expanded=False):
+            st.markdown("""
+            **What it tests**: Context compression impact on attention and latency
+
+            **How it works**: Abstractive compression reduces context size while maintaining key information. Uses compression ratio of 0.3 (70% reduction).
+
+            **Measured by**:
+            - Memory access latency reduction
+            - Attention focus improvement (quality of compressed content)
+            - Information retention after compression
+
+            **Why 25%**: Smaller context = faster processing and more focused attention on relevant information.
+            """)
+
+        st.markdown("---")
 
         # Benchmark configuration
         st.divider()
         st.markdown("### Configure Benchmark")
 
+        st.info("💡 **Tip**: Larger sample sizes (500+) provide more statistically significant results but take longer to compute.")
+
         col1, col2, col3 = st.columns(3)
 
         with col1:
-            test_h1 = st.checkbox("Test H1 (Helical Progression)", value=True)
-            h1_samples = st.number_input("H1 Sample Size", min_value=10, max_value=1000, value=50)
+            test_h1 = st.checkbox("Test H1 (Helical Progression)", value=True, help="Measures workload distribution improvement with helical agent progression")
+            h1_samples = st.number_input("H1 Sample Size", min_value=10, max_value=1000, value=50, help="Number of test iterations for statistical significance")
 
         with col2:
-            test_h2 = st.checkbox("Test H2 (Hub-Spoke)", value=True)
-            h2_samples = st.number_input("H2 Sample Size", min_value=10, max_value=1000, value=50)
+            test_h2 = st.checkbox("Test H2 (Hub-Spoke)", value=True, help="Measures communication efficiency vs. mesh networking")
+            h2_samples = st.number_input("H2 Sample Size", min_value=10, max_value=1000, value=50, help="Number of test iterations for statistical significance")
 
         with col3:
-            test_h3 = st.checkbox("Test H3 (Memory Compression)", value=True)
-            h3_samples = st.number_input("H3 Sample Size", min_value=10, max_value=1000, value=50)
+            test_h3 = st.checkbox("Test H3 (Memory Compression)", value=True, help="Measures latency reduction from context compression")
+            h3_samples = st.number_input("H3 Sample Size", min_value=10, max_value=1000, value=50, help="Number of test iterations for statistical significance")
 
         # Run benchmark button
         if st.button("🚀 Run Hypothesis Validation", type="primary"):
             with st.spinner("Running benchmarks..."):
-                # Configure benchmark
-                config = {
-                    'test_h1': test_h1,
-                    'test_h2': test_h2,
-                    'test_h3': test_h3,
-                    'h1_samples': h1_samples,
-                    'h2_samples': h2_samples,
-                    'h3_samples': h3_samples
+                # Initialize results structure
+                results = {
+                    'timestamp': datetime.now().isoformat(),
+                    'config': {
+                        'mode': 'real' if use_real_mode else 'simulated',
+                        'test_h1': test_h1,
+                        'test_h2': test_h2,
+                        'test_h3': test_h3
+                    },
+                    'hypotheses': {}
                 }
 
-                # Run benchmarks (simulated)
-                results = run_benchmark_suite(config)
+                # Run benchmarks based on mode
+                if use_real_mode:
+                    st.info("Running REAL benchmarks with actual Felix components...")
+
+                    if test_h1:
+                        with st.spinner(f"Testing H1 with {h1_samples} samples..."):
+                            results['hypotheses']['H1'] = real_runner.validate_hypothesis_h1_real(h1_samples)
+
+                    if test_h2:
+                        with st.spinner(f"Testing H2 with {h2_samples} samples..."):
+                            results['hypotheses']['H2'] = real_runner.validate_hypothesis_h2_real(h2_samples)
+
+                    if test_h3:
+                        with st.spinner(f"Testing H3 with {h3_samples} samples..."):
+                            results['hypotheses']['H3'] = real_runner.validate_hypothesis_h3_real(h3_samples)
+
+                else:
+                    # Simulated benchmarks
+                    st.info("Running DEMO benchmarks with statistical models...")
+                    config = {
+                        'test_h1': test_h1,
+                        'test_h2': test_h2,
+                        'test_h3': test_h3,
+                        'h1_samples': h1_samples,
+                        'h2_samples': h2_samples,
+                        'h3_samples': h3_samples
+                    }
+                    results = run_benchmark_suite(config)
 
                 # Store results in session state
                 st.session_state['benchmark_results'] = results
+                st.session_state['benchmark_mode'] = 'real' if use_real_mode else 'simulated'
 
                 # Display results
-                st.success("✅ Benchmark completed!")
+                if use_real_mode:
+                    st.success("✅ Real benchmark completed!")
+                else:
+                    st.success("✅ Demo benchmark completed!")
 
                 # Show hypothesis results
                 if 'hypotheses' in results:
                     st.markdown("### Validation Results")
 
+                    # Show data source badge
+                    if use_real_mode:
+                        st.info("📊 **Data Source**: REAL - Using actual Felix components")
+                    else:
+                        st.warning("🎲 **Data Source**: SIMULATED - Statistical models")
+
                     for h_id, h_data in results['hypotheses'].items():
+                        # Show data source for each hypothesis if available
+                        data_source = h_data.get('data_source', 'Unknown')
+                        if data_source == 'REAL':
+                            st.success(f"✅ {h_id} - REAL DATA")
+                        elif 'SIMULATED' in data_source:
+                            st.warning(f"🎲 {h_id} - {data_source}")
+
+                        # Support both old and new data formats
+                        hypothesis_name = h_data.get('name') or h_data.get('hypothesis', h_id)
+                        expected_val = h_data.get('expected') or h_data.get('expected_gain', 0)
+                        actual_val = h_data.get('actual') or h_data.get('actual_gain', 0)
+
                         validated, explanation = validate_hypothesis(
-                            h_data['name'],
-                            h_data['expected'],
-                            h_data['actual']
+                            hypothesis_name,
+                            expected_val,
+                            actual_val
                         )
 
                         if validated:
@@ -373,20 +513,26 @@ def main():
 
                     # Visualization
                     fig = create_hypothesis_comparison_chart(results['hypotheses'])
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
 
                     # Detailed statistics
                     with st.expander("📊 Detailed Statistics"):
                         for h_id, h_data in results['hypotheses'].items():
-                            st.markdown(f"#### {h_id}: {h_data['name']}")
+                            # Support both old and new data formats
+                            hypothesis_name = h_data.get('name') or h_data.get('hypothesis', h_id)
+                            st.markdown(f"#### {h_id}: {hypothesis_name}")
                             col1, col2, col3 = st.columns(3)
 
                             with col1:
-                                st.metric("Baseline Mean", f"{h_data['baseline_mean']:.2f}")
+                                # Support both formats: direct key or nested dict
+                                baseline_mean = h_data.get('baseline_mean') or h_data.get('baseline', {}).get('mean', 0)
+                                st.metric("Baseline Mean", f"{baseline_mean:.2f}")
                             with col2:
-                                st.metric("Treatment Mean", f"{h_data['treatment_mean']:.2f}")
+                                treatment_mean = h_data.get('treatment_mean') or h_data.get('treatment', {}).get('mean', 0)
+                                st.metric("Treatment Mean", f"{treatment_mean:.2f}")
                             with col3:
-                                gain = h_data['actual'] * 100
+                                actual_val = h_data.get('actual') or h_data.get('actual_gain', 0)
+                                gain = actual_val * 100
                                 st.metric("Actual Gain", f"{gain:.1f}%")
 
         # Display previous results if available
@@ -395,22 +541,38 @@ def main():
 
             if 'hypotheses' in results:
                 fig = create_hypothesis_comparison_chart(results['hypotheses'])
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
 
     with tab2:
         st.subheader("Performance Test Suite")
 
+        # Simulated data disclaimer
+        st.warning("⚠️ **Note**: Performance tests currently use simulated data for demonstration. Metrics are modeled after real system behavior.")
+
+        st.markdown("""
+        ### Test Categories
+
+        Each category tests a specific aspect of Felix's performance:
+        """)
+
+        # Test category explanations
+        test_descriptions = {
+            "Agent Spawning": "**Agent Spawning**: Measures the time and resources required to create new agents, including helix position calculation and initialization overhead.",
+            "Message Routing": "**Message Routing**: Tests the Central Post hub-spoke communication system for throughput, latency, and dropped message rates.",
+            "Memory Operations": "**Memory Operations**: Benchmarks knowledge store and task memory read/write performance, including compression operations.",
+            "Helix Traversal": "**Helix Traversal**: Measures agent movement efficiency along the helical geometry, including position updates and state transitions.",
+            "Synthesis Pipeline": "**Synthesis Pipeline**: Tests end-to-end task processing through the complete pipeline from research to synthesis."
+        }
+
         # Test categories
         test_category = st.selectbox(
             "Select Test Category",
-            options=[
-                "Agent Spawning",
-                "Message Routing",
-                "Memory Operations",
-                "Helix Traversal",
-                "Synthesis Pipeline"
-            ]
+            options=list(test_descriptions.keys()),
+            help="Choose which aspect of Felix to benchmark"
         )
+
+        # Show description for selected category
+        st.info(test_descriptions[test_category])
 
         # Configuration for selected test
         st.markdown(f"### {test_category} Configuration")
@@ -479,7 +641,7 @@ def main():
                     # Visualization
                     fig = px.line(df_results, x='iteration', y='spawn_time',
                                  title='Spawn Time Over Iterations')
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
 
                 elif test_category == "Message Routing":
                     col1, col2 = st.columns(2)
@@ -509,11 +671,11 @@ def main():
                         yaxis=dict(title='Latency (ms)'),
                         yaxis2=dict(title='Throughput (msg/s)', overlaying='y', side='right')
                     )
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
 
                 # Raw data
                 with st.expander("View Raw Data"):
-                    st.dataframe(df_results, use_container_width=True)
+                    st.dataframe(df_results, width='stretch')
 
     with tab3:
         st.subheader("Comparative Analysis")
@@ -545,7 +707,7 @@ def main():
                 optimized_latency,
                 "Latency (ms)"
             )
-            st.plotly_chart(fig1, use_container_width=True)
+            st.plotly_chart(fig1, width='stretch')
 
             # Throughput comparison
             fig2 = create_performance_comparison_chart(
@@ -553,7 +715,7 @@ def main():
                 optimized_throughput,
                 "Throughput (ops/sec)"
             )
-            st.plotly_chart(fig2, use_container_width=True)
+            st.plotly_chart(fig2, width='stretch')
 
             # Statistical significance
             from scipy import stats
@@ -608,7 +770,7 @@ def main():
                         yaxis_title=metric.capitalize(),
                         height=350
                     )
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
 
     with tab4:
         st.subheader("Benchmark Reports")

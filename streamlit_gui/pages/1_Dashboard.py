@@ -9,6 +9,9 @@ import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
+import logging
+
+logger = logging.getLogger(__name__)
 import pandas as pd
 import sys
 import os
@@ -39,6 +42,9 @@ def main():
     st.title("🏠 Felix System Dashboard")
     st.markdown("Real-time monitoring of Felix Framework")
 
+    # Real data indicator
+    st.success("✅ **Real Data**: This dashboard displays live metrics from Felix databases. All data is pulled from actual system execution.")
+
     monitor = get_monitor()
     db_reader = get_db_reader()
 
@@ -49,18 +55,21 @@ def main():
 
     with col1:
         status = "🟢 Running" if metrics["felix_running"] else "🔴 Stopped"
-        st.metric("System Status", status)
+        st.metric("System Status", status, help="Felix system running status (checks LM Studio port 1234)")
 
     with col2:
         st.metric("Knowledge Entries", metrics["knowledge_entries"],
-                 delta=f"+{metrics.get('new_entries', 0)}" if metrics.get('new_entries', 0) > 0 else None)
+                 delta=f"+{metrics.get('new_entries', 0)}" if metrics.get('new_entries', 0) > 0 else None,
+                 help="Total entries in knowledge database from all agents")
 
     with col3:
-        st.metric("Task Patterns", metrics["task_patterns"])
+        st.metric("Task Patterns", metrics["task_patterns"],
+                 help="Number of task patterns identified in memory database")
 
     with col4:
         confidence_pct = metrics['confidence_avg'] * 100 if metrics['confidence_avg'] > 0 else 0
-        st.metric("Avg Confidence", f"{confidence_pct:.1f}%")
+        st.metric("Avg Confidence", f"{confidence_pct:.1f}%",
+                 help="Average confidence score across all agent knowledge entries")
 
     st.divider()
 
@@ -95,7 +104,8 @@ def main():
                 color_continuous_scale="viridis"
             )
             fig.update_layout(height=400)
-            st.plotly_chart(fig, use_container_width=True)
+            logger.info(f"DEBUG: About to call st.plotly_chart with fig type: {type(fig)}")
+            st.plotly_chart(fig, width='stretch')
 
             # Agent details table
             st.subheader("Agent Details")
@@ -115,7 +125,7 @@ def main():
 
             st.dataframe(
                 display_df,
-                use_container_width=True,
+                width='stretch',
                 hide_index=True
             )
         else:
@@ -145,7 +155,7 @@ def main():
                 hovermode='x',
                 height=350
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
             # Activity volume
             fig2 = go.Figure()
@@ -161,7 +171,7 @@ def main():
                 yaxis_title="Number of Entries",
                 height=350
             )
-            st.plotly_chart(fig2, use_container_width=True)
+            st.plotly_chart(fig2, width='stretch')
         else:
             st.info("No trend data available. Metrics will appear as system runs.")
 
@@ -215,7 +225,7 @@ def main():
             })
 
         df_info = pd.DataFrame(db_info)
-        st.dataframe(df_info, use_container_width=True, hide_index=True)
+        st.dataframe(df_info, width='stretch', hide_index=True)
 
         # Domain distribution if available
         domain_df = db_reader.get_domain_distribution()
@@ -231,7 +241,7 @@ def main():
             )
             fig.update_traces(textposition='inside', textinfo='percent+label')
             fig.update_layout(height=350)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
         # Connection info
         st.info(
