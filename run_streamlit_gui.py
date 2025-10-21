@@ -69,7 +69,7 @@ def launch_streamlit():
         "-m",
         "streamlit",
         "run",
-        "streamlit_app.py",
+        "streamlit_gui/app.py",
         "--server.port",
         str(port),
         "--server.headless",

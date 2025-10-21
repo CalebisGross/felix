@@ -210,6 +210,9 @@ def main():
     st.title("⚙️ Configuration Viewer")
     st.markdown("View and export Felix configuration (read-only)")
 
+    # Real data indicator
+    st.success("✅ **Real Data**: This page displays actual Felix configuration files from your project.")
+
     # Configuration sources
     config_sources = {
         "felix_gui_config.json": "tkinter GUI Configuration",
@@ -297,7 +300,7 @@ def main():
 
             # Create 3D visualization
             fig = create_helix_3d_visualization(helix_config)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
             # Display helix characteristics
             col1, col2, col3, col4 = st.columns(4)

@@ -408,7 +408,7 @@ def display_test_summary(test_results: Dict[str, Any]):
             title='Test Distribution by Category',
             color_discrete_sequence=px.colors.qualitative.Set3
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
 
 def create_confidence_interval_chart(data: List[float], confidence_level: float = 0.95) -> go.Figure:
