@@ -39,7 +39,7 @@ from src.agents.llm_agent import LLMTask
 from src.agents.agent import AgentState
 from src.memory.context_compression import ContextCompressor, CompressionConfig, CompressionStrategy, CompressionLevel
 from src.memory.knowledge_store import KnowledgeStore, KnowledgeType, ConfidenceLevel, KnowledgeQuery
-from src.pipeline.linear_pipeline import LinearPipeline
+from exp.benchmarks.linear_pipeline import LinearPipeline
 from src.llm.token_budget import TokenBudgetManager
 
 
