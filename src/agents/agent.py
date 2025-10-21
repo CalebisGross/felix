@@ -113,8 +113,10 @@ class Agent:
         
         if self.state != AgentState.WAITING:
             raise ValueError("Agent already spawned")
-        
+
         # Agents always start at the top of the helix (progress = 0)
+        # Top = wide radius (3.0), high temperature, exploration phase
+        # They will descend to bottom = narrow radius (0.5), low temperature, synthesis phase
         self._progress = 0.0
         self.state = AgentState.ACTIVE
         self.current_task = task
@@ -147,13 +149,13 @@ class Agent:
         
         # Non-linear progression calculation
         base_progression_time = current_time - self._spawn_timestamp
-        
+
         # Apply velocity and acceleration modifiers
         effective_velocity = self._velocity * self._acceleration
         adjusted_progression_time = base_progression_time * effective_velocity
-        
-        # Update progress with non-linear factors
-        self._progress = min(adjusted_progression_time, 1.0)  # Cap at 1.0
+
+        # Update progress with non-linear factors, clamped to [0.0, 1.0]
+        self._progress = max(0.0, min(adjusted_progression_time, 1.0))
         
         # Update position
         self.current_position = self.helix.get_position(self._progress)
@@ -192,6 +194,53 @@ class Agent:
         if self.current_task and hasattr(self.current_task, 'id'):
             return self.current_task.id
         return None
+
+    def get_position_info(self, current_time: float) -> Dict[str, float]:
+        """
+        Get detailed position information for the agent.
+
+        Args:
+            current_time: Current simulation time
+
+        Returns:
+            Dictionary with position details (empty dict if not spawned)
+        """
+        # If agent hasn't been spawned yet, return default values
+        if self.state == AgentState.WAITING:
+            return {
+                "x": 0.0,
+                "y": 0.0,
+                "z": 0.0,
+                "radius": self.helix.top_radius,
+                "depth_ratio": 0.0,
+                "progress": 0.0
+            }
+
+        position = self.get_position(current_time)
+        if position is None:
+            return {
+                "x": 0.0,
+                "y": 0.0,
+                "z": 0.0,
+                "radius": self.helix.top_radius,
+                "depth_ratio": 0.0,
+                "progress": self._progress
+            }
+
+        x, y, z = position
+        radius = self.helix.get_radius(z)
+        # depth_ratio represents progression through the process (0.0=start/top, 1.0=end/bottom)
+        # With inverted helix geometry, this equals progress directly
+        depth_ratio = self._progress
+
+        return {
+            "x": x,
+            "y": y,
+            "z": z,
+            "radius": radius,
+            "depth_ratio": depth_ratio,
+            "progress": self._progress
+        }
     
     def __str__(self) -> str:
         """String representation for debugging."""
