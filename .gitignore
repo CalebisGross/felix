@@ -46,6 +46,9 @@ felix_synthesis_*.md
 *.swo
 *~
 
+# AI assistants/congigurations
+.claude/settings.local.json
+
 # OS
 .DS_Store
 Thumbs.db
