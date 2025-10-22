@@ -35,7 +35,9 @@ felix_gui_config.json
 
 # Results and outputs
 results/
+outputs/
 *_workflow_results_*.txt
+felix_synthesis_*.md
 
 # IDE
 .vscode/
