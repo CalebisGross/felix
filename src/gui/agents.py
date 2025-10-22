@@ -14,9 +14,9 @@ try:
 except ImportError:
     mesh = None
 try:
-    from ..agents.specialized_agents import ResearchAgent, AnalysisAgent, SynthesisAgent, CriticAgent
+    from ..agents.specialized_agents import ResearchAgent, AnalysisAgent, CriticAgent
 except ImportError:
-    ResearchAgent = AnalysisAgent = SynthesisAgent = CriticAgent = None
+    ResearchAgent = AnalysisAgent = CriticAgent = None
 try:
     from ..communication.central_post import CentralPost, Message, MessageType
 except ImportError:
@@ -37,7 +37,7 @@ class AgentsFrame(ttk.Frame):
 
         # Label + Combobox for type
         ttk.Label(self, text="Agent Type:").grid(row=0, column=0, sticky='w', padx=5, pady=5)
-        self.type_combo = ttk.Combobox(self, values=["Research", "Analysis", "Synthesis", "Critic"], state="readonly")
+        self.type_combo = ttk.Combobox(self, values=["Research", "Analysis", "Critic"], state="readonly")
         self.type_combo.grid(row=0, column=1, sticky='ew', padx=5, pady=5)
 
         # Specialized parameters

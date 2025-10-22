@@ -64,13 +64,16 @@ Agents move down the helix from exploration to synthesis, with their behavior (t
 1. **Agent System** ([src/agents/](src/agents/))
    - `Agent`: Base class for all agents
    - `LLMAgent`: Agents with LLM integration and position-aware prompting
-   - `specialized_agents.py`: Role-specific agents (Research, Analysis, Synthesis, Critic)
+   - `specialized_agents.py`: Role-specific agents (Research, Analysis, Critic)
    - `dynamic_spawning.py`: Confidence-based agent spawning (threshold: 0.80)
+   - **Note**: Synthesis is performed by CentralPost, not by a specialized agent
 
 2. **Communication Hub** ([src/communication/central_post.py](src/communication/central_post.py))
    - `CentralPost`: O(N) hub-spoke message routing (vs O(N²) mesh)
+   - `CentralPost Synthesis`: Smart hub performs final synthesis of all agent outputs
    - `AgentFactory`: Creates agents with helix positioning
    - Handles up to 133 agents with efficient message queuing
+   - Adaptive synthesis: temperature (0.2-0.4) and tokens (1500-3000) based on consensus
 
 3. **Memory Systems** ([src/memory/](src/memory/))
    - `KnowledgeStore`: SQLite persistence in `felix_knowledge.db`
@@ -90,8 +93,9 @@ Agents move down the helix from exploration to synthesis, with their behavior (t
 Agents spawn at different normalized time ranges (0.0-1.0):
 - Research: 0.0-0.25 (early exploration)
 - Analysis: 0.2-0.6 (mid-phase processing)
-- Synthesis: 0.6-0.9 (late-stage combining)
 - Critic: 0.4-0.7 (continuous validation)
+
+**Note**: Synthesis is no longer an agent type. Final synthesis is performed by CentralPost when confidence threshold (≥0.80) is reached.
 
 ## Configuration
 

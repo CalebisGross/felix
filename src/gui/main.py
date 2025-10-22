@@ -15,7 +15,7 @@ class MainApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Felix GUI")
-        self.geometry("800x600")
+        self.geometry("800x1200")
 
         # Felix system manager (unified integration)
         self.felix_system = None

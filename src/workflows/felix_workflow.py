@@ -62,6 +62,7 @@ def run_felix_workflow(felix_system, task_input: str,
         logger.info("="*60)
         logger.info("FELIX WORKFLOW STARTING")
         logger.info(f"Task: {task_input}")
+        logger.info(f"Streaming: {'ENABLED' if felix_system.config.enable_streaming else 'DISABLED'}")
         logger.info("="*60)
 
         # Get Felix components (already initialized by GUI)
@@ -107,7 +108,7 @@ def run_felix_workflow(felix_system, task_input: str,
             "llm_responses": [],
             "knowledge_entries": [],
             "status": "in_progress",
-            "final_synthesis": None  # Will store the final synthesis output
+            "centralpost_synthesis": None  # Will store CentralPost synthesis output
         }
 
         # Track ALL processed messages for dynamic spawning (REAL messages, not mocks!)
@@ -138,16 +139,34 @@ def run_felix_workflow(felix_system, task_input: str,
 
         # CRITICAL: Create spoke connection for O(N) communication topology
         # Spoke creation handles central_post registration automatically
+        registration_successful = False
         if felix_system.spoke_manager:
-            felix_system.spoke_manager.create_spoke(research_agent)
-            logger.info(f"Created spoke connection for {research_agent.agent_id}")
+            spoke = felix_system.spoke_manager.create_spoke(research_agent)
+            if spoke:
+                logger.info(f"Created spoke connection for {research_agent.agent_id}")
+                registration_successful = True
+            else:
+                logger.warning(f"⚠ Could not register {research_agent.agent_id} - agent cap reached")
         elif felix_system.central_post:
             # Fallback to direct registration if no spoke_manager
-            felix_system.central_post.register_agent(research_agent)
-            logger.info(f"Registered {research_agent.agent_id} directly with central_post")
+            connection_id = felix_system.central_post.register_agent(research_agent)
+            if connection_id:
+                logger.info(f"Registered {research_agent.agent_id} directly with central_post")
+                registration_successful = True
+            else:
+                logger.warning(f"⚠ Could not register {research_agent.agent_id} - agent cap reached")
+
+        # Only proceed if registration succeeded
+        if not registration_successful:
+            logger.error(f"Failed to register initial research agent - cannot proceed with workflow")
+            return {
+                "status": "failed",
+                "error": "Could not register initial agent (agent cap reached)",
+                "agents_spawned": [],
+                "llm_responses": []
+            }
 
         results["agents_spawned"].append(research_agent.agent_id)
-
         logger.info(f"Created research agent: {research_agent.agent_id} (spawn_time=0.0)")
 
         if progress_callback:
@@ -168,14 +187,26 @@ def run_felix_workflow(felix_system, task_input: str,
 
             # Process each agent that can spawn at this time
             for agent in active_agents:
+                # Handle initial spawn
                 if agent.can_spawn(current_time) and agent.state.value == "waiting":
                     logger.info(f"Agent {agent.agent_id} spawning at t={current_time:.2f}")
+                    try:
+                        # Spawn agent (sets progress=0.0, state=ACTIVE)
+                        agent.spawn(current_time, task)
+                        # Initialize checkpoint tracking
+                        agent._last_checkpoint_processed = -1
+                        logger.info(f"✓ Agent {agent.agent_id} spawned at checkpoint 0.0")
+                    except Exception as e:
+                        logger.error(f"Error spawning agent {agent.agent_id}: {e}", exc_info=True)
+                        continue
+
+                # Check for checkpoint crossing (continuous communication as agent descends)
+                if hasattr(agent, 'should_process_at_checkpoint') and agent.should_process_at_checkpoint(current_time):
+                    checkpoint = agent.get_current_checkpoint()
+                    logger.info(f"📍 Agent {agent.agent_id} crossed checkpoint {checkpoint:.1f} (progress={agent.progress:.3f})")
 
                     try:
-                        # Spawn agent
-                        agent.spawn(current_time, task)
-
-                        # Build enriched collaborative context for this agent
+                        # Build enriched collaborative context for this checkpoint
                         # This retrieves previous agent outputs so the agent can build upon them
                         try:
                             enriched_context = context_builder.build_agent_context(
@@ -190,18 +221,27 @@ def run_felix_workflow(felix_system, task_input: str,
                             # Update task with enriched context for collaborative processing
                             task.context_history = enriched_context.context_history
                             task.knowledge_entries = enriched_context.knowledge_entries
-                            logger.info(f"✓ Using collaborative context with {len(enriched_context.context_history)} previous outputs")
+                            logger.info(f"  ✓ Using collaborative context with {len(enriched_context.context_history)} previous outputs")
 
                         except Exception as ctx_error:
-                            logger.warning(f"⚠ Collaborative context building failed, falling back to non-collaborative mode: {ctx_error}")
+                            logger.warning(f"  ⚠ Collaborative context building failed, falling back to non-collaborative mode: {ctx_error}")
                             # Clear any partial context and continue without collaboration
                             task.context_history = None
                             task.knowledge_entries = None
 
-                        # Process task through LLM (with or without collaborative context)
-                        result = agent.process_task_with_llm(task, current_time)
+                        # Process task through LLM at this checkpoint (with or without collaborative context)
+                        # Pass central_post and streaming flag for real-time communication
+                        result = agent.process_task_with_llm(
+                            task,
+                            current_time,
+                            central_post=central_post,
+                            enable_streaming=felix_system.config.enable_streaming
+                        )
 
-                        logger.info(f"Agent {agent.agent_id} completed: confidence={result.confidence:.2f}")
+                        # Mark checkpoint as processed
+                        agent.mark_checkpoint_processed()
+
+                        logger.info(f"  ✓ Agent {agent.agent_id} completed checkpoint {checkpoint:.1f}: confidence={result.confidence:.2f}, stage={agent.processing_stage}")
 
                         # Store agent output with full metrics for GUI display
                         agent_manager.store_agent_output(
@@ -232,36 +272,19 @@ def run_felix_workflow(felix_system, task_input: str,
                             "agent_id": agent.agent_id,
                             "agent_type": agent.agent_type,
                             "confidence": result.confidence,
-                            "response": result.content,  # Changed from "content_preview" to "response"
-                            "time": current_time
+                            "response": result.content,
+                            "time": current_time,
+                            "checkpoint": checkpoint,  # NEW: Track which checkpoint this was
+                            "progress": agent.progress   # NEW: Track agent progress
                         })
 
-                        # Track synthesis agent outputs for final synthesis
-                        # Apply Felix natural selection: only accept if deep in helix (depth >= 0.7)
-                        if agent.agent_type.lower() == "synthesis":
-                            # Get depth_ratio from position_info
-                            depth_ratio = result.position_info.get("depth_ratio", 0.0)
-
-                            # Apply natural selection criteria: depth >= 0.7 AND confidence >= 0.8
-                            if depth_ratio >= 0.7 and result.confidence >= 0.8:
-                                # This synthesis passes natural selection - can be final output
-                                if results["final_synthesis"] is None or result.confidence > results["final_synthesis"]["confidence"]:
-                                    results["final_synthesis"] = {
-                                        "agent_id": agent.agent_id,
-                                        "content": result.content,
-                                        "confidence": result.confidence,
-                                        "depth_ratio": depth_ratio,
-                                        "time": current_time
-                                    }
-                                    logger.info(f"✓ Accepted synthesis from {agent.agent_id} (depth: {depth_ratio:.2f}, confidence: {result.confidence:.2f})")
-                            else:
-                                logger.info(f"⚠ Synthesis from {agent.agent_id} rejected by natural selection (depth: {depth_ratio:.2f} < 0.7 or confidence: {result.confidence:.2f} < 0.8) - continuing helical descent")
+                        # Note: Synthesis now performed by CentralPost, not synthesis agents
 
                         if progress_callback:
-                            progress_callback(f"{agent.agent_type} agent completed", progress_pct + 5)
+                            progress_callback(f"{agent.agent_type} checkpoint {checkpoint:.1f}", progress_pct + 5)
 
                     except Exception as e:
-                        logger.error(f"Error processing agent {agent.agent_id}: {e}", exc_info=True)
+                        logger.error(f"Error processing agent {agent.agent_id} at checkpoint {checkpoint:.1f}: {e}", exc_info=True)
 
             # Process pending messages in CentralPost
             messages_this_step = 0
@@ -288,54 +311,58 @@ def run_felix_workflow(felix_system, task_input: str,
                     logger.info("No messages yet - spawning additional agents to reach minimum team size")
 
                     # Spawn analysis agent
-                    try:
-                        analysis_agent = agent_factory.create_analysis_agent(
-                            analysis_type="comparative",
-                            spawn_time_range=(current_time, current_time + 0.01)
-                        )
-                        agent_manager.register_agent(analysis_agent)
+                    analysis_agent = agent_factory.create_analysis_agent(
+                        analysis_type="comparative",
+                        spawn_time_range=(current_time, current_time + 0.01)
+                    )
+                    agent_manager.register_agent(analysis_agent)
 
-                        # CRITICAL: Create spoke connection (handles central_post registration)
-                        if felix_system.spoke_manager:
-                            felix_system.spoke_manager.create_spoke(analysis_agent)
+                    # CRITICAL: Create spoke connection (handles central_post registration)
+                    registration_successful = False
+                    if felix_system.spoke_manager:
+                        spoke = felix_system.spoke_manager.create_spoke(analysis_agent)
+                        if spoke:
                             logger.info(f"Created spoke connection for {analysis_agent.agent_id}")
-                        elif felix_system.central_post:
-                            felix_system.central_post.register_agent(analysis_agent)
+                            registration_successful = True
+                    elif felix_system.central_post:
+                        connection_id = felix_system.central_post.register_agent(analysis_agent)
+                        if connection_id:
                             logger.info(f"Registered {analysis_agent.agent_id} directly with central_post")
+                            registration_successful = True
 
+                    if registration_successful:
                         active_agents.append(analysis_agent)
                         results["agents_spawned"].append(analysis_agent.agent_id)
                         logger.info(f"  → Spawned {analysis_agent.agent_type}: {analysis_agent.agent_id}")
-                    except ValueError as e:
-                        if "Maximum agent connections exceeded" in str(e) or "max_agents" in str(e).lower():
-                            logger.warning(f"⚠ Agent cap reached during fallback spawning")
-                        else:
-                            raise
+                    else:
+                        logger.warning(f"⚠ Agent cap reached during fallback spawning - skipping {analysis_agent.agent_id}")
 
                     # Also spawn critic agent for minimum team
                     if len(active_agents) < 3:
-                        try:
-                            critic_agent = agent_factory.create_critic_agent(
-                                spawn_time_range=(current_time, current_time + 0.01)
-                            )
-                            agent_manager.register_agent(critic_agent)
+                        critic_agent = agent_factory.create_critic_agent(
+                            spawn_time_range=(current_time, current_time + 0.01)
+                        )
+                        agent_manager.register_agent(critic_agent)
 
-                            # CRITICAL: Create spoke connection (handles central_post registration)
-                            if felix_system.spoke_manager:
-                                felix_system.spoke_manager.create_spoke(critic_agent)
+                        # CRITICAL: Create spoke connection (handles central_post registration)
+                        registration_successful = False
+                        if felix_system.spoke_manager:
+                            spoke = felix_system.spoke_manager.create_spoke(critic_agent)
+                            if spoke:
                                 logger.info(f"Created spoke connection for {critic_agent.agent_id}")
-                            elif felix_system.central_post:
-                                felix_system.central_post.register_agent(critic_agent)
+                                registration_successful = True
+                        elif felix_system.central_post:
+                            connection_id = felix_system.central_post.register_agent(critic_agent)
+                            if connection_id:
                                 logger.info(f"Registered {critic_agent.agent_id} directly with central_post")
+                                registration_successful = True
 
+                        if registration_successful:
                             active_agents.append(critic_agent)
                             results["agents_spawned"].append(critic_agent.agent_id)
                             logger.info(f"  → Spawned {critic_agent.agent_type}: {critic_agent.agent_id}")
-                        except ValueError as e:
-                            if "Maximum agent connections exceeded" in str(e) or "max_agents" in str(e).lower():
-                                logger.warning(f"⚠ Agent cap reached during fallback spawning")
-                            else:
-                                raise
+                        else:
+                            logger.warning(f"⚠ Agent cap reached during fallback spawning - skipping {critic_agent.agent_id}")
 
                     if progress_callback:
                         progress_callback(f"Spawned fallback agents", progress_pct + 2)
@@ -367,36 +394,35 @@ def run_felix_workflow(felix_system, task_input: str,
                 if new_agents:
                     logger.info(f"✓ Spawning {len(new_agents)} new agents based on confidence/gaps")
                     for new_agent in new_agents:
-                        try:
-                            # Register with agent_manager
-                            agent_manager.register_agent(new_agent)
+                        # Register with agent_manager
+                        agent_manager.register_agent(new_agent)
 
-                            # CRITICAL: Create spoke connection for O(N) communication
-                            # Spoke creation handles central_post registration automatically
-                            if felix_system.spoke_manager:
-                                felix_system.spoke_manager.create_spoke(new_agent)
+                        # CRITICAL: Create spoke connection for O(N) communication
+                        # Spoke creation handles central_post registration automatically
+                        registration_successful = False
+                        if felix_system.spoke_manager:
+                            spoke = felix_system.spoke_manager.create_spoke(new_agent)
+                            if spoke:
                                 logger.info(f"Created spoke connection for {new_agent.agent_id}")
-                            elif felix_system.central_post:
-                                felix_system.central_post.register_agent(new_agent)
+                                registration_successful = True
+                        elif felix_system.central_post:
+                            connection_id = felix_system.central_post.register_agent(new_agent)
+                            if connection_id:
                                 logger.info(f"Registered {new_agent.agent_id} directly with central_post")
+                                registration_successful = True
 
+                        if registration_successful:
                             active_agents.append(new_agent)
                             results["agents_spawned"].append(new_agent.agent_id)
-
                             logger.info(f"  → {new_agent.agent_type} agent: {new_agent.agent_id}")
 
                             if progress_callback:
                                 progress_callback(f"Spawned {new_agent.agent_type} agent", progress_pct + 2)
-
-                        except ValueError as e:
-                            if "Maximum agent connections exceeded" in str(e) or "max_agents" in str(e).lower():
-                                logger.warning(f"⚠ Agent cap reached - cannot spawn {new_agent.agent_id}")
-                                logger.info(f"→ Continuing with {len(active_agents)} existing agents to complete helical progression")
-                                # Stop trying to spawn more agents - let existing agents finish
-                                break
-                            else:
-                                # Re-raise other ValueErrors
-                                raise
+                        else:
+                            # Agent cap reached - stop trying to spawn more agents
+                            logger.warning(f"⚠ Agent cap reached - cannot spawn {new_agent.agent_id}")
+                            logger.info(f"→ Continuing with {len(active_agents)} existing agents to complete helical progression")
+                            break
                 else:
                     logger.info(f"✗ No spawning needed (sufficient confidence or at capacity)")
 
@@ -419,56 +445,39 @@ def run_felix_workflow(felix_system, task_input: str,
                     logger.info(f"  Average: {avg_recent:.2f} (threshold: 0.80)")
                     logger.info(f"  Team size: {len(results['agents_spawned'])} (minimum: 3)")
 
-                    # Depth-aware synthesis output logging (respects Felix natural selection)
-                    if results['final_synthesis']:
-                        depth = results['final_synthesis'].get('depth_ratio', 0.0)
-                        conf = results['final_synthesis'].get('confidence', 0.0)
-                        passes_selection = depth >= 0.7 and conf >= 0.8
-                        logger.info(f"  Synthesis output: Yes (depth: {depth:.2f}, confidence: {conf:.2f}, passes natural selection: {passes_selection})")
+                    # CentralPost synthesis status
+                    if results['centralpost_synthesis']:
+                        logger.info(f"  CentralPost Synthesis: Complete (confidence: {results['centralpost_synthesis']['confidence']:.2f})")
                     else:
-                        logger.info(f"  Synthesis output: No (waiting for synthesis at depth >= 0.7 with confidence >= 0.8)")
+                        logger.info(f"  CentralPost Synthesis: Pending (will trigger at consensus)")
 
-                    # Exit if high confidence + sufficient agents + synthesis agent has run
-                    if avg_recent >= 0.80 and len(results["agents_spawned"]) >= 3 and results["final_synthesis"] is not None:
-                        logger.info(f"\n✓ Confident consensus reached with synthesis output!")
+                    # Trigger CentralPost synthesis when confidence threshold reached
+                    if avg_recent >= 0.80 and len(results["agents_spawned"]) >= 3:
+                        logger.info(f"\n✓ Confidence threshold reached - triggering CentralPost synthesis...")
                         logger.info(f"  Confidence: {avg_recent:.2f} >= threshold (0.80)")
                         logger.info(f"  Team size: {len(results['agents_spawned'])} >= minimum (3)")
-                        logger.info(f"  Synthesis agent: {results['final_synthesis']['agent_id']}")
-                        if progress_callback:
-                            progress_callback(f"Consensus reached!", 100.0)
-                        break  # Early exit - consensus achieved!
-                    elif avg_recent >= 0.80 and results["final_synthesis"] is None:
-                        logger.info(f"  ⚠ Confidence threshold met but no synthesis output yet - continuing...")
-                        # Force spawn synthesis agent if approaching consensus without one
-                        synthesis_agents = [a for a in active_agents if a.agent_type.lower() == "synthesis"]
-                        if not synthesis_agents:
-                            logger.info(f"  → Spawning fallback synthesis agent to generate final output...")
-                            try:
-                                # Create synthesis agent using agent_factory (correct method)
-                                synthesis_agent = agent_factory.create_synthesis_agent(
-                                    output_format="comprehensive",
-                                    spawn_time_range=(current_time, current_time + 0.05)
-                                )
 
-                                # Register with agent_manager
-                                agent_manager.register_agent(synthesis_agent)
+                        try:
+                            synthesis_result = central_post.synthesize_agent_outputs(
+                                task_description=task_input,
+                                max_messages=20
+                            )
+                            results["centralpost_synthesis"] = synthesis_result
+                            logger.info(f"✓ CentralPost synthesis complete!")
+                            logger.info(f"  Synthesis confidence: {synthesis_result['confidence']:.2f}")
+                            logger.info(f"  Agents synthesized: {synthesis_result['agents_synthesized']}")
+                            logger.info(f"  Tokens used: {synthesis_result['tokens_used']} / {synthesis_result['max_tokens']}")
 
-                                # Create spoke connection
-                                if felix_system.spoke_manager:
-                                    felix_system.spoke_manager.create_spoke(synthesis_agent)
-                                    logger.info(f"Created spoke connection for {synthesis_agent.agent_id}")
-                                elif felix_system.central_post:
-                                    felix_system.central_post.register_agent(synthesis_agent)
-                                    logger.info(f"Registered {synthesis_agent.agent_id} directly with central_post")
+                            if progress_callback:
+                                progress_callback(f"Synthesis complete!", 100.0)
+                            break  # Exit after successful synthesis
 
-                                active_agents.append(synthesis_agent)
-                                results["agents_spawned"].append(synthesis_agent.agent_id)
-                                logger.info(f"  ✓ Spawned fallback synthesis agent: {synthesis_agent.agent_id}")
-                            except ValueError as e:
-                                if "Maximum agent connections exceeded" in str(e) or "max_agents" in str(e).lower():
-                                    logger.warning(f"  ⚠ Cannot spawn fallback synthesis - agent cap reached")
-                                else:
-                                    raise
+                        except Exception as e:
+                            logger.error(f"✗ CentralPost synthesis failed: {e}")
+                            logger.info(f"  Continuing workflow to gather more agent outputs...")
+                            # Don't break - continue to gather more agent outputs
+
+                    # Note: Old synthesis agent spawning logic removed - CentralPost handles synthesis now
 
         # Final processing
         logger.info("\n--- Final Processing ---")
@@ -489,21 +498,31 @@ def run_felix_workflow(felix_system, task_input: str,
         results["completed_agents"] = len(results["llm_responses"])  # Agents that processed
         results["total_agents"] = len(active_agents)
 
-        # Check for synthesis agent output (required for proper final output)
-        if results["final_synthesis"] is None:
-            if results["llm_responses"]:
-                # Use highest confidence output as last resort, but log warning
-                highest_confidence_response = max(results["llm_responses"], key=lambda r: r.get("confidence", 0.0))
-                results["final_synthesis"] = {
-                    "agent_id": highest_confidence_response["agent_id"],
-                    "content": highest_confidence_response["response"],
-                    "confidence": highest_confidence_response["confidence"],
-                    "time": highest_confidence_response["time"]
-                }
-                logger.warning(f"⚠ WARNING: No synthesis agent output! Using fallback from {highest_confidence_response['agent_id']}")
-                logger.warning(f"   This indicates workflow completed before synthesis phase - consider increasing max_steps")
-            else:
-                logger.error(f"✗ ERROR: No agent outputs available for final synthesis!")
+        # Ensure CentralPost synthesis has been performed
+        if results["centralpost_synthesis"] is None:
+            logger.info("Triggering final CentralPost synthesis...")
+            try:
+                synthesis_result = central_post.synthesize_agent_outputs(
+                    task_description=task_input,
+                    max_messages=20
+                )
+                results["centralpost_synthesis"] = synthesis_result
+                logger.info(f"✓ Final CentralPost synthesis complete")
+            except Exception as e:
+                logger.error(f"✗ CentralPost synthesis failed: {e}")
+                # Fallback to highest confidence agent output
+                if results["llm_responses"]:
+                    highest_confidence_response = max(results["llm_responses"], key=lambda r: r.get("confidence", 0.0))
+                    results["centralpost_synthesis"] = {
+                        "synthesis_content": highest_confidence_response["response"],
+                        "confidence": highest_confidence_response["confidence"],
+                        "agents_synthesized": 1,
+                        "fallback": True,
+                        "fallback_agent_id": highest_confidence_response["agent_id"]
+                    }
+                    logger.warning(f"⚠ WARNING: Using fallback synthesis from {highest_confidence_response['agent_id']}")
+                else:
+                    logger.error(f"✗ ERROR: No agent outputs available for synthesis!")
 
         logger.info("="*60)
         logger.info("FELIX WORKFLOW COMPLETED")

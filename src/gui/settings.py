@@ -125,6 +125,8 @@ class SettingsFrame(ttk.Frame):
                                                    "Use O(N) hub-spoke communication")
         current_row = self._create_checkbox_field(current_row, "verbose_llm_logging", "Verbose LLM Logging", True,
                                                    "Log detailed LLM requests/responses")
+        current_row = self._create_checkbox_field(current_row, "enable_streaming", "Enable Streaming", True,
+                                                   "Enable incremental token streaming for real-time agent communication")
         current_row += 1
 
         # Appearance Section
@@ -408,6 +410,7 @@ class SettingsFrame(ttk.Frame):
                 "enable_compression": True,
                 "enable_spoke_topology": True,
                 "verbose_llm_logging": True,
+                "enable_streaming": True,
                 "dark_mode": False
             }
 

@@ -6,7 +6,7 @@
 
 Felix is a Python multi-agent AI framework that leverages helical geometry for adaptive agent progression, enabling dynamic, scalable AI interactions. The framework models agent behaviors and communications along helical structures, allowing for continuous evolution and optimization of AI tasks through a hub-spoke communication model combined with helical progression.
 
-Key features include helical progression from exploration (top_radius=3.0) to synthesis (bottom_radius=0.5), dynamic agent spawning based on confidence thresholds (0.80), role-specialized agents (Research/Analysis/Synthesis/Critic), efficient hub-spoke messaging (O(N) complexity), persistent memory with SQLite storage and abstractive compression (target_length=100, ~0.3 ratio), local LLM integration via LMStudioClient with token budgeting (base=2048, strict mode), and linear pipelines with chunking (chunk=512).
+Key features include helical progression from exploration (top_radius=3.0) to synthesis (bottom_radius=0.5), dynamic agent spawning based on confidence thresholds (0.80), role-specialized agents (Research/Analysis/Critic), smart CentralPost synthesis (adaptive temp 0.2-0.4, tokens 1500-3000), efficient hub-spoke messaging (O(N) complexity), persistent memory with SQLite storage and abstractive compression (target_length=100, ~0.3 ratio), local LLM integration via LMStudioClient with token budgeting (base=2048, strict mode), and linear pipelines with chunking (chunk=512).
 
 Felix validates three key hypotheses: H1 (helical progression enhances agent adaptation by 20% workload distribution), H2 (hub-spoke communication optimizes resource allocation by 15% efficiency), and H3 (memory compression reduces latency by 25% attention focus). The framework supports up to 133 agents and is designed for applications like autonomous drone swarms, personalized AI assistants, and scalable chatbots.
 
@@ -15,7 +15,8 @@ For detailed structure, see [index.md](index.md).
 ## Features
 
 - **Helical Progression**: Agents evolve along spiral paths from broad exploration to focused synthesis
-- **Role-Specialized Agents**: Research, Analysis, Synthesis, and Critic agents with position-aware behavior
+- **Role-Specialized Agents**: Research, Analysis, and Critic agents with position-aware behavior
+- **Smart CentralPost**: Hub performs intelligent final synthesis with adaptive parameters
 - **Hub-Spoke Communication**: O(N) efficient messaging vs O(N²) mesh networks
 - **Token-Budgeted LLM Calls**: Local LM Studio integration with adaptive budgeting
 - **Context Compression**: Abstractive memory reduction for sustained performance
@@ -86,20 +87,23 @@ Felix operates through script-driven execution. Configure parameters via YAML fi
 ```python
 from src.core.helix_geometry import HelixGeometry
 from src.communication.central_post import CentralPost, AgentFactory
-from src.agents.specialized_agents import ResearchAgent, AnalysisAgent, SynthesisAgent
+from src.agents.specialized_agents import ResearchAgent, AnalysisAgent, CriticAgent
 
-# Initialize components
+# Initialize components (CentralPost now handles synthesis)
 helix = HelixGeometry(top_radius=3.0, bottom_radius=0.5, height=8.0, turns=2)
-central_post = CentralPost(max_agents=10, enable_metrics=True, enable_memory=True)
+central_post = CentralPost(max_agents=10, enable_metrics=True, enable_memory=True, llm_client=llm_client)
 agent_factory = AgentFactory(helix, llm_client)
 
 # Create and register agents
 research_agent = agent_factory.create_research_agent(domain="technical")
 analysis_agent = agent_factory.create_analysis_agent()
-synthesis_agent = agent_factory.create_synthesis_agent()
+critic_agent = agent_factory.create_critic_agent()
 
-for agent in [research_agent, analysis_agent, synthesis_agent]:
+for agent in [research_agent, analysis_agent, critic_agent]:
     central_post.register_agent(agent)
+
+# When consensus reached, CentralPost synthesizes final output
+synthesis_result = central_post.synthesize_agent_outputs(task_description="Your task")
 
 # Process tasks (see workflow steps below)
 ```

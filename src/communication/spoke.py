@@ -14,11 +14,14 @@ Key Features:
 
 import time
 import uuid
+import logging
 from typing import List, Dict, Optional, Any
 from dataclasses import dataclass
 from collections import deque
 
 from .central_post import CentralPost, Message, MessageType
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -93,12 +96,13 @@ class Spoke(SpokeConnection):
     
     def _connect(self) -> None:
         """Establish connection to central post."""
-        try:
-            self._connection_id = self.central_post.register_agent(self.agent)
-            self._is_connected = True
-        except ValueError as e:
+        self._connection_id = self.central_post.register_agent(self.agent)
+        if self._connection_id is None:
+            # Agent cap reached - gracefully fail connection
             self._is_connected = False
-            raise RuntimeError(f"Failed to connect spoke for {self.agent_id}: {e}")
+            logger.warning(f"Could not connect spoke for {self.agent_id}: agent cap reached")
+        else:
+            self._is_connected = True
     
     @property
     def is_connected(self) -> bool:
@@ -318,22 +322,28 @@ class SpokeManager:
         self.central_post = central_post
         self._spokes: Dict[str, Spoke] = {}
     
-    def create_spoke(self, agent) -> Spoke:
+    def create_spoke(self, agent) -> Optional[Spoke]:
         """
         Create and register a spoke for an agent.
-        
+
         Args:
             agent: Agent instance to create spoke for
-            
+
         Returns:
-            Created spoke instance
+            Created spoke instance, or None if agent cap reached
         """
         if agent.agent_id in self._spokes:
             raise ValueError(f"Spoke already exists for agent {agent.agent_id}")
-        
+
         spoke = Spoke(agent=agent, central_post=self.central_post)
+
+        # Check if connection succeeded
+        if not spoke.is_connected:
+            # Agent cap reached - don't store the spoke
+            logger.warning(f"Failed to create spoke for {agent.agent_id}: agent cap reached")
+            return None
+
         self._spokes[agent.agent_id] = spoke
-        
         return spoke
     
     def get_spoke(self, agent_id: str) -> Optional[Spoke]:

@@ -220,6 +220,7 @@ class LLMAgent(Agent):
         self.total_tokens_used = 0
         self.total_processing_time = 0.0
         self.processing_stage = 0  # Current processing stage in helix descent
+        self._last_checkpoint_processed = -1  # Track last checkpoint for multi-stage processing
         
         # Communication state
         self.shared_context: Dict[str, Any] = {}
@@ -451,6 +452,65 @@ class LLMAgent(Agent):
         # Total normalized to 0.0-1.0
         total = (count_bonus + consensus_bonus + synthesis_bonus) / 1.0
         return min(total, 1.0)
+
+    # Helical checkpoint system for continuous communication
+    HELICAL_CHECKPOINTS = [0.0, 0.3, 0.5, 0.7, 0.9]
+
+    def should_process_at_checkpoint(self, current_time: float) -> bool:
+        """
+        Check if agent has crossed a checkpoint threshold and should make an LLM call.
+
+        This enables continuous communication as agents descend the helix:
+        - Spawn (0.0): Initial exploration
+        - Checkpoint 0.3: Early analysis
+        - Checkpoint 0.5: Mid-analysis
+        - Checkpoint 0.7: Synthesis preparation
+        - Checkpoint 0.9: Final synthesis
+
+        Uses existing self._progress attribute from base Agent class that
+        tracks position along helix (0.0 = top/wide, 1.0 = bottom/narrow).
+
+        Args:
+            current_time: Current simulation time
+
+        Returns:
+            True if agent has crossed a new checkpoint since last LLM call
+        """
+        # Get current checkpoint index based on progress
+        current_checkpoint_index = -1
+
+        # Find highest checkpoint agent has passed
+        for i, checkpoint in enumerate(self.HELICAL_CHECKPOINTS):
+            if self._progress >= checkpoint:
+                current_checkpoint_index = i
+
+        # Should process if we've passed a new checkpoint
+        should_process = current_checkpoint_index > self._last_checkpoint_processed
+
+        return should_process
+
+    def get_current_checkpoint(self) -> float:
+        """
+        Get the checkpoint value agent is currently at or has passed.
+
+        Returns:
+            Checkpoint value (0.0, 0.3, 0.5, 0.7, or 0.9)
+        """
+        for i in range(len(self.HELICAL_CHECKPOINTS) - 1, -1, -1):
+            if self._progress >= self.HELICAL_CHECKPOINTS[i]:
+                return self.HELICAL_CHECKPOINTS[i]
+        return 0.0
+
+    def mark_checkpoint_processed(self) -> None:
+        """
+        Mark current checkpoint as processed after making an LLM call.
+
+        Updates _last_checkpoint_processed to prevent redundant calls at same checkpoint.
+        """
+        # Find current checkpoint index
+        for i, checkpoint in enumerate(self.HELICAL_CHECKPOINTS):
+            if self._progress >= checkpoint:
+                self._last_checkpoint_processed = i
 
     def create_position_aware_prompt(self, task: LLMTask, current_time: float) -> tuple[str, int]:
         """
@@ -803,14 +863,18 @@ class LLMAgent(Agent):
         
         return result
         
-    def process_task_with_llm(self, task: LLMTask, current_time: float) -> LLMResult:
+    def process_task_with_llm(self, task: LLMTask, current_time: float,
+                              central_post: Optional['CentralPost'] = None,
+                              enable_streaming: bool = True) -> LLMResult:
         """
-        Process task using LLM with position-aware prompting (sync wrapper).
-        
+        Process task using LLM with position-aware prompting and optional streaming.
+
         Args:
             task: Task to process
             current_time: Current simulation time
-            
+            central_post: CentralPost for streaming updates (optional)
+            enable_streaming: Use streaming if available (default True)
+
         Returns:
             LLM processing result
         """
@@ -837,30 +901,75 @@ class LLMAgent(Agent):
             logger.info(f"Agent {self.agent_id} processing without collaborative context")
             user_prompt = task.description
 
-        # Process with LLM using coordinated token budget (SYNC)
+        # Streaming callback for real-time updates
+        def streaming_callback(chunk):
+            """Send partial thoughts to CentralPost during streaming."""
+            if central_post and hasattr(central_post, 'receive_partial_thought'):
+                try:
+                    central_post.receive_partial_thought(
+                        agent_id=self.agent_id,
+                        partial_content=chunk.content,
+                        accumulated=chunk.accumulated,
+                        progress=self._progress,
+                        metadata={
+                            "agent_type": self.agent_type,
+                            "checkpoint": self.get_current_checkpoint() if hasattr(self, 'get_current_checkpoint') else 0.0,
+                            "tokens_so_far": chunk.tokens_so_far,
+                            "position_info": position_info
+                        }
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to send streaming chunk to hub: {e}")
+
+        # Choose streaming or non-streaming based on feature flag
         # Note: Multi-server client pool requires async, so fall back to first available server
         if isinstance(self.llm_client, LMStudioClientPool):
             # For sync calls with pool, use the first available client
             server_name = self.llm_client.get_server_for_agent_type(self.agent_type)
             if server_name and server_name in self.llm_client.clients:
                 client = self.llm_client.clients[server_name]
-                llm_response = client.complete(
+
+                # Use streaming if enabled and client supports it
+                if enable_streaming and hasattr(client, 'complete_streaming'):
+                    llm_response = client.complete_streaming(
+                        agent_id=self.agent_id,
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt,
+                        temperature=temperature,
+                        max_tokens=effective_token_budget,
+                        batch_interval=0.1,
+                        callback=streaming_callback
+                    )
+                else:
+                    llm_response = client.complete(
+                        agent_id=self.agent_id,
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt,
+                        temperature=temperature,
+                        max_tokens=effective_token_budget
+                    )
+            else:
+                raise RuntimeError(f"No available server for agent type: {self.agent_type}")
+        else:
+            # Use streaming if enabled and client supports it
+            if enable_streaming and hasattr(self.llm_client, 'complete_streaming'):
+                llm_response = self.llm_client.complete_streaming(
+                    agent_id=self.agent_id,
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    temperature=temperature,
+                    max_tokens=effective_token_budget,
+                    batch_interval=0.1,
+                    callback=streaming_callback
+                )
+            else:
+                llm_response = self.llm_client.complete(
                     agent_id=self.agent_id,
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
                     temperature=temperature,
                     max_tokens=effective_token_budget
                 )
-            else:
-                raise RuntimeError(f"No available server for agent type: {self.agent_type}")
-        else:
-            llm_response = self.llm_client.complete(
-                agent_id=self.agent_id,
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                temperature=temperature,
-                max_tokens=effective_token_budget
-            )
         
         end_time = time.perf_counter()
         processing_time = end_time - start_time
@@ -896,26 +1005,37 @@ class LLMAgent(Agent):
             token_budget_allocated=effective_token_budget,
             collaborative_context_count=collaborative_count
         )
-        
+
+        # Notify hub of streaming completion (if streaming was used)
+        if enable_streaming and central_post and hasattr(central_post, 'finalize_streaming_thought'):
+            try:
+                central_post.finalize_streaming_thought(
+                    agent_id=self.agent_id,
+                    final_content=llm_response.content,
+                    confidence=confidence
+                )
+            except Exception as e:
+                logger.warning(f"Failed to finalize streaming thought with hub: {e}")
+
         # Record token usage with budget manager
         if self.token_budget_manager:
             self.token_budget_manager.record_usage(self.agent_id, llm_response.tokens_used)
-        
+
         # Record prompt metrics for optimization
         prompt_context = self._get_prompt_context(position_info.get("depth_ratio", 0.0))
         self._record_prompt_metrics(system_prompt, prompt_context, result)
-        
+
         # Update statistics
         self.processing_results.append(result)
         self.total_tokens_used += llm_response.tokens_used
         self.total_processing_time += processing_time
-        
+
         logger.info(f"Agent {self.agent_id} processed task {task.task_id} "
                    f"at depth {position_info.get('depth_ratio', 0):.2f} "
                    f"in {processing_time:.2f}s")
-        
+
         return result
-    
+
     # Legacy method alias for backward compatibility
     async def process_task_async(self, task: LLMTask, current_time: float) -> LLMResult:
         """

@@ -209,7 +209,7 @@ from .utils import ThreadManager, logger
 from ..agents import dynamic_spawning
 from ..agents.agent import AgentState
 from ..communication import mesh
-from ..agents.specialized_agents import ResearchAgent, AnalysisAgent, SynthesisAgent, CriticAgent
+from ..agents.specialized_agents import ResearchAgent, AnalysisAgent, CriticAgent
 from ..communication.central_post import CentralPost, Message, MessageType
 ```
 
@@ -313,7 +313,7 @@ from src.llm.token_budget import TokenBudgetManager
 from src.memory.knowledge_store import KnowledgeStore
 from src.memory.task_memory import TaskMemory
 from src.memory.context_compression import ContextCompressor, CompressionConfig, CompressionStrategy, CompressionLevel
-from src.agents import ResearchAgent, AnalysisAgent, SynthesisAgent, CriticAgent, PromptOptimizer
+from src.agents import ResearchAgent, AnalysisAgent, CriticAgent, PromptOptimizer
 from src.agents.agent import AgentState
 ```
 
