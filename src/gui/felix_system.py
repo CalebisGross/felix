@@ -19,7 +19,7 @@ from src.llm.token_budget import TokenBudgetManager
 from src.memory.knowledge_store import KnowledgeStore
 from src.memory.task_memory import TaskMemory
 from src.memory.context_compression import ContextCompressor, CompressionConfig, CompressionStrategy, CompressionLevel
-from src.agents import ResearchAgent, AnalysisAgent, SynthesisAgent, CriticAgent, PromptOptimizer
+from src.agents import ResearchAgent, AnalysisAgent, CriticAgent, PromptOptimizer
 from src.agents.agent import AgentState
 
 logger = logging.getLogger(__name__)
@@ -58,6 +58,8 @@ class FelixConfig:
     enable_compression: bool = True
     enable_spoke_topology: bool = True
     verbose_llm_logging: bool = True  # Log detailed LLM requests/responses
+    enable_streaming: bool = True  # Enable incremental token streaming for real-time communication
+    streaming_batch_interval: float = 0.1  # Send partial updates every 100ms
 
 
 class AgentManager:
@@ -237,9 +239,10 @@ class FelixSystem:
                 max_agents=self.config.max_agents,
                 enable_metrics=self.config.enable_metrics,
                 enable_memory=self.config.enable_memory,
-                memory_db_path=self.config.memory_db_path
+                memory_db_path=self.config.memory_db_path,
+                llm_client=self.lm_client  # For CentralPost synthesis capability
             )
-            logger.info("Central post initialized")
+            logger.info("Central post initialized with synthesis capability")
 
             # Initialize spoke manager (for O(N) communication topology)
             if self.config.enable_spoke_topology:
@@ -354,16 +357,6 @@ class FelixSystem:
                     analysis_type=domain,
                     token_budget_manager=self.token_budget_manager,
                     max_tokens=800
-                )
-            elif agent_type.lower() == "synthesis":
-                agent = SynthesisAgent(
-                    agent_id=agent_id,
-                    spawn_time=spawn_time,
-                    helix=self.helix,
-                    llm_client=self.lm_client,
-                    output_format=domain,
-                    token_budget_manager=self.token_budget_manager,
-                    max_tokens=1200
                 )
             elif agent_type.lower() == "critic":
                 agent = CriticAgent(

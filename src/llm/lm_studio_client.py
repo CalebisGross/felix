@@ -11,7 +11,7 @@ provides OpenAI-compatible API endpoints for local language model inference.
 import asyncio
 import time
 import logging
-from typing import Optional, Dict, Any, List, Union
+from typing import Optional, Dict, Any, List, Union, Callable
 from dataclasses import dataclass
 from enum import Enum
 from openai import OpenAI
@@ -51,6 +51,16 @@ class LLMResponse:
     response_time: float
     model: str
     temperature: float
+    agent_id: str
+    timestamp: float
+
+
+@dataclass
+class StreamingChunk:
+    """Incremental streaming chunk from LLM with time-batching."""
+    content: str           # Partial text since last batch
+    accumulated: str       # Full content accumulated so far
+    tokens_so_far: int     # Running token count (approximate)
     agent_id: str
     timestamp: float
 
@@ -253,7 +263,165 @@ class LMStudioClient:
         except Exception as e:
             logger.error(f"LLM completion failed for {agent_id}: {e}")
             raise
-    
+
+    def complete_streaming(
+        self,
+        agent_id: str,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float = 0.7,
+        max_tokens: Optional[int] = None,
+        model: str = "local-model",
+        batch_interval: float = 0.1,
+        callback: Optional[Callable[[StreamingChunk], None]] = None
+    ) -> LLMResponse:
+        """
+        Stream LLM completion with time-batched token delivery.
+
+        Tokens are accumulated and sent to callback every `batch_interval` seconds
+        to create real-time feel without excessive overhead.
+
+        Args:
+            agent_id: Identifier for requesting agent
+            system_prompt: System/context prompt
+            user_prompt: User query/task
+            temperature: Sampling temperature (0.0-1.0)
+            max_tokens: Maximum tokens in response
+            model: Model identifier
+            batch_interval: Time between partial updates (default 0.1s = 100ms)
+            callback: Called with batched chunks for real-time updates
+
+        Returns:
+            Complete LLMResponse after stream finishes
+
+        Raises:
+            LMStudioConnectionError: If cannot connect to LM Studio
+        """
+        self.ensure_connection()
+
+        start_time = time.perf_counter()
+        accumulated_content = ""
+        batch_buffer = ""  # Buffer for time-based batching
+        last_batch_time = time.time()
+        tokens_so_far = 0
+
+        try:
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
+
+            if self.verbose_logging:
+                system_preview = system_prompt[:100] + "..." if len(system_prompt) > 100 else system_prompt
+                user_preview = user_prompt[:100] + "..." if len(user_prompt) > 100 else user_prompt
+
+                logger.info("=" * 60)
+                logger.info(f"STREAMING LLM REQUEST (time-batched, interval={batch_interval}s)")
+                logger.info(f"  Agent: {agent_id}")
+                logger.info(f"  Model: {model}")
+                logger.info(f"  Temperature: {temperature}, Max Tokens: {max_tokens}")
+                logger.info(f"  System Prompt ({len(system_prompt)} chars): {system_preview}")
+                logger.info(f"  User Prompt ({len(user_prompt)} chars): {user_preview}")
+                logger.info("=" * 60)
+
+            if self.debug_mode:
+                print(f"\n🔍 DEBUG STREAMING LLM CALL for {agent_id}")
+                print(f"📝 System Prompt:\n{system_prompt}")
+                print(f"🎯 User Prompt:\n{user_prompt}")
+                print(f"🌡️ Temperature: {temperature}, Max Tokens: {max_tokens}")
+                print(f"⏱️ Batch Interval: {batch_interval}s")
+                print("━" * 60)
+
+            # Create streaming completion using OpenAI client
+            # LM Studio supports this on /v1/chat/completions endpoint
+            completion_args = {
+                "model": model,
+                "messages": messages,
+                "temperature": temperature,
+                "stream": True  # Enable streaming!
+            }
+
+            if max_tokens:
+                completion_args["max_tokens"] = max_tokens
+
+            stream = self.client.chat.completions.create(**completion_args)
+
+            # Process stream with time-based batching
+            for chunk in stream:
+                if chunk.choices and len(chunk.choices) > 0 and chunk.choices[0].delta.content:
+                    delta_content = chunk.choices[0].delta.content
+                    accumulated_content += delta_content
+                    batch_buffer += delta_content
+                    tokens_so_far += 1  # Approximate (1 token ≈ 1 chunk)
+
+                    # Check if batch interval elapsed
+                    current_time = time.time()
+                    if current_time - last_batch_time >= batch_interval:
+                        # Send batched chunk via callback
+                        if callback and batch_buffer:
+                            streaming_chunk = StreamingChunk(
+                                content=batch_buffer,
+                                accumulated=accumulated_content,
+                                tokens_so_far=tokens_so_far,
+                                agent_id=agent_id,
+                                timestamp=current_time
+                            )
+                            callback(streaming_chunk)
+
+                        # Reset batch
+                        batch_buffer = ""
+                        last_batch_time = current_time
+
+            # Send final batch if remaining
+            if batch_buffer and callback:
+                streaming_chunk = StreamingChunk(
+                    content=batch_buffer,
+                    accumulated=accumulated_content,
+                    tokens_so_far=tokens_so_far,
+                    agent_id=agent_id,
+                    timestamp=time.time()
+                )
+                callback(streaming_chunk)
+
+            end_time = time.perf_counter()
+            response_time = end_time - start_time
+
+            # Update tracking
+            self.total_tokens += tokens_so_far
+            self.total_requests += 1
+            self.total_response_time += response_time
+
+            if self.verbose_logging:
+                content_preview = accumulated_content[:200] + "..." if len(accumulated_content) > 200 else accumulated_content
+
+                logger.info("=" * 60)
+                logger.info(f"STREAMING LLM COMPLETE")
+                logger.info(f"  Agent: {agent_id}")
+                logger.info(f"  Duration: {response_time:.2f}s")
+                logger.info(f"  Tokens: ~{tokens_so_far}")
+                logger.info(f"  Content ({len(accumulated_content)} chars): {content_preview}")
+                logger.info("=" * 60)
+
+            if self.debug_mode:
+                print(f"✅ STREAMING LLM COMPLETE for {agent_id}")
+                print(f"📄 Content ({len(accumulated_content)} chars):\n{accumulated_content}")
+                print(f"📊 Tokens Used: ~{tokens_so_far}, Time: {response_time:.2f}s")
+                print("━" * 60)
+
+            return LLMResponse(
+                content=accumulated_content,
+                tokens_used=tokens_so_far,
+                response_time=response_time,
+                model=model,
+                temperature=temperature,
+                agent_id=agent_id,
+                timestamp=time.time()
+            )
+
+        except Exception as e:
+            logger.error(f"Streaming LLM completion failed for {agent_id}: {e}")
+            raise
+
     async def _ensure_async_client(self) -> httpx.AsyncClient:
         """Ensure async client is initialized."""
         if self._async_client is None:
