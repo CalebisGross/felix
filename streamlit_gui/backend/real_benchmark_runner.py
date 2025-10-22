@@ -43,7 +43,7 @@ class RealBenchmarkRunner:
         try:
             from src.core.helix_geometry import HelixGeometry
             from src.communication.central_post import CentralPost, AgentFactory
-            from src.agents.specialized_agents import ResearchAgent, AnalysisAgent, SynthesisAgent
+            from src.agents.specialized_agents import ResearchAgent, AnalysisAgent, CriticAgent
             from src.memory.context_compression import ContextCompressor, CompressionConfig
             from src.memory.knowledge_store import KnowledgeStore
             from exp.benchmarks.linear_pipeline import LinearPipeline
@@ -53,14 +53,14 @@ class RealBenchmarkRunner:
             self.AgentFactory = AgentFactory
             self.ResearchAgent = ResearchAgent
             self.AnalysisAgent = AnalysisAgent
-            self.SynthesisAgent = SynthesisAgent
+            self.CriticAgent = CriticAgent
             self.ContextCompressor = ContextCompressor
             self.CompressionConfig = CompressionConfig
             self.KnowledgeStore = KnowledgeStore
             self.LinearPipeline = LinearPipeline
 
             self.components_available = True
-            logger.info("Successfully imported Felix components for real benchmarking")
+            logger.info("Successfully imported Felix components for real benchmarking (Note: Synthesis handled by CentralPost)")
 
         except Exception as e:
             logger.warning(f"Could not import Felix components: {e}")

@@ -320,23 +320,37 @@ def main():
         # Get real benchmark runner
         real_runner = get_real_benchmark_runner()
 
-        # Mode selector
-        col_mode1, col_mode2 = st.columns([3, 1])
+        # Mode selector - using columns for better visibility
+        st.markdown("### Select Benchmark Mode")
+
+        col_mode1, col_mode2, col_mode3 = st.columns([2, 2, 1])
 
         with col_mode1:
-            benchmark_mode = st.radio(
-                "Benchmark Mode",
-                options=["Demo Mode (Simulated)", "Real Mode (Actual Components)"],
-                index=0,
-                help="Demo mode uses statistical models. Real mode tests actual Felix components.",
-                horizontal=True
-            )
+            if st.button("🎲 Demo Mode (Simulated)", use_container_width=True,
+                        type="primary" if st.session_state.get('benchmarking_mode', 'demo') == 'demo' else "secondary"):
+                st.session_state['benchmarking_mode'] = 'demo'
+                st.rerun()
 
         with col_mode2:
+            if st.button("⚡ Real Mode (Actual Components)", use_container_width=True,
+                        type="primary" if st.session_state.get('benchmarking_mode', 'demo') == 'real' else "secondary"):
+                st.session_state['benchmarking_mode'] = 'real'
+                st.rerun()
+
+        with col_mode3:
             if real_runner.is_real_mode_available():
-                st.success("✅ Real mode available")
+                st.success("✅ Available")
             else:
-                st.warning("⚠️ Components unavailable")
+                st.warning("⚠️ Unavailable")
+
+        # Get the selected mode
+        benchmark_mode = "Real Mode (Actual Components)" if st.session_state.get('benchmarking_mode', 'demo') == 'real' else "Demo Mode (Simulated)"
+
+        # Show selected mode clearly
+        if st.session_state.get('benchmarking_mode', 'demo') == 'real':
+            st.info("📌 **Selected Mode**: Real Mode - Using actual Felix components")
+        else:
+            st.info("📌 **Selected Mode**: Demo Mode - Using statistical models")
 
         # Display mode information
         use_real_mode = "Real Mode" in benchmark_mode
@@ -549,30 +563,61 @@ def main():
         # Simulated data disclaimer
         st.warning("⚠️ **Note**: Performance tests currently use simulated data for demonstration. Metrics are modeled after real system behavior.")
 
-        st.markdown("""
-        ### Test Categories
+        # Test Categories explanation
+        with st.expander("ℹ️ **Understanding Performance Tests** - Click to learn more"):
+            st.markdown("""
+            ### What Are Performance Tests?
 
-        Each category tests a specific aspect of Felix's performance:
-        """)
+            Performance tests measure specific aspects of Felix's operation to identify
+            bottlenecks and ensure optimal system behavior.
+
+            ### Test Categories Explained
+
+            - **Agent Spawning**: How quickly Felix can create new agents. Critical for
+              dynamic spawning performance. Target: <150ms per agent.
+
+            - **Message Routing**: Hub-spoke communication efficiency. Tests the Central Post
+              message routing system. Target: >1000 msg/s with <10ms latency.
+
+            - **Memory Operations**: Database read/write speed and compression performance.
+              Target: <5ms read, <8ms write, 0.3 compression ratio.
+
+            - **Helix Traversal**: Agent movement along helical geometry. Measures position
+              calculation and state transition efficiency.
+
+            - **Synthesis Pipeline**: End-to-end workflow processing from research through
+              final synthesis. Overall system integration test.
+
+            ### Interpreting Results
+
+            - **Success Rate**: Should be >98% for production readiness
+            - **Latency**: Lower is better. Spikes indicate bottlenecks
+            - **Throughput**: Higher is better. Sustained rates show stability
+            """)
+
+        st.divider()
+
+        st.markdown("### Select Test Category")
 
         # Test category explanations
         test_descriptions = {
-            "Agent Spawning": "**Agent Spawning**: Measures the time and resources required to create new agents, including helix position calculation and initialization overhead.",
-            "Message Routing": "**Message Routing**: Tests the Central Post hub-spoke communication system for throughput, latency, and dropped message rates.",
-            "Memory Operations": "**Memory Operations**: Benchmarks knowledge store and task memory read/write performance, including compression operations.",
-            "Helix Traversal": "**Helix Traversal**: Measures agent movement efficiency along the helical geometry, including position updates and state transitions.",
-            "Synthesis Pipeline": "**Synthesis Pipeline**: Tests end-to-end task processing through the complete pipeline from research to synthesis."
+            "Agent Spawning": "Measures the time and resources required to create new agents, including helix position calculation and initialization overhead.",
+            "Message Routing": "Tests the Central Post hub-spoke communication system for throughput, latency, and dropped message rates.",
+            "Memory Operations": "Benchmarks knowledge store and task memory read/write performance, including compression operations.",
+            "Helix Traversal": "Measures agent movement efficiency along the helical geometry, including position updates and state transitions.",
+            "Synthesis Pipeline": "Tests end-to-end task processing through the complete pipeline from research to synthesis."
         }
 
         # Test categories
         test_category = st.selectbox(
             "Select Test Category",
             options=list(test_descriptions.keys()),
-            help="Choose which aspect of Felix to benchmark"
+            help="Choose which aspect of Felix to benchmark",
+            key="test_category_selector"
         )
 
         # Show description for selected category
-        st.info(test_descriptions[test_category])
+        st.info(f"**{test_category}**: {test_descriptions[test_category]}")
 
         # Configuration for selected test
         st.markdown(f"### {test_category} Configuration")
@@ -580,11 +625,37 @@ def main():
         col1, col2, col3 = st.columns(3)
 
         with col1:
-            iterations = st.number_input("Iterations", min_value=1, max_value=1000, value=100)
+            iterations = st.number_input(
+                "Iterations",
+                min_value=1,
+                max_value=1000,
+                value=100,
+                help="Number of test iterations to run. More iterations = more accurate results but longer execution time"
+            )
+            with st.expander("ℹ️"):
+                st.markdown("**Iterations**: Higher values provide more statistically significant results. Recommended: 100-500 for local testing.")
+
         with col2:
-            concurrent = st.number_input("Concurrent Operations", min_value=1, max_value=50, value=10)
+            concurrent = st.number_input(
+                "Concurrent Operations",
+                min_value=1,
+                max_value=50,
+                value=10,
+                help="Number of operations to run simultaneously. Tests system behavior under load"
+            )
+            with st.expander("ℹ️"):
+                st.markdown("**Concurrent Operations**: Simulates multiple simultaneous operations. Start with 10, increase to test scalability.")
+
         with col3:
-            timeout = st.number_input("Timeout (seconds)", min_value=1, max_value=60, value=10)
+            timeout = st.number_input(
+                "Timeout (seconds)",
+                min_value=1,
+                max_value=60,
+                value=10,
+                help="Maximum time to wait for each operation. Operations exceeding this are marked as failed"
+            )
+            with st.expander("ℹ️"):
+                st.markdown("**Timeout**: Safety limit for operation duration. Increase if testing slow operations or large workloads.")
 
         if st.button(f"Run {test_category} Test"):
             with st.spinner(f"Running {test_category} performance test..."):
@@ -680,6 +751,29 @@ def main():
     with tab3:
         st.subheader("Comparative Analysis")
 
+        # Comparison explanation
+        with st.expander("ℹ️ **About Comparative Analysis** - Click to learn more"):
+            st.markdown("""
+            ### Comparative Analysis Tools
+
+            Compare different configurations, versions, or optimization approaches to
+            identify the best setup for your use case.
+
+            **Available Comparisons:**
+
+            - **Baseline vs Optimized**: Compare default settings against optimized configuration
+            - **Different Configurations**: Test multiple configuration variations side-by-side
+            - **Version Comparison**: Compare performance across different Felix versions
+            - **Scaling Analysis**: Analyze how performance changes with different workload sizes
+
+            ### Statistical Significance
+
+            Results include t-tests and p-values to determine if performance differences
+            are statistically significant (α=0.05 threshold).
+            """)
+
+        st.divider()
+
         # Comparison scenarios
         comparison_type = st.selectbox(
             "Select Comparison Type",
@@ -688,7 +782,9 @@ def main():
                 "Different Configurations",
                 "Version Comparison",
                 "Scaling Analysis"
-            ]
+            ],
+            help="Choose the type of comparison analysis to perform",
+            key="comparison_type_selector"
         )
 
         if comparison_type == "Baseline vs Optimized":

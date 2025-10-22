@@ -4,6 +4,7 @@ Testing page for Felix Framework.
 Provides workflow result analysis, test execution monitoring,
 and performance evaluation tools.
 """
+# -*- coding: utf-8 -*-
 
 import streamlit as st
 import pandas as pd
@@ -214,11 +215,11 @@ def create_workflow_timeline(workflows: List[Dict[str, Any]]) -> go.Figure:
 
 
 def main():
+    # Real data indicator badge - MUST be at the very top before anything else
+    st.success("✅ **Real Data**: This page displays actual workflow execution data from Felix databases.")
+
     st.title("🧪 Testing & Analysis")
     st.markdown("Analyze workflow results and test execution performance")
-
-    # Real data indicator
-    st.success("✅ **Real Data**: This page displays actual workflow execution data from Felix databases.")
 
     monitor = get_monitor()
     db_reader = get_db_reader()
@@ -246,18 +247,60 @@ def main():
             # Analysis summary
             analysis = analyze_workflow_results(workflows)
 
-            # Display metrics
+            # Display metrics with enhanced layout
+            st.markdown("### Key Metrics")
+
             col1, col2, col3, col4 = st.columns(4)
 
             with col1:
-                st.metric("Total Workflows", analysis['total_workflows'], help="Number of complete workflow executions recorded in database")
+                st.metric(
+                    "Total Workflows",
+                    analysis['total_workflows'],
+                    help="Number of complete workflow executions recorded in database"
+                )
+                with st.expander("ℹ️ About Total Workflows"):
+                    st.markdown("""
+                    **Total Workflows** counts every complete task execution that has been
+                    processed by Felix's multi-agent system and stored in the database.
+                    """)
+
             with col2:
-                st.metric("Success Rate", f"{analysis['success_rate']:.1f}%", help="Percentage of workflows that completed successfully without errors")
+                st.metric(
+                    "Success Rate",
+                    f"{analysis['success_rate']:.1f}%",
+                    help="Percentage of workflows that completed successfully without errors"
+                )
+                with st.expander("ℹ️ About Success Rate"):
+                    st.markdown("""
+                    **Success Rate** measures the percentage of workflows that completed
+                    without errors. High success rates (>90%) indicate stable system performance.
+                    """)
+
             with col3:
-                st.metric("Avg Agents/Workflow", f"{analysis['avg_agents']:.1f}", help="Average number of agents spawned per workflow (Research, Analysis, Synthesis, Critic)")
+                st.metric(
+                    "Avg Agents/Workflow",
+                    f"{analysis['avg_agents']:.1f}",
+                    help="Average number of agents spawned per workflow"
+                )
+                with st.expander("ℹ️ About Avg Agents"):
+                    st.markdown("""
+                    **Avg Agents per Workflow** shows how many agents (Research, Analysis,
+                    Critic, etc.) were spawned on average. Typical range: 3-8 agents depending
+                    on task complexity.
+                    """)
+
             with col4:
                 duration_str = f"{analysis['avg_duration']:.1f}s" if analysis['avg_duration'] > 0 else "N/A"
-                st.metric("Avg Duration", duration_str, help="Average time from workflow start to completion (if timestamp data available)")
+                st.metric(
+                    "Avg Duration",
+                    duration_str,
+                    help="Average time from workflow start to completion"
+                )
+                with st.expander("ℹ️ About Avg Duration"):
+                    st.markdown("""
+                    **Avg Duration** measures the average execution time from workflow start
+                    to completion. Note: Only available if timestamp data is recorded.
+                    """)
 
             # Common patterns
             if analysis['common_patterns']:
@@ -295,11 +338,17 @@ def main():
                             lambda x: '✅' if x else '❌'
                         )
 
-                    # Truncate task names
+                    # Truncate task names and ensure UTF-8 safe display
                     if 'task' in display_df.columns:
-                        display_df['task'] = display_df['task'].apply(
-                            lambda x: x[:50] + '...' if len(str(x)) > 50 else x
-                        )
+                        def format_task(x):
+                            # Handle bytes objects
+                            if isinstance(x, bytes):
+                                x = x.decode('utf-8', errors='replace')
+                            # Convert to string and truncate
+                            x_str = str(x)
+                            return x_str[:50] + '...' if len(x_str) > 50 else x_str
+
+                        display_df['task'] = display_df['task'].apply(format_task)
 
                     st.dataframe(display_df, width='stretch', hide_index=True)
 
@@ -428,7 +477,11 @@ def main():
                 col1, col2 = st.columns(2)
 
                 with col1:
-                    st.markdown("**Task:** " + selected_workflow.get('task', 'N/A'))
+                    # Ensure UTF-8 safe display of task text
+                    task_text = selected_workflow.get('task', 'N/A')
+                    if isinstance(task_text, bytes):
+                        task_text = task_text.decode('utf-8', errors='replace')
+                    st.markdown(f"**Task:** {task_text}")
                     st.markdown("**Status:** " + ('✅ Success' if selected_workflow.get('success') else '❌ Failed'))
                     st.markdown("**Agent Count:** " + str(selected_workflow.get('agent_count', 0)))
 
@@ -444,9 +497,13 @@ def main():
                 # Display synthesis if available
                 if selected_workflow.get('final_synthesis'):
                     st.markdown("### Final Synthesis")
+                    synthesis_text = selected_workflow['final_synthesis']
+                    # Ensure UTF-8 safe display
+                    if isinstance(synthesis_text, bytes):
+                        synthesis_text = synthesis_text.decode('utf-8', errors='replace')
                     st.text_area(
                         "Synthesis Output",
-                        selected_workflow['final_synthesis'],
+                        synthesis_text,
                         height=200,
                         disabled=True
                     )
@@ -474,33 +531,72 @@ def main():
     with tab4:
         st.subheader("Test Reports")
 
-        st.info("""
-        **Report Types Explained**:
-        - **Summary**: High-level overview with key metrics and trends
-        - **Detailed**: Complete breakdown of all workflow executions with timestamps
-        - **Performance**: Focus on execution times, resource usage, and bottlenecks
-        - **Confidence**: Agent confidence scores and progression analysis
-        """)
+        # Report Types Explained - prominently displayed at top
+        with st.expander("ℹ️ **Report Types Explained** - Click to learn more", expanded=True):
+            st.markdown("""
+            ### Report Types
 
-        # Report generation options
+            Choose the type of report that best fits your needs:
+
+            - **Summary**: High-level overview with key metrics and trends. Best for quick status checks.
+            - **Detailed**: Complete breakdown of all workflow executions with timestamps. Use for thorough analysis.
+            - **Performance**: Focus on execution times, resource usage, and bottlenecks. Ideal for optimization.
+            - **Confidence**: Agent confidence scores and progression analysis. Useful for quality assessment.
+
+            ### Time Ranges
+
+            - **Last Hour**: Recent executions for immediate monitoring
+            - **Last 24 Hours**: Daily performance tracking
+            - **Last Week**: Weekly trends and patterns
+            - **All Time**: Complete historical analysis
+
+            ### Export Options
+
+            Reports can be exported as JSON, CSV, or HTML for further analysis or sharing.
+            """)
+
+        st.divider()
+
+        # Report generation options with better layout
+        st.markdown("### Report Configuration")
+
         col1, col2 = st.columns(2)
 
         with col1:
+            st.markdown("#### Content Settings")
+
             report_type = st.selectbox(
                 "Report Type",
                 options=["Summary", "Detailed", "Performance", "Confidence"],
-                help="Choose the level of detail and focus area for the report"
+                help="Choose the level of detail and focus area for the report",
+                key="report_type_selector"
             )
 
             time_range = st.selectbox(
                 "Time Range",
                 options=["Last Hour", "Last 24 Hours", "Last Week", "All Time"],
-                help="Filter workflows by execution time"
+                help="Filter workflows by execution time",
+                key="time_range_selector"
             )
 
         with col2:
-            include_charts = st.checkbox("Include Charts", value=True, help="Add visualizations to the report")
-            include_raw_data = st.checkbox("Include Raw Data", value=False, help="Include raw database entries (increases report size)")
+            st.markdown("#### Display Options")
+
+            include_charts = st.checkbox(
+                "Include Charts",
+                value=True,
+                help="Add visualizations to the report (recommended for better insights)",
+                key="include_charts_checkbox"
+            )
+
+            include_raw_data = st.checkbox(
+                "Include Raw Data",
+                value=False,
+                help="Include raw database entries (increases report size significantly)",
+                key="include_raw_data_checkbox"
+            )
+
+        st.divider()
 
         if st.button("Generate Report"):
             st.markdown("### Test Execution Report")
@@ -604,24 +700,26 @@ def main():
                         'analysis': analyze_workflow_results(workflows) if workflows else {}
                     }
 
+                    # Ensure UTF-8 encoding for JSON export
                     st.download_button(
                         "Download JSON Report",
-                        data=json.dumps(report_data, indent=2, default=str),
+                        data=json.dumps(report_data, indent=2, default=str, ensure_ascii=False),
                         file_name=f"felix_test_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                        mime="application/json"
+                        mime="application/json;charset=utf-8"
                     )
 
             with col2:
                 if st.button("📥 Export as CSV"):
                     if workflows:
                         df = pd.DataFrame(workflows)
-                        csv = df.to_csv(index=False)
+                        # Ensure UTF-8 encoding for CSV export
+                        csv = df.to_csv(index=False, encoding='utf-8-sig')
 
                         st.download_button(
                             "Download CSV Report",
                             data=csv,
                             file_name=f"felix_test_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                            mime="text/csv"
+                            mime="text/csv;charset=utf-8"
                         )
 
             with col3:
