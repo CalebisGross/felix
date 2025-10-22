@@ -26,7 +26,7 @@ from dataclasses import dataclass
 sys.path.append('.')
 from src.core.helix_geometry import HelixGeometry
 from src.communication.central_post import CentralPost, AgentFactory, Message, MessageType
-from src.agents.specialized_agents import ResearchAgent, AnalysisAgent, SynthesisAgent
+from src.agents.specialized_agents import ResearchAgent, AnalysisAgent, CriticAgent
 from src.memory.knowledge_store import KnowledgeStore, KnowledgeType, ConfidenceLevel
 from src.llm.token_budget import TokenBudgetManager
 
@@ -159,7 +159,8 @@ def main():
         max_agents=10,
         enable_metrics=True,
         enable_memory=True,
-        memory_db_path="felix_memory.db"
+        memory_db_path="felix_memory.db",
+        llm_client=llm_client  # For CentralPost synthesis
     )
 
     # Create token budget manager
@@ -199,17 +200,17 @@ def main():
         max_tokens=800
     )
 
-    synthesis_agent = SynthesisAgent(
-        agent_id="synthesis_001",
-        spawn_time=0.8,  # Late spawn
+    critic_agent = CriticAgent(
+        agent_id="critic_001",
+        spawn_time=0.5,  # Mid spawn for validation
         helix=helix,
         llm_client=llm_client,
-        output_format="assessment",
+        review_focus="accuracy",
         token_budget_manager=token_budget,
-        max_tokens=1000
+        max_tokens=800
     )
 
-    agents = [research_agent, analysis_agent, synthesis_agent]
+    agents = [research_agent, analysis_agent, critic_agent]
 
     # Register agents with central post
     for agent in agents:
