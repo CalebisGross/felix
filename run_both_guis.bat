@@ -45,7 +45,7 @@ timeout /t 3 /nobreak >NUL
 
 REM Start Streamlit GUI in new window
 echo [2/2] Launching Streamlit Monitor GUI...
-start "Felix Monitor GUI" cmd /k "cd /d %~dp0 && .venv\Scripts\activate && streamlit run streamlit_app.py"
+start "Felix Monitor GUI" cmd /k "cd /d %~dp0 && .venv\Scripts\activate && python run_streamlit_gui.py"
 
 echo.
 echo ===============================================

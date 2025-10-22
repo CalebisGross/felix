@@ -207,11 +207,11 @@ def compare_configurations(config1: dict, config2: dict, path: str = "") -> list
 
 
 def main():
+    # Real data indicator badge - MUST be at the very top before anything else
+    st.success("✅ **Real Data**: This page displays actual Felix configuration files from your project.")
+
     st.title("⚙️ Configuration Viewer")
     st.markdown("View and export Felix configuration (read-only)")
-
-    # Real data indicator
-    st.success("✅ **Real Data**: This page displays actual Felix configuration files from your project.")
 
     # Configuration sources
     config_sources = {
@@ -231,11 +231,17 @@ def main():
         selected_source = st.selectbox(
             "Configuration Source",
             options=list(config_sources.keys()),
-            format_func=lambda x: config_sources[x]
+            format_func=lambda x: config_sources[x],
+            key="config_source_selector"
         )
 
         # Load configuration
         config = load_config_file(selected_source)
+
+        # Store in session state for reference
+        if 'current_config' not in st.session_state or st.session_state.get('last_source') != selected_source:
+            st.session_state['current_config'] = config
+            st.session_state['last_source'] = selected_source
 
         if config:
             # Display configuration sections

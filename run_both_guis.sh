@@ -91,8 +91,8 @@ else
     STREAMLIT_PORT=8501
 fi
 
-# Start Streamlit
-streamlit run streamlit_app.py --server.port $STREAMLIT_PORT &
+# Start Streamlit using launcher script
+python run_streamlit_gui.py &
 STREAMLIT_PID=$!
 
 # Wait for Streamlit to start
