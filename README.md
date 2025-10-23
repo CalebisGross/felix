@@ -6,7 +6,7 @@
 
 Felix is a Python multi-agent AI framework that leverages helical geometry for adaptive agent progression, enabling dynamic, scalable AI interactions. The framework models agent behaviors and communications along helical structures, allowing for continuous evolution and optimization of AI tasks through a hub-spoke communication model combined with helical progression.
 
-Key features include helical progression from exploration (top_radius=3.0) to synthesis (bottom_radius=0.5), dynamic agent spawning based on confidence thresholds (0.80), role-specialized agents (Research/Analysis/Critic), smart CentralPost synthesis (adaptive temp 0.2-0.4, tokens 1500-3000), efficient hub-spoke messaging (O(N) complexity), persistent memory with SQLite storage and abstractive compression (target_length=100, ~0.3 ratio), local LLM integration via LMStudioClient with token budgeting (base=2048, strict mode), and linear pipelines with chunking (chunk=512).
+Key features include helical progression from exploration (top_radius=3.0) to synthesis (bottom_radius=0.5), dynamic agent spawning based on confidence thresholds (0.80), role-specialized agents (Research/Analysis/Critic), smart CentralPost synthesis (adaptive temp 0.2-0.4, tokens 1500-3000), agent awareness with phase-based coordination, efficient hub-spoke messaging (O(N) complexity), web search integration (DuckDuckGo/SearxNG) with caching, workflow history tracking, persistent memory with SQLite storage and abstractive compression (target_length=100, ~0.3 ratio), local LLM integration via LMStudioClient with incremental token streaming and token budgeting (base=2048, strict mode), markdown result formatting, dark mode GUI theme support, and linear pipelines with chunking (chunk=512).
 
 Felix validates three key hypotheses: H1 (helical progression enhances agent adaptation by 20% workload distribution), H2 (hub-spoke communication optimizes resource allocation by 15% efficiency), and H3 (memory compression reduces latency by 25% attention focus). The framework supports up to 133 agents and is designed for applications like autonomous drone swarms, personalized AI assistants, and scalable chatbots.
 
@@ -16,10 +16,15 @@ For detailed structure, see [index.md](index.md).
 
 - **Helical Progression**: Agents evolve along spiral paths from broad exploration to focused synthesis
 - **Role-Specialized Agents**: Research, Analysis, and Critic agents with position-aware behavior
+- **Agent Awareness System**: Phase-based coordination with team state queries and peer discovery
 - **Smart CentralPost**: Hub performs intelligent final synthesis with adaptive parameters
 - **Hub-Spoke Communication**: O(N) efficient messaging vs O(N²) mesh networks
-- **Token-Budgeted LLM Calls**: Local LM Studio integration with adaptive budgeting
+- **Web Search Integration**: DuckDuckGo and SearxNG providers with result caching and domain filtering
+- **Workflow History**: Persistent tracking of all workflow executions with searchable database
+- **Token-Budgeted LLM Calls**: Local LM Studio integration with adaptive budgeting and incremental streaming
 - **Context Compression**: Abstractive memory reduction for sustained performance
+- **Markdown Export**: Professional formatting of synthesis results with agent metrics
+- **Dark Mode GUI**: Theme support with persistent user preferences
 - **Linear Pipelines**: Sequential processing with configurable chunking
 - **Scalability**: Supports teams from 5 to 133 agents
 - **Hypothesis Validation**: Comprehensive benchmarking for H1-H3 gains
@@ -46,7 +51,7 @@ For detailed structure, see [index.md](index.md).
 
 3. Install dependencies:
    ```bash
-   pip install openai httpx numpy scipy
+   pip install openai httpx numpy scipy ddgs beautifulsoup4 lxml
    ```
 
 4. (Optional) Set up LM Studio for local LLM inference.
@@ -70,9 +75,11 @@ This runs a complete workflow with mock LLM responses, demonstrating agent spawn
    ```
 4. Install required dependencies:
    ```bash
-   pip install openai httpx numpy scipy
+   pip install openai httpx numpy scipy ddgs beautifulsoup4 lxml
    ```
    Additional packages (sqlite3, asyncio) are typically included with Python.
+   - `ddgs`: DuckDuckGo search integration
+   - `beautifulsoup4` & `lxml`: Web page parsing for search results
 5. (Optional) Download and configure LM Studio server for local LLM integration.
 6. Databases auto-initialize on first run (felix_memory.db, felix_knowledge.db).
 
@@ -155,7 +162,15 @@ Run benchmarks from the exp/ directory to generate CSV metrics. Results demonstr
 
 ## GUI Interface
 
-A Tkinter GUI is available in `src/gui/` for interactive control of Felix components. See [`src/gui/README.md`](src/gui/README.md) for details. Run with:
+A Tkinter GUI is available in `src/gui/` for interactive control of Felix components with dark mode support. Features include:
+
+- **Five Tabs**: Dashboard, Workflows (with web search), Memory, Agents, and Workflow History
+- **Dark/Light Themes**: Toggle between themes with persistent preferences
+- **Workflow History Browser**: Search, filter, and view past workflow executions
+- **Markdown Export**: Save synthesis results as formatted markdown files
+- **Real-time Monitoring**: Track workflow execution and agent activity
+
+See [`src/gui/README.md`](src/gui/README.md) for details. Run with:
 
 ```bash
 python -m src.gui.main

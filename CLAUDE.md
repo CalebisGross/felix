@@ -21,7 +21,7 @@ source .venv/bin/activate  # Linux/Mac
 # .venv\Scripts\activate on Windows
 
 # Install dependencies
-pip install openai httpx numpy scipy
+pip install openai httpx numpy scipy ddgs beautifulsoup4 lxml
 
 # Optional: Install additional GUI dependencies if needed
 pip install tkinter  # Usually included with Python
@@ -72,22 +72,36 @@ Agents move down the helix from exploration to synthesis, with their behavior (t
    - `CentralPost`: O(N) hub-spoke message routing (vs O(N²) mesh)
    - `CentralPost Synthesis`: Smart hub performs final synthesis of all agent outputs
    - `AgentFactory`: Creates agents with helix positioning
+   - `AgentRegistry`: Phase-based agent tracking (exploration/analysis/synthesis)
+   - Agent awareness: Query team state, discover peers, coordinate collaboration
    - Handles up to 133 agents with efficient message queuing
    - Adaptive synthesis: temperature (0.2-0.4) and tokens (1500-3000) based on consensus
 
 3. **Memory Systems** ([src/memory/](src/memory/))
    - `KnowledgeStore`: SQLite persistence in `felix_knowledge.db`
    - `TaskMemory`: Pattern storage in `felix_memory.db`
+   - `WorkflowHistory`: Execution tracking in `felix_workflow_history.db`
    - `ContextCompression`: Abstractive compression (0.3 ratio)
 
 4. **LLM Integration** ([src/llm/](src/llm/))
-   - `LMStudioClient`: Local LLM via LM Studio (port 1234)
+   - `LMStudioClient`: Local LLM via LM Studio (port 1234) with incremental token streaming
    - `TokenBudgetManager`: Adaptive token allocation (base: 2048)
+   - `WebSearchClient`: DuckDuckGo and SearxNG integration with result caching and domain filtering
    - Temperature gradient: 1.0 (top/exploration) → 0.2 (bottom/synthesis)
+   - Streaming support: Time-batched token delivery with callbacks
 
 5. **Pipeline Processing** ([src/pipeline/](src/pipeline/))
    - `LinearPipeline`: Sequential task processing
    - `Chunking`: 512-token chunks for streaming
+
+6. **Workflows** ([src/workflows/](src/workflows/))
+   - `FelixWorkflow`: Integrated workflow with web search and task classification
+   - `ContextBuilder`: Collaborative context management for agents
+   - `TruthAssessment`: Framework for validating workflow outputs
+
+7. **Utilities** ([src/utils/](src/utils/))
+   - `MarkdownFormatter`: Professional markdown formatting for synthesis results
+   - Functions for detailed reports with agent metrics and performance summaries
 
 ### Agent Spawn Timing
 Agents spawn at different normalized time ranges (0.0-1.0):
@@ -131,13 +145,25 @@ llm:
 ### felix_task_memory.db
 - Additional task memory storage used by GUI and advanced workflows
 
+### felix_workflow_history.db
+- `workflow_history` table: Stores complete workflow execution records
+- Tracks task description, synthesis output, confidence, agent count, tokens used, processing time
+- Supports search and filtering by status, date range
+- Indexed on `created_at` and `status` for fast queries
+
 ## GUI Interface
 
-The Tkinter GUI ([src/gui/](src/gui/)) provides four tabs:
+The Tkinter GUI ([src/gui/](src/gui/)) provides five tabs with dark mode support:
 1. **Dashboard**: Start/stop Felix system, monitor logs
-2. **Workflows**: Run tasks through linear pipeline
+2. **Workflows**: Run tasks through linear pipeline with web search, save formatted results
 3. **Memory**: Browse/edit task memory and knowledge stores
 4. **Agents**: Spawn and interact with agents
+5. **Workflow History**: Browse past executions, view details, search and filter results
+
+Additional features:
+- Dark/light theme toggle with persistent preference
+- Markdown export for synthesis results
+- Real-time workflow execution tracking
 
 Requires LM Studio running before starting Felix system via GUI.
 
