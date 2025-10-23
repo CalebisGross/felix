@@ -10,11 +10,14 @@ import sqlite3
 import hashlib
 import time
 import pickle
+import logging
 from pathlib import Path
 from enum import Enum
 from typing import Dict, List, Optional, Any, Union
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 class KnowledgeType(Enum):
     """Types of knowledge that can be stored."""
@@ -220,7 +223,7 @@ class KnowledgeStore:
                        tags: Optional[List[str]] = None) -> str:
         """
         Store new knowledge entry.
-        
+
         Args:
             knowledge_type: Type of knowledge
             content: Knowledge content
@@ -228,15 +231,23 @@ class KnowledgeStore:
             source_agent: Agent that generated this knowledge
             domain: Domain this knowledge applies to
             tags: Optional tags for categorization
-            
+
         Returns:
             Knowledge ID of stored entry
         """
+        logger.info("💾 KNOWLEDGE_STORE.store_knowledge() CALLED")
+        logger.info(f"   Database: {self.storage_path}")
+        logger.info(f"   Domain: {domain}")
+        logger.info(f"   Confidence: {confidence_level.value}")
+        logger.info(f"   Source agent: {source_agent}")
+        logger.info(f"   Content preview: {str(content)[:200]}...")
+
         if tags is None:
             tags = []
-        
+
         knowledge_id = self._generate_knowledge_id(content, source_agent)
-        
+        logger.info(f"   Generated knowledge_id: {knowledge_id}")
+
         entry = KnowledgeEntry(
             knowledge_id=knowledge_id,
             knowledge_type=knowledge_type,
@@ -257,8 +268,9 @@ class KnowledgeStore:
         
         with sqlite3.connect(self.storage_path) as conn:
             # Store main entry
+            logger.info(f"   📝 Executing INSERT INTO knowledge_entries...")
             conn.execute("""
-                INSERT OR REPLACE INTO knowledge_entries 
+                INSERT OR REPLACE INTO knowledge_entries
                 (knowledge_id, knowledge_type, content_json, content_compressed,
                  confidence_level, source_agent, domain, tags_json,
                  created_at, updated_at, access_count, success_rate, related_entries_json)
@@ -278,30 +290,47 @@ class KnowledgeStore:
                 1.0,
                 json.dumps([])
             ))
-            
+            logger.info(f"   ✓ INSERT executed")
+
             # Store tags in normalized table for efficient filtering
             # First remove existing tags for this entry
             conn.execute("DELETE FROM knowledge_tags WHERE knowledge_id = ?", (knowledge_id,))
-            
+
             # Insert new tags
             for tag in tags:
                 conn.execute("""
-                    INSERT INTO knowledge_tags (knowledge_id, tag) 
+                    INSERT INTO knowledge_tags (knowledge_id, tag)
                     VALUES (?, ?)
                 """, (knowledge_id, tag))
-        
+
+            # CRITICAL: Commit the transaction!
+            logger.info(f"   💾 Committing transaction...")
+            conn.commit()
+            logger.info(f"   ✅ Knowledge stored and committed successfully!")
+
+            # Verify it was stored
+            count = conn.execute("SELECT COUNT(*) FROM knowledge_entries WHERE knowledge_id = ?", (knowledge_id,)).fetchone()[0]
+            logger.info(f"   ✓ Verification: {count} entry with knowledge_id={knowledge_id} in database")
+
         return knowledge_id
     
     def retrieve_knowledge(self, query: KnowledgeQuery) -> List[KnowledgeEntry]:
         """
         Retrieve knowledge entries matching query.
-        
+
         Args:
             query: Query parameters
-            
+
         Returns:
             List of matching knowledge entries
         """
+        logger.info("🔍 KNOWLEDGE_STORE.retrieve_knowledge() CALLED")
+        logger.info(f"   Database: {self.storage_path}")
+        logger.info(f"   Query domains: {query.domains}")
+        logger.info(f"   Query confidence: {query.min_confidence}")
+        logger.info(f"   Query time_range: {query.time_range}")
+        logger.info(f"   Query limit: {query.limit}")
+
         # Determine if we need to JOIN with tags table
         if query.tags:
             sql_parts = [
@@ -311,7 +340,7 @@ class KnowledgeStore:
             ]
         else:
             sql_parts = ["SELECT * FROM knowledge_entries ke WHERE 1=1"]
-        
+
         params = []
         
         # Build WHERE clause
@@ -368,25 +397,49 @@ class KnowledgeStore:
         params.append(query.limit)
         
         sql = " ".join(sql_parts)
-        
+
+        logger.info("   📝 Final SQL Query:")
+        logger.info(f"      {sql}")
+        logger.info(f"   📝 Query Parameters:")
+        logger.info(f"      {params}")
+
         entries = []
         with sqlite3.connect(self.storage_path) as conn:
+            # First, check how many total entries exist in the database
+            total_count = conn.execute("SELECT COUNT(*) FROM knowledge_entries").fetchone()[0]
+            logger.info(f"   📊 Total entries in database: {total_count}")
+
+            # Check entries in the queried domains
+            if query.domains:
+                domain_count = conn.execute(
+                    f"SELECT COUNT(*) FROM knowledge_entries WHERE domain IN ({','.join('?' * len(query.domains))})",
+                    query.domains
+                ).fetchone()[0]
+                logger.info(f"   📊 Entries in queried domains ({query.domains}): {domain_count}")
+
             cursor = conn.execute(sql, params)
-            for row in cursor.fetchall():
+            rows = cursor.fetchall()
+            logger.info(f"   ✓ SQL returned {len(rows)} rows")
+
+            for i, row in enumerate(rows, 1):
                 entry = self._row_to_entry(row, conn)
-                
+                logger.info(f"      Row {i}: domain={entry.domain}, confidence={entry.confidence_level.value}, created={entry.created_at}")
+
                 # Apply content filtering if specified
                 if query.content_keywords:
                     content_str = json.dumps(entry.content).lower()
-                    if not any(keyword.lower() in content_str 
+                    if not any(keyword.lower() in content_str
                              for keyword in query.content_keywords):
+                        logger.info(f"      Row {i}: FILTERED OUT by content keywords")
                         continue
-                
+
                 entries.append(entry)
-                
+
                 # Update access count
                 self._increment_access_count(entry.knowledge_id)
-        
+
+        logger.info(f"   ✅ Returning {len(entries)} knowledge entries")
+
         return entries
     
     def _row_to_entry(self, row, conn=None) -> KnowledgeEntry:

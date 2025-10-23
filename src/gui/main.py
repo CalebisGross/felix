@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import json
 import os
+from typing import List
 from .utils import ThreadManager, DBHelper, logger
 from .dashboard import DashboardFrame
 from .workflows import WorkflowsFrame
@@ -120,6 +121,15 @@ class MainApp(tk.Tk):
             logger.error(f"Failed to load config: {e}")
             return {}
 
+    def _parse_blocked_domains(self, domains_str: str) -> List[str]:
+        """Parse blocked domains from newline-separated string."""
+        if not domains_str:
+            return ['wikipedia.org', 'reddit.com']  # Default
+
+        # Split by newlines and filter empty lines
+        domains = [d.strip() for d in domains_str.split('\n') if d.strip()]
+        return domains if domains else ['wikipedia.org', 'reddit.com']
+
     def start_system(self):
         """Start the Felix system with full integration."""
         if not self.system_running:
@@ -153,7 +163,28 @@ class MainApp(tk.Tk):
                 enable_dynamic_spawning=self.app_config.get('enable_dynamic_spawning', True),
                 enable_compression=self.app_config.get('enable_compression', True),
                 enable_spoke_topology=self.app_config.get('enable_spoke_topology', True),
-                verbose_llm_logging=self.app_config.get('verbose_llm_logging', True)
+                verbose_llm_logging=self.app_config.get('verbose_llm_logging', True),
+                enable_streaming=self.app_config.get('enable_streaming', True),
+                streaming_batch_interval=self.app_config.get('streaming_batch_interval', 0.1),
+                # Web search configuration
+                web_search_enabled=self.app_config.get('web_search_enabled', False),
+                web_search_provider=self.app_config.get('web_search_provider', 'duckduckgo'),
+                web_search_max_results=int(self.app_config.get('web_search_max_results', 5)),
+                web_search_max_queries=int(self.app_config.get('web_search_max_queries', 3)),
+                searxng_url=self.app_config.get('searxng_url') or None,
+                web_search_blocked_domains=self._parse_blocked_domains(
+                    self.app_config.get('web_search_blocked_domains', 'wikipedia.org\nreddit.com')
+                ),
+                # Web search trigger configuration
+                web_search_confidence_threshold=float(self.app_config.get('web_search_confidence_threshold', 0.7)),
+                web_search_min_samples=int(self.app_config.get('web_search_min_samples', 1)),
+                web_search_cooldown=float(self.app_config.get('web_search_cooldown', 10.0)),
+                # Workflow early stopping configuration
+                workflow_max_steps_simple=int(self.app_config.get('workflow_max_steps_simple', 5)),
+                workflow_max_steps_medium=int(self.app_config.get('workflow_max_steps_medium', 10)),
+                workflow_max_steps_complex=int(self.app_config.get('workflow_max_steps_complex', 20)),
+                workflow_simple_threshold=float(self.app_config.get('workflow_simple_threshold', 0.75)),
+                workflow_medium_threshold=float(self.app_config.get('workflow_medium_threshold', 0.50))
             )
 
             # Initialize unified Felix system

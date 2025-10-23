@@ -34,8 +34,60 @@ logger.setLevel(logging.INFO)
 logger.propagate = True  # Ensure logs reach GUI handlers
 
 
+def _classify_task_complexity(task_input: str) -> str:
+    """
+    Classify task complexity to optimize workflow execution.
+
+    Args:
+        task_input: The task description from user
+
+    Returns:
+        Task complexity: "SIMPLE_FACTUAL", "MEDIUM", or "COMPLEX"
+    """
+    import re
+
+    task_lower = task_input.lower()
+
+    # Simple factual patterns that can be answered quickly with web search
+    simple_patterns = [
+        r'\b(what|when|who|where)\s+(is|are|was|were)\s+(the\s+)?current',
+        r'\bwhat\s+time\b',
+        r'\bwhat\s+date\b',
+        r'\btoday\'?s?\s+(date|time)',
+        r'\bcurrent\s+(time|date|datetime)',
+        r'\bwho\s+(won|is|was)\b',
+        r'\bwhen\s+(did|is|was)\b',
+        r'\bhow\s+many\b.*\b(now|current|today)',
+        r'\blatest\s+(news|update)\b',
+    ]
+
+    # Check for simple factual patterns
+    for pattern in simple_patterns:
+        if re.search(pattern, task_lower):
+            return "SIMPLE_FACTUAL"
+
+    # Medium complexity: specific questions but may need analysis
+    medium_patterns = [
+        r'\bexplain\b',
+        r'\bcompare\b',
+        r'\bwhat\s+are\s+the\s+(benefits|advantages|disadvantages)',
+        r'\bhow\s+does\b',
+        r'\bhow\s+to\b',
+        r'\blist\b',
+        r'\bsummarize\b',
+    ]
+
+    for pattern in medium_patterns:
+        if re.search(pattern, task_lower):
+            return "MEDIUM"
+
+    # Default to complex for open-ended, analytical tasks
+    return "COMPLEX"
+
+
 def run_felix_workflow(felix_system, task_input: str,
-                       progress_callback: Optional[Callable[[str, float], None]] = None) -> Dict[str, Any]:
+                       progress_callback: Optional[Callable[[str, float], None]] = None,
+                       max_steps_override: Optional[int] = None) -> Dict[str, Any]:
     """
     Run a workflow using the Felix framework components.
 
@@ -50,6 +102,7 @@ def run_felix_workflow(felix_system, task_input: str,
         felix_system: Initialized FelixSystem instance from GUI
         task_input: Task description to process
         progress_callback: Optional callback(status_message, progress_percentage)
+        max_steps_override: Optional override for max workflow steps (None = adaptive)
 
     Returns:
         Dictionary with workflow results and metadata
@@ -100,6 +153,65 @@ def run_felix_workflow(felix_system, task_input: str,
             context="GUI workflow task - process through Felix agents"
         )
 
+        # Set current task for CentralPost web search
+        central_post.set_current_task(task_input)
+
+        # Classify task complexity for optimization
+        task_complexity = _classify_task_complexity(task_input)
+        logger.info(f"Task complexity classification: {task_complexity}")
+
+        # Check web search availability (Fix 5)
+        logger.info("=" * 60)
+        logger.info("🔍 WEB SEARCH AVAILABILITY CHECK")
+        if central_post.web_search_client:
+            logger.info("  ✓ Web search client: AVAILABLE")
+            logger.info(f"  ✓ Provider: {getattr(central_post.web_search_client, 'provider', 'unknown')}")
+            logger.info(f"  ✓ Max results: {getattr(central_post.web_search_client, 'max_results', 'unknown')}")
+        else:
+            logger.warning("  ✗ Web search client: NOT AVAILABLE")
+            logger.warning("  → Research agents cannot access current information")
+            logger.warning("  → Install: pip install ddgs")
+            logger.warning("  → Enable in Settings → Web Search Configuration")
+        logger.info("=" * 60)
+
+        # Proactive web search for time/date queries (Fix 1)
+        if task_complexity == "SIMPLE_FACTUAL":
+            task_lower = task_input.lower()
+            time_patterns = ['current', 'time', 'date', 'today', 'now', "what's the time", "what is the time"]
+            is_time_query = any(pattern in task_lower for pattern in time_patterns)
+
+            if is_time_query:
+                logger.info("=" * 60)
+                logger.info("⏰ TIME QUERY DETECTED - Triggering proactive web search")
+                logger.info("=" * 60)
+
+                if central_post.web_search_client:
+                    logger.info("✓ Web search client available - performing search...")
+
+                    # DIAGNOSTIC: Verify method and instance before calling
+                    logger.info("=" * 60)
+                    logger.info("🔬 PRE-CALL DIAGNOSTICS")
+                    logger.info(f"  CentralPost type: {type(central_post).__name__}")
+                    logger.info(f"  Web search client type: {type(central_post.web_search_client).__name__}")
+                    logger.info(f"  _perform_web_search exists: {hasattr(central_post, '_perform_web_search')}")
+                    logger.info(f"  _perform_web_search callable: {callable(getattr(central_post, '_perform_web_search', None))}")
+                    logger.info(f"  Task input: '{task_input}'")
+                    logger.info(f"  Task length: {len(task_input)} chars")
+                    logger.info("=" * 60)
+
+                    try:
+                        # Trigger web search immediately
+                        logger.info("🚀 INVOKING central_post._perform_web_search() NOW...")
+                        result = central_post._perform_web_search(task_input)
+                        logger.info(f"✓ Method returned: {result}")
+                        logger.info("✓ Proactive web search completed - results stored in knowledge base")
+                    except Exception as e:
+                        logger.error(f"✗ Proactive web search failed: {e}", exc_info=True)
+                else:
+                    logger.warning("⚠ Web search requested but CLIENT NOT AVAILABLE!")
+                    logger.warning("  Install: pip install ddgs")
+                    logger.warning("  Enable in Settings → Web Search Configuration")
+
         # Track results
         results = {
             "task": task_input,
@@ -114,12 +226,34 @@ def run_felix_workflow(felix_system, task_input: str,
         # Track ALL processed messages for dynamic spawning (REAL messages, not mocks!)
         all_processed_messages = []
 
-        # Time progression parameters
-        total_steps = 20  # Increased from 10 to allow consensus building
+        # Time progression parameters with adaptive stepping
+        if max_steps_override is not None:
+            # User override
+            total_steps = max_steps_override
+            logger.info(f"Using user-specified max steps: {total_steps}")
+        else:
+            # Adaptive mode: adjust based on task complexity
+            if task_complexity == "SIMPLE_FACTUAL":
+                total_steps = 5  # Minimal steps for simple factual queries
+                logger.info(f"Simple factual query detected - using minimal steps: {total_steps}")
+            elif task_complexity == "MEDIUM":
+                total_steps = felix_system.config.workflow_max_steps_medium
+                logger.info(f"Medium complexity detected - using moderate steps: {total_steps}")
+            else:
+                total_steps = felix_system.config.workflow_max_steps_complex
+                logger.info(f"Complex task detected - using maximum steps: {total_steps}")
+
         current_time = 0.0
         time_step = 1.0 / total_steps
 
-        logger.info(f"Workflow will progress through {total_steps} time steps")
+        # Adaptive early stopping variables
+        adaptive_mode = (max_steps_override is None)
+        sample_period = min(5, total_steps // 2)  # Sample first 5 steps or half of total
+        complexity_assessed = (task_complexity == "SIMPLE_FACTUAL")  # Skip assessment if already simple
+
+        logger.info(f"Workflow will progress through up to {total_steps} time steps")
+        if adaptive_mode and not complexity_assessed:
+            logger.info(f"Adaptive mode: will assess complexity after {sample_period} steps")
 
         # Spawn initial research agent with fixed spawn_time=0.0
         logger.info("Creating initial research agent...")
@@ -278,6 +412,65 @@ def run_felix_workflow(felix_system, task_input: str,
                             "progress": agent.progress   # NEW: Track agent progress
                         })
 
+                        # ADAPTIVE THRESHOLD: Assess knowledge quality after research agent checkpoints
+                        if agent.agent_type == "research" and knowledge_store:
+                            try:
+                                from src.memory.knowledge_store import KnowledgeQuery, ConfidenceLevel
+                                from src.workflows.truth_assessment import assess_answer_confidence, detect_contradictions
+
+                                # Retrieve recent knowledge entries
+                                import time as time_module
+                                current_time_ts = time_module.time()
+                                one_hour_ago = current_time_ts - 3600
+
+                                knowledge_entries = knowledge_store.retrieve_knowledge(
+                                    KnowledgeQuery(
+                                        domains=["web_search"],
+                                        min_confidence=ConfidenceLevel.HIGH,
+                                        time_range=(one_hour_ago, current_time_ts),
+                                        limit=5
+                                    )
+                                )
+
+                                if knowledge_entries and len(knowledge_entries) > 0:
+                                    # Assess if knowledge is trustable
+                                    trustable, trust_score, trust_reason = assess_answer_confidence(
+                                        knowledge_entries,
+                                        task_input
+                                    )
+
+                                    # Check for contradictions
+                                    has_contradictions, contradiction_reason = detect_contradictions(knowledge_entries)
+
+                                    # Log assessment
+                                    logger.info(f"📊 Knowledge Quality Assessment:")
+                                    logger.info(f"   Entries: {len(knowledge_entries)} HIGH confidence")
+                                    logger.info(f"   Trustable: {trustable} (score: {trust_score:.2f})")
+                                    logger.info(f"   Reason: {trust_reason}")
+                                    if has_contradictions:
+                                        logger.info(f"   ⚠ Contradictions: {contradiction_reason}")
+
+                                    # Decide on threshold adjustment
+                                    if trustable and result.confidence >= 0.60 and not has_contradictions:
+                                        # Lower threshold to allow research agent to complete
+                                        new_threshold = 0.60
+                                        central_post.update_confidence_threshold(
+                                            new_threshold,
+                                            f"Trustable knowledge available ({trust_reason})"
+                                        )
+                                        logger.info(f"✓ Research agent can complete with trustable knowledge")
+                                    elif has_contradictions and result.confidence >= 0.55:
+                                        # Need Analysis agent to resolve
+                                        logger.info(f"⚠ Contradictions detected - Analysis agent needed")
+                                        # Keep threshold high to force more processing
+                                        central_post.update_confidence_threshold(0.75, "Contradictions need resolution")
+                                    elif not trustable and result.confidence >= 0.55:
+                                        # Knowledge needs validation
+                                        logger.info(f"📋 Knowledge needs validation - continuing helix progression")
+
+                            except Exception as e:
+                                logger.warning(f"Could not perform adaptive threshold assessment: {e}")
+
                         # Note: Synthesis now performed by CentralPost, not synthesis agents
 
                         if progress_callback:
@@ -296,6 +489,46 @@ def run_felix_workflow(felix_system, task_input: str,
             if messages_this_step > 0:
                 logger.info(f"Processed {messages_this_step} messages through CentralPost")
 
+            # Adaptive complexity assessment (only once after sample period)
+            if adaptive_mode and not complexity_assessed and step >= sample_period:
+                # Assess task complexity based on confidence
+                if len(central_post._recent_confidences) > 0:
+                    avg_confidence = sum(central_post._recent_confidences) / len(central_post._recent_confidences)
+
+                    logger.info("="*60)
+                    logger.info("ADAPTIVE COMPLEXITY ASSESSMENT")
+                    logger.info(f"Sample period: {sample_period} steps completed")
+                    logger.info(f"Average confidence: {avg_confidence:.2f}")
+
+                    # Determine complexity and adjust total_steps
+                    original_steps = total_steps
+                    if avg_confidence >= felix_system.config.workflow_simple_threshold:
+                        # Simple task - use minimal steps
+                        total_steps = felix_system.config.workflow_max_steps_simple
+                        complexity = "SIMPLE"
+                    elif avg_confidence >= felix_system.config.workflow_medium_threshold:
+                        # Medium complexity - use moderate steps
+                        total_steps = felix_system.config.workflow_max_steps_medium
+                        complexity = "MEDIUM"
+                    else:
+                        # Complex task - keep maximum steps
+                        total_steps = felix_system.config.workflow_max_steps_complex
+                        complexity = "COMPLEX"
+
+                    # Adjust if we've already passed the new target
+                    if step >= total_steps:
+                        total_steps = step + 1  # Allow current step to complete
+
+                    # Recalculate time_step for remaining steps
+                    time_step = 1.0 / total_steps
+
+                    logger.info(f"Detected complexity: {complexity}")
+                    logger.info(f"Adjusting total steps: {original_steps} → {total_steps}")
+                    logger.info(f"Remaining steps: {total_steps - step - 1}")
+                    logger.info("="*60)
+
+                    complexity_assessed = True
+
             # Debug: Always log spawning check status
             logger.info(f"=== STEP {step}: Dynamic Spawning Check ===")
             logger.info(f"  Condition step >= 1: {step >= 1}")
@@ -305,7 +538,8 @@ def run_felix_workflow(felix_system, task_input: str,
             logger.info(f"  Active agents count: {len(active_agents)}")
 
             # Dynamic spawning after we have some results (step 1+)
-            if step >= 1 and agent_factory.enable_dynamic_spawning:
+            # Skip dynamic spawning for simple factual queries - just use the initial research agent
+            if step >= 1 and agent_factory.enable_dynamic_spawning and task_complexity != "SIMPLE_FACTUAL":
                 # Fallback: If no messages yet, spawn based on minimum team size
                 if len(all_processed_messages) == 0 and len(active_agents) < 3:
                     logger.info("No messages yet - spawning additional agents to reach minimum team size")
@@ -460,7 +694,8 @@ def run_felix_workflow(felix_system, task_input: str,
                         try:
                             synthesis_result = central_post.synthesize_agent_outputs(
                                 task_description=task_input,
-                                max_messages=20
+                                max_messages=20,
+                                task_complexity=task_complexity
                             )
                             results["centralpost_synthesis"] = synthesis_result
                             logger.info(f"✓ CentralPost synthesis complete!")
@@ -504,7 +739,8 @@ def run_felix_workflow(felix_system, task_input: str,
             try:
                 synthesis_result = central_post.synthesize_agent_outputs(
                     task_description=task_input,
-                    max_messages=20
+                    max_messages=20,
+                    task_complexity=task_complexity
                 )
                 results["centralpost_synthesis"] = synthesis_result
                 logger.info(f"✓ Final CentralPost synthesis complete")
