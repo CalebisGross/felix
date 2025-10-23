@@ -90,6 +90,7 @@ class QueueHandler(logging.Handler):
 
 logger = logging.getLogger('felix_gui')
 logger.setLevel(logging.INFO)
+logger.propagate = False  # Don't propagate to root to avoid duplicates
 formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 
 # File handler
@@ -101,3 +102,10 @@ logger.addHandler(file_handler)
 queue_handler = QueueHandler()
 queue_handler.setFormatter(formatter)
 logger.addHandler(queue_handler)
+
+# Configure root logger to catch logs from Felix modules (src.*)
+# This ensures all Felix system logs appear in the GUI dashboard
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+if not any(isinstance(h, QueueHandler) for h in root_logger.handlers):
+    root_logger.addHandler(queue_handler)

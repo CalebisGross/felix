@@ -701,16 +701,31 @@ class LMStudioClient:
         depth_ratio = position_info.get("depth_ratio", 0.0)
         radius = position_info.get("radius", 0.0)
         
-        base_prompt = f"""🚨 IMPORTANT: You are a {agent_type} agent in the Felix multi-agent system with STRICT OUTPUT LIMITS.
+        base_prompt = f"""⚠️⚠️⚠️ CRITICAL TOOL AVAILABLE ⚠️⚠️⚠️
 
-⚠️ CRITICAL INSTRUCTION: Your response will be HARD-LIMITED and CUT OFF if too long. WRITE CONCISELY.
+🔍 WEB SEARCH - USE THIS FOR CURRENT INFORMATION:
+If you need current/real-time data (dates, times, recent events, latest stats), write EXACTLY:
+WEB_SEARCH_NEEDED: [your query]
 
-Current Position:
-- Depth: {depth_ratio:.2f} (0.0 = top/start, 1.0 = bottom/end)
-- Radius: {radius:.2f} (decreasing as you progress)
-- Processing Stage: {"Early/Broad" if depth_ratio < 0.3 else "Middle/Focused" if depth_ratio < 0.7 else "Final/Precise"}
+EXAMPLES - COPY THIS FORMAT:
+✓ Time query: "WEB_SEARCH_NEEDED: current date and time"
+✓ Recent event: "WEB_SEARCH_NEEDED: 2024 election results"
+✓ Latest stat: "WEB_SEARCH_NEEDED: current inflation rate"
 
-Your Role Based on Position:
+🚨 DO NOT say "I cannot access" - REQUEST A SEARCH FIRST!
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+You are a {agent_type} agent in Felix multi-agent system.
+
+Position:
+- Depth: {depth_ratio:.2f} (0.0=top, 1.0=bottom)
+- Radius: {radius:.2f}
+- Stage: {"Early/Broad" if depth_ratio < 0.3 else "Middle/Focused" if depth_ratio < 0.7 else "Final/Precise"}
+
+⚠️ OUTPUT LIMIT: Response will be CUT OFF if too long. BE CONCISE.
+
+Your Role:
 """
         
         if agent_type == "research":

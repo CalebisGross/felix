@@ -16,6 +16,7 @@ from src.communication.central_post import CentralPost, AgentFactory, Message, M
 from src.communication.spoke import SpokeManager
 from src.llm.lm_studio_client import LMStudioClient
 from src.llm.token_budget import TokenBudgetManager
+from src.llm.web_search_client import WebSearchClient
 from src.memory.knowledge_store import KnowledgeStore
 from src.memory.task_memory import TaskMemory
 from src.memory.context_compression import ContextCompressor, CompressionConfig, CompressionStrategy, CompressionLevel
@@ -60,6 +61,26 @@ class FelixConfig:
     verbose_llm_logging: bool = True  # Log detailed LLM requests/responses
     enable_streaming: bool = True  # Enable incremental token streaming for real-time communication
     streaming_batch_interval: float = 0.1  # Send partial updates every 100ms
+
+    # Web search settings
+    web_search_enabled: bool = False  # Enable web search for CentralPost (confidence-based)
+    web_search_provider: str = "duckduckgo"  # Search provider: "duckduckgo" or "searxng"
+    web_search_max_results: int = 5  # Maximum results per search query
+    web_search_max_queries: int = 3  # Maximum queries per search session
+    searxng_url: Optional[str] = None  # SearxNG instance URL (if using SearxNG)
+    web_search_blocked_domains: Optional[List[str]] = None  # Domains to filter from results
+
+    # Web search trigger configuration
+    web_search_confidence_threshold: float = 0.7  # Trigger search when avg confidence < this
+    web_search_min_samples: int = 1  # Minimum confidence scores before checking average
+    web_search_cooldown: float = 10.0  # Seconds between web searches
+
+    # Workflow early stopping configuration
+    workflow_max_steps_simple: int = 5  # Max steps for simple tasks (confidence >= 0.75)
+    workflow_max_steps_medium: int = 10  # Max steps for medium tasks (confidence >= 0.50)
+    workflow_max_steps_complex: int = 20  # Max steps for complex tasks (confidence < 0.50)
+    workflow_simple_threshold: float = 0.75  # Confidence threshold for simple tasks
+    workflow_medium_threshold: float = 0.50  # Confidence threshold for medium tasks
 
 
 class AgentManager:
@@ -148,6 +169,7 @@ class FelixSystem:
         # Core components (initialized on start)
         self.helix: Optional[HelixGeometry] = None
         self.lm_client: Optional[LMStudioClient] = None
+        self.web_search_client: Optional[WebSearchClient] = None
         self.central_post: Optional[CentralPost] = None
         self.spoke_manager: Optional[SpokeManager] = None
         self.agent_factory: Optional[AgentFactory] = None
@@ -203,6 +225,28 @@ class FelixSystem:
 
             logger.info(f"Connected to LM Studio at {base_url}")
 
+            # Initialize web search client (if enabled)
+            if self.config.web_search_enabled:
+                try:
+                    self.web_search_client = WebSearchClient(
+                        provider=self.config.web_search_provider,
+                        max_results=self.config.web_search_max_results,
+                        cache_enabled=True,
+                        searxng_url=self.config.searxng_url,
+                        blocked_domains=self.config.web_search_blocked_domains
+                    )
+                    blocked_info = f" (blocking: {', '.join(self.web_search_client.blocked_domains)})" if self.web_search_client.blocked_domains else ""
+                    logger.info(f"Web search client initialized (provider: {self.config.web_search_provider}{blocked_info})")
+                except ImportError as e:
+                    logger.error(f"Failed to initialize web search client: {e}")
+                    logger.error("Install ddgs: pip install ddgs")
+                    self.web_search_client = None
+                except Exception as e:
+                    logger.error(f"Web search client initialization failed: {e}")
+                    self.web_search_client = None
+            else:
+                logger.info("Web search disabled in configuration")
+
             # Initialize token budget manager
             self.token_budget_manager = TokenBudgetManager(
                 base_budget=self.config.base_token_budget
@@ -240,9 +284,14 @@ class FelixSystem:
                 enable_metrics=self.config.enable_metrics,
                 enable_memory=self.config.enable_memory,
                 memory_db_path=self.config.memory_db_path,
-                llm_client=self.lm_client  # For CentralPost synthesis capability
+                llm_client=self.lm_client,  # For CentralPost synthesis capability
+                web_search_client=self.web_search_client,  # For Research agents
+                web_search_confidence_threshold=self.config.web_search_confidence_threshold,
+                web_search_min_samples=self.config.web_search_min_samples,
+                web_search_cooldown=self.config.web_search_cooldown,
+                knowledge_store=self.knowledge_store  # CRITICAL: Share the same knowledge_store instance!
             )
-            logger.info("Central post initialized with synthesis capability")
+            logger.info("Central post initialized with synthesis capability and shared knowledge store")
 
             # Initialize spoke manager (for O(N) communication topology)
             if self.config.enable_spoke_topology:
@@ -256,7 +305,9 @@ class FelixSystem:
                 token_budget_manager=self.token_budget_manager,
                 enable_dynamic_spawning=self.config.enable_dynamic_spawning,
                 max_agents=self.config.max_agents,
-                token_budget_limit=self.config.base_token_budget * self.config.max_agents
+                token_budget_limit=self.config.base_token_budget * self.config.max_agents,
+                web_search_client=self.web_search_client,
+                max_web_queries=self.config.web_search_max_queries
             )
             logger.info("Agent factory initialized")
 
@@ -563,7 +614,7 @@ class FelixSystem:
             if agent.state == AgentState.ACTIVE:
                 agent.update_position(self._current_time)
 
-    def run_workflow(self, task_input: str, progress_callback=None) -> Dict[str, Any]:
+    def run_workflow(self, task_input: str, progress_callback=None, max_steps_override=None) -> Dict[str, Any]:
         """
         Run a workflow through the Felix system.
 
@@ -578,6 +629,7 @@ class FelixSystem:
         Args:
             task_input: Task description to process
             progress_callback: Optional callback(status, progress_percentage)
+            max_steps_override: Optional override for max workflow steps (None = adaptive)
 
         Returns:
             Dictionary with workflow results
@@ -595,7 +647,7 @@ class FelixSystem:
             logger.info("Running workflow through Felix framework")
 
             # Run workflow using Felix system components
-            result = run_felix_workflow(self, task_input, progress_callback)
+            result = run_felix_workflow(self, task_input, progress_callback, max_steps_override)
 
             logger.info(f"Workflow completed: {result.get('status')}")
 
