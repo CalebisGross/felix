@@ -143,19 +143,34 @@ def setup_gui_logging(text_widget: Optional[tk.Text] = None,
         logger.addHandler(handler)
 
     # Setup Felix module loggers to propagate to this logger
+    # CRITICAL FIX: Attach handlers to Felix module loggers so their logs appear in GUI
     felix_modules = [
         'src.agents',
-        'src.communication',
+        'src.communication',  # <-- This is where central_post.py logs come from!
         'src.llm',
         'src.memory',
         'src.pipeline',
-        'src.core'
+        'src.core',
+        'src.gui'  # Include GUI module logs (felix_system.py, etc.)
     ]
 
     for mod_name in felix_modules:
         module_logger = logging.getLogger(mod_name)
         module_logger.setLevel(level)
-        module_logger.propagate = True  # Will propagate to root, which then goes to our handlers
+        module_logger.handlers.clear()  # Remove any existing handlers
+
+        # Add the SAME handlers as the main logger so logs appear in GUI
+        if text_widget:
+            handler = TkinterTextHandler(text_widget)
+            handler.setLevel(level)
+            module_logger.addHandler(handler)
+
+        if log_queue:
+            handler = QueueHandler(log_queue)
+            handler.setLevel(level)
+            module_logger.addHandler(handler)
+
+        module_logger.propagate = False  # Don't propagate since we have direct handlers
 
     return logger
 

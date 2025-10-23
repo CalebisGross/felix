@@ -5,6 +5,7 @@ This module provides persistent memory capabilities including:
 - Shared knowledge base for cross-run learning
 - Task memory for pattern recognition
 - Context compression for efficient information management
+- Workflow history tracking for execution analysis
 
 Integration with Central Post enables learning and memory across
 multiple helix processing runs.
@@ -13,9 +14,11 @@ multiple helix processing runs.
 from .knowledge_store import KnowledgeStore, KnowledgeEntry, KnowledgeQuery
 from .task_memory import TaskMemory, TaskPattern, TaskOutcome
 from .context_compression import ContextCompressor, CompressionStrategy, CompressedContext
+from .workflow_history import WorkflowHistory, WorkflowOutput
 
 __all__ = [
     "KnowledgeStore", "KnowledgeEntry", "KnowledgeQuery",
-    "TaskMemory", "TaskPattern", "TaskOutcome", 
-    "ContextCompressor", "CompressionStrategy", "CompressedContext"
+    "TaskMemory", "TaskPattern", "TaskOutcome",
+    "ContextCompressor", "CompressionStrategy", "CompressedContext",
+    "WorkflowHistory", "WorkflowOutput"
 ]

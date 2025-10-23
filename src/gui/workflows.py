@@ -5,6 +5,7 @@ import textwrap
 from datetime import datetime
 from .utils import ThreadManager, log_queue, logger
 from src.utils.markdown_formatter import format_synthesis_markdown_detailed
+from src.memory.workflow_history import WorkflowHistory
 
 class WorkflowsFrame(ttk.Frame):
     def __init__(self, parent, thread_manager, main_app=None, theme_manager=None):
@@ -27,6 +28,29 @@ class WorkflowsFrame(ttk.Frame):
 
         self.task_entry.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         task_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Max steps configuration
+        max_steps_frame = ttk.Frame(self)
+        max_steps_frame.pack(pady=(0, 10), padx=10, fill=tk.X)
+
+        ttk.Label(max_steps_frame, text="Max Steps:").pack(side=tk.LEFT, padx=(0, 5))
+        self.max_steps_var = tk.StringVar(value="Auto")
+        self.max_steps_dropdown = ttk.Combobox(
+            max_steps_frame,
+            textvariable=self.max_steps_var,
+            values=["Auto", "5", "10", "15", "20"],
+            state="readonly",
+            width=10
+        )
+        self.max_steps_dropdown.pack(side=tk.LEFT, padx=(0, 5))
+
+        # Tooltip for max steps
+        ttk.Label(
+            max_steps_frame,
+            text="(Auto = adaptive based on task complexity)",
+            foreground="gray",
+            font=("TkDefaultFont", 8)
+        ).pack(side=tk.LEFT)
 
         # Button frame for Run and Save buttons
         button_frame = ttk.Frame(self)
@@ -144,25 +168,40 @@ class WorkflowsFrame(ttk.Frame):
             messagebox.showwarning("Input Error", "Please enter a task description.")
             return
 
+        # Get max steps override (None for Auto, otherwise integer)
+        max_steps_value = self.max_steps_var.get()
+        max_steps_override = None if max_steps_value == "Auto" else int(max_steps_value)
+
         self.run_button.config(state=tk.DISABLED)
         self.progress.start()
-        self.thread_manager.start_thread(self._run_pipeline_thread, args=(task_input,))
+        self.thread_manager.start_thread(self._run_pipeline_thread, args=(task_input, max_steps_override))
 
-    def _run_pipeline_thread(self, task_input):
+    def _run_pipeline_thread(self, task_input, max_steps_override=None):
         def progress_callback(status, progress_percentage):
             """Callback to update GUI progress from pipeline thread."""
             self.after(0, lambda: self._update_progress(status, progress_percentage))
             # Also write status to output
             self.after(0, lambda: self._write_output(f"[{progress_percentage:.0f}%] {status}"))
 
+        # Record start time for tracking
+        start_time = datetime.now()
+
         try:
             self.after(0, lambda: self._write_output(f"Starting workflow for task: {task_input}"))
+            if max_steps_override is not None:
+                self.after(0, lambda: self._write_output(f"Max steps override: {max_steps_override}"))
+            else:
+                self.after(0, lambda: self._write_output(f"Max steps: Auto (adaptive based on complexity)"))
             self.after(0, lambda: self._write_output("="*60))
 
             # Use Felix system's integrated workflow runner if available
             if self.main_app and self.main_app.felix_system and self.main_app.system_running:
                 self.after(0, lambda: self._write_output("Running through Felix system..."))
-                result = self.main_app.felix_system.run_workflow(task_input, progress_callback=progress_callback)
+                result = self.main_app.felix_system.run_workflow(
+                    task_input,
+                    progress_callback=progress_callback,
+                    max_steps_override=max_steps_override
+                )
             else:
                 # Felix system not running - cannot run workflow
                 self.after(0, lambda: self._write_output("ERROR: Felix system not running"))
@@ -171,6 +210,13 @@ class WorkflowsFrame(ttk.Frame):
                     "status": "failed",
                     "error": "Felix system not running. Start the system from Dashboard first."
                 }
+
+            # Add task_input and timestamps to result for database storage
+            end_time = datetime.now()
+            result["task_input"] = task_input
+            result["start_time"] = start_time.isoformat()
+            result["end_time"] = end_time.isoformat()
+            result["processing_time"] = (end_time - start_time).total_seconds()
 
             # Display summary results
             self.after(0, lambda: self._write_output("\n" + "="*60))
@@ -230,13 +276,31 @@ class WorkflowsFrame(ttk.Frame):
                 self.last_workflow_result = result
                 self.after(0, lambda: self.save_button.config(state=tk.NORMAL))
 
-                # Refresh memory tab to show new knowledge entries
+                # Automatically save workflow output to database
+                try:
+                    workflow_history = WorkflowHistory()
+                    workflow_id = workflow_history.save_workflow_output(result)
+                    if workflow_id:
+                        self.after(0, lambda wid=workflow_id: self._write_output(f"Workflow saved to history (ID: {wid})"))
+                        logger.info(f"Automatically saved workflow result to database (ID: {workflow_id})")
+                    else:
+                        self.after(0, lambda: self._write_output("Warning: Failed to save workflow to history"))
+                        logger.warning("Failed to save workflow to history database")
+                except Exception as save_error:
+                    # Don't fail workflow if save fails, just log warning
+                    self.after(0, lambda: self._write_output(f"Warning: Could not save to history: {save_error}"))
+                    logger.error(f"Error saving workflow to history: {save_error}", exc_info=True)
+
+                # Refresh memory tab to show new knowledge entries and workflow history
                 if self.main_app and hasattr(self.main_app, 'memory_frame'):
                     try:
                         # Get the notebook tabs from memory frame
                         for child in self.main_app.memory_frame.notebook.winfo_children():
                             if hasattr(child, 'refresh_entries'):
                                 child.refresh_entries()
+                            elif hasattr(child, 'refresh_workflows'):
+                                # Refresh workflow history tab
+                                child.refresh_workflows()
                     except Exception as refresh_error:
                         # Don't fail workflow if refresh fails
                         print(f"Warning: Could not refresh memory tab: {refresh_error}")

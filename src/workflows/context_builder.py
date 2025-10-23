@@ -161,35 +161,141 @@ class CollaborativeContextBuilder:
         compression_ratio = 1.0
 
         if self.context_compressor and original_size > max_context_tokens:
-            logger.info(f"  Context size {original_size} exceeds limit {max_context_tokens}, compressing...")
-            # TODO: Implement actual compression when Phase 4 is ready
-            # For now, just truncate to most recent messages
-            if len(context_history) > 5:
+            logger.info(f"  Context size {original_size} exceeds limit {max_context_tokens}, applying compression...")
+
+            # Combine all context history into a single text for compression
+            combined_context = "\n\n".join([
+                f"[{entry.get('agent_type', 'Unknown')}]: {entry.get('response', '')}"
+                for entry in context_history
+            ])
+
+            try:
+                # Apply actual compression using the configured strategy
+                compressed_result = self.context_compressor.compress_context(
+                    combined_context,
+                    max_tokens=int(max_context_tokens * 0.8)  # Leave 20% buffer for headers
+                )
+
+                # Store both compressed and original for reference
+                if compressed_result and compressed_result.compressed_text:
+                    # Create compressed context entry
+                    compressed_entry = {
+                        "agent_type": "system_compression",
+                        "response": compressed_result.compressed_text,
+                        "confidence": 0.9,  # High confidence for compressed content
+                        "original_entries": len(context_history),
+                        "compression_method": compressed_result.method.value
+                    }
+
+                    # Keep most recent 2 entries uncompressed + compressed summary
+                    recent_entries = context_history[-2:] if len(context_history) > 2 else context_history
+                    context_history = [compressed_entry] + recent_entries
+
+                    compressed_size = self.estimate_tokens(compressed_result.compressed_text)
+                    for entry in recent_entries:
+                        compressed_size += self.estimate_tokens(str(entry['response']))
+
+                    compression_ratio = compressed_size / original_size if original_size > 0 else 1.0
+                    logger.info(f"  ✓ Compressed {compressed_result.original_entries} entries to {compressed_size} tokens (ratio: {compression_ratio:.2f})")
+                    logger.info(f"  Compression method: {compressed_result.method.value}")
+                else:
+                    # Fallback to truncation if compression fails
+                    logger.warning("  Compression returned empty result, falling back to truncation")
+                    context_history = context_history[-5:]
+                    compressed_size = sum(self.estimate_tokens(str(entry['response'])) for entry in context_history)
+                    compression_ratio = compressed_size / original_size if original_size > 0 else 1.0
+
+            except Exception as e:
+                logger.warning(f"  Compression failed: {e}, falling back to truncation")
                 context_history = context_history[-5:]
                 compressed_size = sum(self.estimate_tokens(str(entry['response'])) for entry in context_history)
                 compression_ratio = compressed_size / original_size if original_size > 0 else 1.0
-                logger.info(f"  Compressed to {compressed_size} tokens (ratio: {compression_ratio:.2f})")
 
         # Retrieve relevant knowledge (if available)
+        logger.info("")
+        logger.info("🔍 KNOWLEDGE RETRIEVAL")
+        logger.info("="*60)
+
         knowledge_entries = []
         if self.knowledge_store:
+            logger.info("  ✓ Knowledge store available")
             try:
+                import time as time_module
                 from src.memory.knowledge_store import KnowledgeQuery, ConfidenceLevel
+
+                # Filter by recency (last 1 hour) to avoid old/irrelevant entries
+                current_time = time_module.time()
+                one_hour_ago = current_time - 3600
+
+                logger.info(f"  📝 Query parameters:")
+                logger.info(f"     - Domains: web_search, workflow_task")
+                logger.info(f"     - Min confidence: MEDIUM")
+                logger.info(f"     - Time range: Last 1 hour (from {int(one_hour_ago)} to {int(current_time)})")
+                logger.info(f"     - Limit: 5 entries")
+
+                # CRITICAL: Retrieve from BOTH web_search and workflow_task domains
+                # Web search results are stored in "web_search" domain (central_post.py)
+                # Agent results are stored in "workflow_task" domain
+                logger.info("  🔍 Calling knowledge_store.retrieve_knowledge()...")
                 relevant_knowledge = self.knowledge_store.retrieve_knowledge(
                     KnowledgeQuery(
-                        domains=["workflow_task"],
-                        min_confidence=ConfidenceLevel.MEDIUM,  # Use enum instead of float
-                        limit=3
+                        domains=["web_search", "workflow_task"],  # Include web search results!
+                        min_confidence=ConfidenceLevel.MEDIUM,
+                        time_range=(one_hour_ago, current_time),  # Only recent entries
+                        limit=5  # Increased to allow more web search results
                     )
                 )
                 knowledge_entries = relevant_knowledge
-                logger.info(f"  Retrieved {len(knowledge_entries)} relevant knowledge entries from store")
-                if knowledge_entries:
-                    for ke in knowledge_entries:
-                        content_str = str(ke.content)
-                        logger.info(f"    - Knowledge: {content_str[:50]}... (conf: {ke.confidence_level.value})")
+
+                logger.info(f"  ✓ Retrieved {len(knowledge_entries)} entries from knowledge store")
+
+                if len(knowledge_entries) == 0:
+                    logger.warning("")
+                    logger.warning("  ⚠️ NO KNOWLEDGE ENTRIES FOUND!")
+                    logger.warning("  ⚠️ This means either:")
+                    logger.warning("     1. Web search hasn't run yet")
+                    logger.warning("     2. Web search failed to store knowledge")
+                    logger.warning("     3. Knowledge is older than 1 hour")
+                    logger.warning("  ⚠️ Agents will NOT have web search data!")
+                else:
+                    # Sort web_search entries first (they're typically most relevant for current queries)
+                    knowledge_entries = sorted(knowledge_entries, key=lambda ke: (ke.domain != "web_search", ke.created_at), reverse=False)
+
+                    logger.info("")
+                    logger.info(f"  📚 Knowledge Entries (sorted with web_search first):")
+                    for i, ke in enumerate(knowledge_entries, 1):
+                        # Extract content from dictionary if present
+                        if isinstance(ke.content, dict):
+                            # Prefer 'result' key which contains extracted web search info
+                            content_str = ke.content.get('result', str(ke.content))
+                        else:
+                            content_str = str(ke.content)
+
+                        # Use longer display for web_search domain
+                        max_chars = 200 if ke.domain == "web_search" else 50
+                        truncated = content_str[:max_chars] + "..." if len(content_str) > max_chars else content_str
+
+                        # Add emoji for web_search entries
+                        prefix = "🌐" if ke.domain == "web_search" else "📝"
+
+                        logger.info(f"    {i}. {prefix} [{ke.domain}] {ke.confidence_level.value}")
+                        logger.info(f"       Content: {truncated}")
+
+                        # Log additional metadata for web_search entries
+                        if ke.domain == "web_search" and isinstance(ke.content, dict):
+                            if 'source_url' in ke.content:
+                                logger.info(f"       Source: {ke.content['source_url']}")
+                            if 'deep_search_used' in ke.content:
+                                logger.info(f"       Deep search: {ke.content['deep_search_used']}")
+
             except Exception as e:
-                logger.warning(f"  Knowledge retrieval failed: {e}")
+                logger.error(f"  ❌ Knowledge retrieval FAILED: {e}", exc_info=True)
+                logger.error(f"  ❌ Agents will NOT have any knowledge entries!")
+        else:
+            logger.warning("  ⚠️ Knowledge store NOT AVAILABLE")
+            logger.warning("  ⚠️ Agents will NOT have access to stored knowledge")
+
+        logger.info("="*60)
 
         # Track statistics
         self.contexts_built += 1
