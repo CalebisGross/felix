@@ -222,15 +222,26 @@ class CollaborativeContextBuilder:
             try:
                 import time as time_module
                 from src.memory.knowledge_store import KnowledgeQuery, ConfidenceLevel
+                from src.workflows.truth_assessment import detect_query_type, QueryType
 
-                # Filter by recency (last 1 hour) to avoid old/irrelevant entries
+                # Detect query type to determine appropriate freshness window
                 current_time = time_module.time()
-                one_hour_ago = current_time - 3600
+                query_type = detect_query_type(original_task)
+                freshness_limits = {
+                    QueryType.TIME: 300,           # 5 minutes for time queries
+                    QueryType.DATE: 3600,          # 1 hour for date queries
+                    QueryType.CURRENT_EVENT: 1800, # 30 minutes for current events
+                    QueryType.GENERAL_FACT: 86400, # 24 hours for general facts
+                    QueryType.ANALYSIS: 86400,     # 24 hours for analysis
+                }
+                max_age = freshness_limits.get(query_type, 3600)  # Default to 1 hour
+                time_window_start = current_time - max_age
 
                 logger.info(f"  📝 Query parameters:")
                 logger.info(f"     - Domains: web_search, workflow_task")
                 logger.info(f"     - Min confidence: MEDIUM")
-                logger.info(f"     - Time range: Last 1 hour (from {int(one_hour_ago)} to {int(current_time)})")
+                logger.info(f"     - Query type: {query_type.value} (freshness: {max_age}s / {max_age/60:.1f} min)")
+                logger.info(f"     - Time range: {int(time_window_start)} to {int(current_time)}")
                 logger.info(f"     - Limit: 5 entries")
 
                 # CRITICAL: Retrieve from BOTH web_search and workflow_task domains
@@ -241,7 +252,7 @@ class CollaborativeContextBuilder:
                     KnowledgeQuery(
                         domains=["web_search", "workflow_task"],  # Include web search results!
                         min_confidence=ConfidenceLevel.MEDIUM,
-                        time_range=(one_hour_ago, current_time),  # Only recent entries
+                        time_range=(time_window_start, current_time),  # Dynamic freshness based on query type
                         limit=5  # Increased to allow more web search results
                     )
                 )
@@ -255,7 +266,7 @@ class CollaborativeContextBuilder:
                     logger.warning("  ⚠️ This means either:")
                     logger.warning("     1. Web search hasn't run yet")
                     logger.warning("     2. Web search failed to store knowledge")
-                    logger.warning("     3. Knowledge is older than 1 hour")
+                    logger.warning(f"     3. Knowledge is older than freshness window ({max_age/60:.1f} min)")
                     logger.warning("  ⚠️ Agents will NOT have web search data!")
                 else:
                     # Sort web_search entries first (they're typically most relevant for current queries)

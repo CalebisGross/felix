@@ -65,6 +65,115 @@ class StreamingChunk:
     timestamp: float
 
 
+class TokenAwareStreamController:
+    """
+    Controls streaming LLM generation with real-time token budget awareness.
+
+    Monitors token usage during streaming and provides graceful conclusion
+    signals when approaching budget limits, preventing abrupt truncation
+    while maintaining output quality.
+
+    Features:
+    - Real-time token counting during generation
+    - Soft limit (85%) triggers conclusion signal
+    - Hard limit (100%) stops stream
+    - Token efficiency metrics for agent learning
+    """
+
+    def __init__(self, token_budget: int, soft_limit_ratio: float = 0.85,
+                 conclusion_signal: Optional[str] = None):
+        """
+        Initialize token-aware stream controller.
+
+        Args:
+            token_budget: Maximum tokens allowed for this generation
+            soft_limit_ratio: Ratio at which to inject conclusion signal (default 0.85)
+            conclusion_signal: Optional signal to inject at soft limit
+        """
+        self.token_budget = token_budget
+        self.soft_limit = int(token_budget * soft_limit_ratio)
+        self.hard_limit = token_budget
+        self.tokens_generated = 0
+        self.should_stop = False
+        self.conclusion_injected = False
+
+        # Default conclusion signal (subtle)
+        self.conclusion_signal = conclusion_signal or ""
+
+        logger.debug(f"TokenAwareStreamController initialized: "
+                    f"budget={token_budget}, soft={self.soft_limit}, hard={self.hard_limit}")
+
+    def process_chunk(self, chunk: str) -> tuple[str, bool]:
+        """
+        Process streaming chunk and determine if generation should continue.
+
+        Uses rough token estimation: ~0.75 words per token (1.33 tokens per word).
+        More accurate than character count, accounts for multi-byte tokens.
+
+        Args:
+            chunk: Text chunk from LLM stream
+
+        Returns:
+            Tuple of (processed_chunk, should_continue)
+            - processed_chunk: Chunk potentially modified with signals
+            - should_continue: False to stop streaming, True to continue
+        """
+        # Estimate tokens in this chunk (rough but effective)
+        # Average: 1 token ≈ 0.75 words, so 1 word ≈ 1.33 tokens
+        word_count = len(chunk.split())
+        estimated_tokens = int(word_count * 1.33)
+        self.tokens_generated += estimated_tokens
+
+        # HARD LIMIT - stop immediately, don't emit this chunk
+        if self.tokens_generated >= self.hard_limit:
+            logger.debug(f"TokenAwareStreamController: HARD LIMIT reached "
+                        f"({self.tokens_generated}/{self.hard_limit} tokens) - stopping stream")
+            return "", False
+
+        # SOFT LIMIT - inject conclusion signal once, continue briefly
+        elif self.tokens_generated >= self.soft_limit and not self.conclusion_injected:
+            logger.debug(f"TokenAwareStreamController: SOFT LIMIT reached "
+                        f"({self.tokens_generated}/{self.soft_limit} tokens) - injecting conclusion signal")
+            self.conclusion_injected = True
+            self.should_stop = True
+
+            # Inject conclusion signal if provided
+            if self.conclusion_signal:
+                return chunk + self.conclusion_signal, True
+
+            return chunk, True
+
+        # Normal operation - continue streaming
+        return chunk, True
+
+    def get_efficiency_ratio(self) -> float:
+        """
+        Calculate token efficiency ratio (used / allocated).
+
+        Returns:
+            Efficiency ratio (e.g., 0.85 means used 85% of budget)
+        """
+        if self.token_budget == 0:
+            return 1.0
+        return self.tokens_generated / self.token_budget
+
+    def get_metrics(self) -> Dict[str, Any]:
+        """
+        Get token usage metrics for agent learning.
+
+        Returns:
+            Dictionary with token usage statistics
+        """
+        return {
+            "tokens_allocated": self.token_budget,
+            "tokens_used": self.tokens_generated,
+            "efficiency_ratio": self.get_efficiency_ratio(),
+            "soft_limit_reached": self.conclusion_injected,
+            "hard_limit_reached": self.tokens_generated >= self.hard_limit,
+            "tokens_remaining": max(0, self.token_budget - self.tokens_generated)
+        }
+
+
 class LMStudioConnectionError(Exception):
     """Raised when cannot connect to LM Studio."""
     pass
@@ -273,10 +382,11 @@ class LMStudioClient:
         max_tokens: Optional[int] = None,
         model: str = "local-model",
         batch_interval: float = 0.1,
-        callback: Optional[Callable[[StreamingChunk], None]] = None
+        callback: Optional[Callable[[StreamingChunk], None]] = None,
+        token_controller: Optional[TokenAwareStreamController] = None
     ) -> LLMResponse:
         """
-        Stream LLM completion with time-batched token delivery.
+        Stream LLM completion with time-batched token delivery and optional budget control.
 
         Tokens are accumulated and sent to callback every `batch_interval` seconds
         to create real-time feel without excessive overhead.
@@ -290,6 +400,7 @@ class LMStudioClient:
             model: Model identifier
             batch_interval: Time between partial updates (default 0.1s = 100ms)
             callback: Called with batched chunks for real-time updates
+            token_controller: Optional TokenAwareStreamController for budget enforcement
 
         Returns:
             Complete LLMResponse after stream finishes
@@ -346,10 +457,22 @@ class LMStudioClient:
 
             stream = self.client.chat.completions.create(**completion_args)
 
-            # Process stream with time-based batching
+            # Process stream with time-based batching and optional token control
             for chunk in stream:
                 if chunk.choices and len(chunk.choices) > 0 and chunk.choices[0].delta.content:
                     delta_content = chunk.choices[0].delta.content
+
+                    # Token-aware processing (if controller provided)
+                    if token_controller:
+                        processed_chunk, should_continue = token_controller.process_chunk(delta_content)
+                        if not should_continue:
+                            logger.info(f"Token controller stopped stream for {agent_id} "
+                                       f"at {token_controller.tokens_generated} tokens")
+                            # Don't add the rejected chunk, break immediately
+                            break
+                        # Use processed chunk (may have conclusion signal injected)
+                        delta_content = processed_chunk
+
                     accumulated_content += delta_content
                     batch_buffer += delta_content
                     tokens_so_far += 1  # Approximate (1 token ≈ 1 chunk)

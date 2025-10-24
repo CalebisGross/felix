@@ -516,5 +516,53 @@ class AgentsFrame(ttk.Frame):
 
     def apply_theme(self):
         """Apply current theme to the agents frame widgets."""
-        if self.theme_manager:
+        if not self.theme_manager:
+            return
+
+        theme = self.theme_manager.get_current_theme()
+
+        # Apply to monitor text widget
+        try:
             self.theme_manager.apply_to_text_widget(self.monitor_text)
+        except Exception as e:
+            logger.warning(f"Could not theme monitor_text: {e}")
+
+        # Apply to treeview
+        try:
+            style = ttk.Style()
+            style.configure("Treeview",
+                          background=theme["text_bg"],
+                          foreground=theme["text_fg"],
+                          fieldbackground=theme["text_bg"])
+            style.map('Treeview',
+                     background=[('selected', theme["text_select_bg"])],
+                     foreground=[('selected', theme["text_select_fg"])])
+        except Exception as e:
+            logger.warning(f"Could not theme treeview: {e}")
+
+        # Apply theme to entry widgets
+        try:
+            style = ttk.Style()
+            style.configure("TEntry",
+                          fieldbackground=theme["text_bg"],
+                          foreground=theme["text_fg"],
+                          insertcolor=theme["text_insert"])
+        except Exception as e:
+            logger.warning(f"Could not theme entries: {e}")
+
+        # Apply theme to combobox
+        try:
+            style = ttk.Style()
+            style.configure("TCombobox",
+                          fieldbackground=theme["text_bg"],
+                          foreground=theme["text_fg"],
+                          selectbackground=theme["text_select_bg"],
+                          selectforeground=theme["text_select_fg"])
+        except Exception as e:
+            logger.warning(f"Could not theme combobox: {e}")
+
+        # Recursively apply theme to all children
+        try:
+            self.theme_manager.apply_to_all_children(self)
+        except Exception as e:
+            logger.warning(f"Could not recursively apply theme: {e}")

@@ -628,7 +628,48 @@ class SettingsFrame(ttk.Frame):
 
     def apply_theme(self):
         """Apply current theme to settings widgets."""
-        if self.theme_manager:
-            theme = self.theme_manager.get_current_theme()
-            # Apply theme to canvas
+        if not self.theme_manager:
+            return
+
+        theme = self.theme_manager.get_current_theme()
+
+        # Apply theme to canvas
+        try:
             self.canvas.configure(bg=theme["bg_primary"])
+        except Exception as e:
+            logger.warning(f"Could not theme canvas: {e}")
+
+        # Apply theme to all Text widgets in setting_widgets (multi-line text areas)
+        try:
+            for key, widget in self.setting_widgets.items():
+                if isinstance(widget, tk.Text):
+                    self.theme_manager.apply_to_text_widget(widget)
+        except Exception as e:
+            logger.warning(f"Could not theme text widgets: {e}")
+
+        # Apply theme to entry widgets
+        try:
+            style = ttk.Style()
+            style.configure("TEntry",
+                          fieldbackground=theme["text_bg"],
+                          foreground=theme["text_fg"],
+                          insertcolor=theme["text_insert"])
+        except Exception as e:
+            logger.warning(f"Could not theme entries: {e}")
+
+        # Apply theme to combobox
+        try:
+            style = ttk.Style()
+            style.configure("TCombobox",
+                          fieldbackground=theme["text_bg"],
+                          foreground=theme["text_fg"],
+                          selectbackground=theme["text_select_bg"],
+                          selectforeground=theme["text_select_fg"])
+        except Exception as e:
+            logger.warning(f"Could not theme combobox: {e}")
+
+        # Recursively apply theme to scrollable frame and all children
+        try:
+            self.theme_manager.apply_to_all_children(self.scrollable_frame)
+        except Exception as e:
+            logger.warning(f"Could not recursively apply theme: {e}")

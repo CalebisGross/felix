@@ -76,6 +76,11 @@ class MainApp(tk.Tk):
         self.agents_frame = AgentsFrame(self.notebook, self.thread_manager, main_app=self, theme_manager=self.theme_manager)
         self.notebook.add(self.agents_frame, text="Agents")
 
+        # Prompts tab
+        from src.gui.prompts import PromptsTab
+        self.prompts_frame = PromptsTab(self.notebook, theme_manager=self.theme_manager)
+        self.notebook.add(self.prompts_frame, text="Prompts")
+
         # Settings tab
         self.settings_frame = SettingsFrame(self.notebook, self.thread_manager, main_app=self, theme_manager=self.theme_manager)
         self.notebook.add(self.settings_frame, text="Settings")
@@ -103,6 +108,8 @@ class MainApp(tk.Tk):
             self.memory_frame.apply_theme()
         if hasattr(self.agents_frame, 'apply_theme'):
             self.agents_frame.apply_theme()
+        if hasattr(self.prompts_frame, 'apply_theme'):
+            self.prompts_frame.apply_theme()
         if hasattr(self.settings_frame, 'apply_theme'):
             self.settings_frame.apply_theme()
 

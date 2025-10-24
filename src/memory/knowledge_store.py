@@ -200,11 +200,35 @@ class KnowledgeStore:
             print(f"Tag migration failed (non-critical): {e}")
             pass
     
-    def _generate_knowledge_id(self, content: Dict[str, Any], 
-                              source_agent: str) -> str:
-        """Generate unique ID for knowledge entry."""
-        content_str = json.dumps(content, sort_keys=True)
-        hash_input = f"{content_str}:{source_agent}:{time.time()}"
+    def _generate_knowledge_id(self, content: Dict[str, Any],
+                              source_agent: str,
+                              domain: str) -> str:
+        """
+        Generate knowledge ID for deduplication.
+
+        For web_search domain: Uses source_url for deduplication (same URL = same entry)
+        For other domains: Uses content hash + source_agent
+
+        Args:
+            content: Knowledge content dictionary
+            source_agent: Agent that generated this knowledge
+            domain: Domain this knowledge applies to
+
+        Returns:
+            Unique knowledge ID string
+        """
+        # For web_search domain, deduplicate by source_url
+        if domain == "web_search" and isinstance(content, dict) and "source_url" in content:
+            source_url = content.get("source_url", "")
+            # Hash: domain + source_url (no timestamp)
+            hash_input = f"web_search:{source_url}"
+            logger.debug(f"   Deduplication key: web_search + {source_url}")
+        else:
+            # For other domains, use content + source_agent (no timestamp)
+            content_str = json.dumps(content, sort_keys=True)
+            hash_input = f"{domain}:{content_str}:{source_agent}"
+            logger.debug(f"   Deduplication key: {domain} + content + {source_agent}")
+
         return hashlib.sha256(hash_input.encode()).hexdigest()[:16]
     
     def _compress_content(self, content: Dict[str, Any]) -> bytes:
@@ -245,8 +269,25 @@ class KnowledgeStore:
         if tags is None:
             tags = []
 
-        knowledge_id = self._generate_knowledge_id(content, source_agent)
+        knowledge_id = self._generate_knowledge_id(content, source_agent, domain)
         logger.info(f"   Generated knowledge_id: {knowledge_id}")
+
+        # Check if entry already exists (for deduplication logging)
+        with sqlite3.connect(self.storage_path) as conn:
+            existing = conn.execute(
+                "SELECT created_at FROM knowledge_entries WHERE knowledge_id = ?",
+                (knowledge_id,)
+            ).fetchone()
+
+            if existing:
+                logger.info(f"   📌 DEDUPLICATION: Entry exists (created: {time.ctime(existing[0])}) - updating")
+                # Preserve original created_at for deduplication
+                created_at = existing[0]
+                updated_at = time.time()
+            else:
+                logger.info(f"   ✨ NEW ENTRY: Storing for first time")
+                created_at = time.time()
+                updated_at = created_at
 
         entry = KnowledgeEntry(
             knowledge_id=knowledge_id,
@@ -255,20 +296,22 @@ class KnowledgeStore:
             confidence_level=confidence_level,
             source_agent=source_agent,
             domain=domain,
-            tags=tags
+            tags=tags,
+            created_at=created_at,
+            updated_at=updated_at
         )
-        
+
         # Determine storage method based on content size
         content_json = json.dumps(content)
         content_compressed = None
-        
+
         if self.enable_compression and len(content_json) > 1000:
             content_compressed = self._compress_content(content)
             content_json = ""  # Clear JSON to save space
-        
+
         with sqlite3.connect(self.storage_path) as conn:
-            # Store main entry
-            logger.info(f"   📝 Executing INSERT INTO knowledge_entries...")
+            # Store main entry (INSERT OR REPLACE will update if exists)
+            logger.info(f"   📝 Executing INSERT OR REPLACE INTO knowledge_entries...")
             conn.execute("""
                 INSERT OR REPLACE INTO knowledge_entries
                 (knowledge_id, knowledge_type, content_json, content_compressed,
@@ -290,7 +333,7 @@ class KnowledgeStore:
                 1.0,
                 json.dumps([])
             ))
-            logger.info(f"   ✓ INSERT executed")
+            logger.info(f"   ✓ INSERT OR REPLACE executed")
 
             # Store tags in normalized table for efficient filtering
             # First remove existing tags for this entry
@@ -383,15 +426,17 @@ class KnowledgeStore:
             params.extend(query.tags)
         
         # Add ordering and limit
-        sql_parts.append("""ORDER BY 
-            CASE ke.confidence_level 
-                WHEN 'verified' THEN 4 
-                WHEN 'high' THEN 3 
-                WHEN 'medium' THEN 2 
-                WHEN 'low' THEN 1 
-                ELSE 0 
-            END DESC, 
-            ke.success_rate DESC, 
+        # Priority: confidence > success_rate > newest first (created_at) > recently updated
+        sql_parts.append("""ORDER BY
+            CASE ke.confidence_level
+                WHEN 'verified' THEN 4
+                WHEN 'high' THEN 3
+                WHEN 'medium' THEN 2
+                WHEN 'low' THEN 1
+                ELSE 0
+            END DESC,
+            ke.success_rate DESC,
+            ke.created_at DESC,
             ke.updated_at DESC""")
         sql_parts.append("LIMIT ?")
         params.append(query.limit)

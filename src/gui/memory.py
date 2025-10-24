@@ -55,44 +55,48 @@ class MemorySubFrame(ttk.Frame):
 
         # Listbox with scrollbar
         self.listbox = tk.Listbox(self, height=10)
-        scrollbar = ttk.Scrollbar(self, command=self.listbox.yview)
-        self.listbox.config(yscrollcommand=scrollbar.set)
-        self.listbox.grid(row=0, column=0, sticky='nsew', padx=5, pady=5)
-        scrollbar.grid(row=0, column=1, sticky='ns')
+        listbox_scrollbar = ttk.Scrollbar(self, command=self.listbox.yview)
+        self.listbox.config(yscrollcommand=listbox_scrollbar.set)
+        self.listbox.grid(row=0, column=0, columnspan=2, sticky='nsew', padx=5, pady=5)
+        listbox_scrollbar.grid(row=0, column=2, sticky='ns', pady=5)
 
         self.listbox.bind('<<ListboxSelect>>', self.on_select)
 
         # Query entry and search button
-        ttk.Label(self, text="Query:").grid(row=1, column=0, sticky='w', padx=5)
+        ttk.Label(self, text="Query:").grid(row=1, column=0, sticky='w', padx=5, pady=2)
         self.query_entry = ttk.Entry(self)
-        self.query_entry.grid(row=1, column=1, sticky='ew', padx=5)
+        self.query_entry.grid(row=1, column=1, sticky='ew', padx=5, pady=2)
         self.search_button = ttk.Button(self, text="Search", command=self.search)
-        self.search_button.grid(row=1, column=2, padx=5)
+        self.search_button.grid(row=1, column=2, sticky='ew', padx=5, pady=2)
 
         # View text with scrollbar
-        ttk.Label(self, text="Details:").grid(row=2, column=0, sticky='w', padx=5)
+        ttk.Label(self, text="Details:").grid(row=2, column=0, sticky='w', padx=5, pady=2)
         self.view_text = tk.Text(self, height=5, wrap=tk.WORD, state='disabled')
         view_scrollbar = ttk.Scrollbar(self, command=self.view_text.yview)
         self.view_text.config(yscrollcommand=view_scrollbar.set)
         self.view_text.grid(row=3, column=0, columnspan=2, sticky='nsew', padx=5, pady=5)
-        view_scrollbar.grid(row=3, column=2, sticky='ns')
+        view_scrollbar.grid(row=3, column=2, sticky='ns', pady=5)
 
         # Edit entry
-        ttk.Label(self, text="Edit:").grid(row=4, column=0, sticky='w', padx=5)
+        ttk.Label(self, text="Edit:").grid(row=4, column=0, sticky='w', padx=5, pady=2)
         self.edit_entry = ttk.Entry(self)
-        self.edit_entry.grid(row=4, column=1, columnspan=2, sticky='ew', padx=5)
+        self.edit_entry.grid(row=4, column=1, sticky='ew', padx=5, pady=2)
 
         # Update and Delete buttons
-        self.update_button = ttk.Button(self, text="Update", command=self.update_entry)
-        self.update_button.grid(row=5, column=0, padx=5, pady=5)
-        self.delete_button = ttk.Button(self, text="Delete", command=self.delete_entry)
-        self.delete_button.grid(row=5, column=1, padx=5, pady=5)
+        button_frame = ttk.Frame(self)
+        button_frame.grid(row=5, column=0, columnspan=3, pady=10)
 
-        # Grid weights
-        self.grid_rowconfigure(0, weight=1)
-        self.grid_rowconfigure(3, weight=1)
-        self.grid_columnconfigure(0, weight=1)
-        self.grid_columnconfigure(1, weight=1)
+        self.update_button = ttk.Button(button_frame, text="Update", command=self.update_entry)
+        self.update_button.pack(side=tk.LEFT, padx=5)
+        self.delete_button = ttk.Button(button_frame, text="Delete", command=self.delete_entry)
+        self.delete_button.pack(side=tk.LEFT, padx=5)
+
+        # Grid weights - configure all 3 columns properly
+        self.grid_rowconfigure(0, weight=1)  # Listbox row expands
+        self.grid_rowconfigure(3, weight=1)  # Details text row expands
+        self.grid_columnconfigure(0, weight=0, minsize=80)   # Label column, fixed width
+        self.grid_columnconfigure(1, weight=1)  # Content column, expands
+        self.grid_columnconfigure(2, weight=0)  # Scrollbar/button column, fixed width
 
         # Apply initial theme
         self.apply_theme()
@@ -336,15 +340,40 @@ class MemorySubFrame(ttk.Frame):
 
     def apply_theme(self):
         """Apply current theme to memory sub-frame widgets."""
-        if self.theme_manager:
-            # Apply theme to listbox - note: Listbox doesn't inherit from Text
-            # so we need to configure it directly
-            theme = self.theme_manager.get_current_theme()
+        if not self.theme_manager:
+            return
+
+        theme = self.theme_manager.get_current_theme()
+
+        # Apply theme to listbox
+        try:
             self.listbox.configure(
                 bg=theme["text_bg"],
                 fg=theme["text_fg"],
                 selectbackground=theme["text_select_bg"],
                 selectforeground=theme["text_select_fg"]
             )
-            # Apply theme to view text widget
+        except Exception as e:
+            logger.warning(f"Could not theme listbox: {e}")
+
+        # Apply theme to view text widget
+        try:
             self.theme_manager.apply_to_text_widget(self.view_text)
+        except Exception as e:
+            logger.warning(f"Could not theme view_text: {e}")
+
+        # Apply theme to entry widgets
+        try:
+            style = ttk.Style()
+            style.configure("TEntry",
+                          fieldbackground=theme["text_bg"],
+                          foreground=theme["text_fg"],
+                          insertcolor=theme["text_insert"])
+        except Exception as e:
+            logger.warning(f"Could not theme entries: {e}")
+
+        # Recursively apply theme to all children
+        try:
+            self.theme_manager.apply_to_all_children(self)
+        except Exception as e:
+            logger.warning(f"Could not recursively apply theme: {e}")

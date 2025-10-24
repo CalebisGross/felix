@@ -87,7 +87,8 @@ def _classify_task_complexity(task_input: str) -> str:
 
 def run_felix_workflow(felix_system, task_input: str,
                        progress_callback: Optional[Callable[[str, float], None]] = None,
-                       max_steps_override: Optional[int] = None) -> Dict[str, Any]:
+                       max_steps_override: Optional[int] = None,
+                       parent_workflow_id: Optional[int] = None) -> Dict[str, Any]:
     """
     Run a workflow using the Felix framework components.
 
@@ -97,12 +98,14 @@ def run_felix_workflow(felix_system, task_input: str,
     - Uses felix_system.agent_manager for registration
     - Uses felix_system.knowledge_store for memory
     - Uses felix_system.lm_client shared across all agents
+    - Supports conversation continuity via parent_workflow_id
 
     Args:
         felix_system: Initialized FelixSystem instance from GUI
-        task_input: Task description to process
+        task_input: Task description to process (or follow-up question if continuing)
         progress_callback: Optional callback(status_message, progress_percentage)
         max_steps_override: Optional override for max workflow steps (None = adaptive)
+        parent_workflow_id: Optional ID of parent workflow to continue from
 
     Returns:
         Dictionary with workflow results and metadata
@@ -123,6 +126,34 @@ def run_felix_workflow(felix_system, task_input: str,
         agent_factory = felix_system.agent_factory
         agent_manager = felix_system.agent_manager
         knowledge_store = felix_system.knowledge_store
+
+        # Load parent workflow context if continuing conversation
+        parent_context = None
+        original_task_input = task_input
+        if parent_workflow_id:
+            logger.info("=" * 60)
+            logger.info(f"CONTINUING FROM PARENT WORKFLOW #{parent_workflow_id}")
+            from src.workflows.conversation_loader import ConversationContextLoader
+            from src.memory.workflow_history import WorkflowHistory
+
+            workflow_history = WorkflowHistory()
+            context_loader = ConversationContextLoader(workflow_history)
+
+            parent_result = context_loader.load_parent_workflow(parent_workflow_id)
+            if parent_result:
+                # Build continuation prompt that includes parent context
+                task_input = context_loader.build_continuation_prompt(
+                    parent_result,
+                    follow_up_question=original_task_input,
+                    max_context_length=1000
+                )
+                parent_context = parent_result
+                logger.info(f"  ✓ Parent task: {parent_result['task_input'][:80]}...")
+                logger.info(f"  ✓ Parent confidence: {parent_result['confidence']:.2f}")
+                logger.info(f"  ✓ Follow-up: {original_task_input[:80]}...")
+            else:
+                logger.warning(f"  ⚠ Could not load parent workflow {parent_workflow_id}, proceeding as new workflow")
+            logger.info("=" * 60)
 
         # Initialize context compressor for managing growing collaborative context
         compression_config = CompressionConfig(
@@ -215,6 +246,8 @@ def run_felix_workflow(felix_system, task_input: str,
         # Track results
         results = {
             "task": task_input,
+            "task_input": original_task_input if parent_workflow_id else task_input,  # Store original for history
+            "parent_workflow_id": parent_workflow_id,  # Track parent for conversation threading
             "agents_spawned": [],
             "messages_processed": [],
             "llm_responses": [],
@@ -416,18 +449,31 @@ def run_felix_workflow(felix_system, task_input: str,
                         if agent.agent_type == "research" and knowledge_store:
                             try:
                                 from src.memory.knowledge_store import KnowledgeQuery, ConfidenceLevel
-                                from src.workflows.truth_assessment import assess_answer_confidence, detect_contradictions
+                                from src.workflows.truth_assessment import assess_answer_confidence, detect_contradictions, detect_query_type, QueryType
 
-                                # Retrieve recent knowledge entries
+                                # Retrieve recent knowledge entries with dynamic freshness based on query type
                                 import time as time_module
                                 current_time_ts = time_module.time()
-                                one_hour_ago = current_time_ts - 3600
+
+                                # Detect query type to determine appropriate freshness window
+                                query_type = detect_query_type(task_input)
+                                freshness_limits = {
+                                    QueryType.TIME: 300,           # 5 minutes for time queries
+                                    QueryType.DATE: 3600,          # 1 hour for date queries
+                                    QueryType.CURRENT_EVENT: 1800, # 30 minutes for current events
+                                    QueryType.GENERAL_FACT: 86400, # 24 hours for general facts
+                                    QueryType.ANALYSIS: 86400,     # 24 hours for analysis
+                                }
+                                max_age = freshness_limits.get(query_type, 3600)  # Default to 1 hour
+                                time_window_start = current_time_ts - max_age
+
+                                logger.info(f"📊 Knowledge Retrieval: query_type={query_type.value}, freshness_window={max_age}s ({max_age/60:.1f} min)")
 
                                 knowledge_entries = knowledge_store.retrieve_knowledge(
                                     KnowledgeQuery(
                                         domains=["web_search"],
                                         min_confidence=ConfidenceLevel.HIGH,
-                                        time_range=(one_hour_ago, current_time_ts),
+                                        time_range=(time_window_start, current_time_ts),
                                         limit=5
                                     )
                                 )

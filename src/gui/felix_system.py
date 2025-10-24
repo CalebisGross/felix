@@ -614,7 +614,8 @@ class FelixSystem:
             if agent.state == AgentState.ACTIVE:
                 agent.update_position(self._current_time)
 
-    def run_workflow(self, task_input: str, progress_callback=None, max_steps_override=None) -> Dict[str, Any]:
+    def run_workflow(self, task_input: str, progress_callback=None, max_steps_override=None,
+                    parent_workflow_id: Optional[int] = None) -> Dict[str, Any]:
         """
         Run a workflow through the Felix system.
 
@@ -625,11 +626,13 @@ class FelixSystem:
         - Uses memory systems for persistent knowledge
         - Enables dynamic spawning based on confidence monitoring
         - Agents spawned are visible in the Agents tab
+        - Supports conversation continuity via parent_workflow_id
 
         Args:
-            task_input: Task description to process
+            task_input: Task description to process (or follow-up question if continuing)
             progress_callback: Optional callback(status, progress_percentage)
             max_steps_override: Optional override for max workflow steps (None = adaptive)
+            parent_workflow_id: Optional ID of parent workflow to continue from
 
         Returns:
             Dictionary with workflow results
@@ -647,7 +650,7 @@ class FelixSystem:
             logger.info("Running workflow through Felix framework")
 
             # Run workflow using Felix system components
-            result = run_felix_workflow(self, task_input, progress_callback, max_steps_override)
+            result = run_felix_workflow(self, task_input, progress_callback, max_steps_override, parent_workflow_id)
 
             logger.info(f"Workflow completed: {result.get('status')}")
 

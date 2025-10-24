@@ -25,7 +25,7 @@ from dataclasses import dataclass
 
 from src.agents.agent import Agent, AgentState
 from src.core.helix_geometry import HelixGeometry
-from src.llm.lm_studio_client import LMStudioClient, LLMResponse, RequestPriority
+from src.llm.lm_studio_client import LMStudioClient, LLMResponse, RequestPriority, TokenAwareStreamController
 from src.llm.multi_server_client import LMStudioClientPool
 from src.llm.token_budget import TokenBudgetManager, TokenAllocation
 from src.communication.central_post import Message, MessageType
@@ -160,7 +160,8 @@ class LLMAgent(Agent):
                  llm_client, agent_type: str = "general",
                  temperature_range: Optional[tuple] = None, max_tokens: Optional[int] = None,
                  token_budget_manager: Optional[TokenBudgetManager] = None,
-                 prompt_optimizer: Optional[PromptOptimizer] = None):
+                 prompt_optimizer: Optional[PromptOptimizer] = None,
+                 prompt_manager: Optional['PromptManager'] = None):
         """
         Initialize LLM agent.
         
@@ -173,11 +174,13 @@ class LLMAgent(Agent):
             temperature_range: (min, max) temperature based on helix position
             token_budget_manager: Optional budget manager for adaptive token allocation
             prompt_optimizer: Optional prompt optimization system for learning
+            prompt_manager: Optional prompt manager for custom prompt templates
         """
         super().__init__(agent_id, spawn_time, helix)
-        
+
         self.llm_client = llm_client
         self.agent_type = agent_type
+        self.prompt_manager = prompt_manager
         
         # FIXED: Set appropriate defaults based on agent type (aligns with TokenBudgetManager)
         if temperature_range is None:
@@ -221,11 +224,17 @@ class LLMAgent(Agent):
         self.total_processing_time = 0.0
         self.processing_stage = 0  # Current processing stage in helix descent
         self._last_checkpoint_processed = -1  # Track last checkpoint for multi-stage processing
-        
+
+        # Token efficiency tracking for adaptive behavior
+        self.token_efficiency_history: List[float] = []  # Ratio of used/allocated tokens per call
+        self._token_adjustment_factor = 1.0  # Multiplicative adjustment based on efficiency
+        self._token_overshoot_count = 0  # Count of times agent exceeded budget
+        self._token_undershoot_count = 0  # Count of times agent used <70% of budget
+
         # Communication state
         self.shared_context: Dict[str, Any] = {}
         self.received_messages: List[Dict[str, Any]] = []
-        
+
         # Emergent behavior tracking
         self.influenced_by: List[str] = []  # Agent IDs that influenced this agent
         self.influence_strength: Dict[str, float] = {}  # How much each agent influenced this one
@@ -452,6 +461,91 @@ class LLMAgent(Agent):
         # Total normalized to 0.0-1.0
         total = (count_bonus + consensus_bonus + synthesis_bonus) / 1.0
         return min(total, 1.0)
+
+    def _learn_from_token_usage(self, allocated: int, used: int) -> None:
+        """
+        Learn from token usage patterns and adjust future behavior.
+
+        Tracks efficiency ratios and adjusts the agent's token adjustment factor
+        to proactively request appropriate budgets in future calls.
+
+        Args:
+            allocated: Tokens allocated for this generation
+            used: Tokens actually used
+        """
+        if allocated == 0:
+            return
+
+        ratio = used / allocated
+        self.token_efficiency_history.append(ratio)
+
+        # Track overshoots and undershoots
+        if ratio > 1.0:
+            self._token_overshoot_count += 1
+            logger.debug(f"Agent {self.agent_id} overshot budget: {used}/{allocated} "
+                        f"({ratio:.1%}) - overshoot count: {self._token_overshoot_count}")
+        elif ratio < 0.7:
+            self._token_undershoot_count += 1
+            logger.debug(f"Agent {self.agent_id} underused budget: {used}/{allocated} "
+                        f"({ratio:.1%}) - undershoot count: {self._token_undershoot_count}")
+
+        # Adaptive adjustment after sufficient history
+        if len(self.token_efficiency_history) >= 3:
+            # Calculate rolling average of last 3 calls
+            recent_ratios = self.token_efficiency_history[-3:]
+            avg_ratio = sum(recent_ratios) / len(recent_ratios)
+
+            # Adjust factor based on consistent patterns
+            if avg_ratio > 1.1:
+                # Consistently over by >10% - request less next time
+                self._token_adjustment_factor = max(0.7, self._token_adjustment_factor * 0.9)
+                logger.info(f"Agent {self.agent_id} learning: consistently overshooting, "
+                           f"adjustment factor now {self._token_adjustment_factor:.2f}")
+            elif avg_ratio < 0.7:
+                # Consistently under 70% - can use more
+                self._token_adjustment_factor = min(1.2, self._token_adjustment_factor * 1.1)
+                logger.info(f"Agent {self.agent_id} learning: consistently undershooting, "
+                           f"adjustment factor now {self._token_adjustment_factor:.2f}")
+            elif 0.8 <= avg_ratio <= 1.0:
+                # Sweet spot - gradually move toward 1.0
+                self._token_adjustment_factor = 0.9 * self._token_adjustment_factor + 0.1 * 1.0
+                logger.debug(f"Agent {self.agent_id} in efficient range, "
+                            f"adjustment factor: {self._token_adjustment_factor:.2f}")
+
+    def get_token_efficiency(self) -> float:
+        """
+        Get agent's token efficiency metric.
+
+        Returns average efficiency ratio from recent history, or 1.0 if no history.
+        Efficiency < 1.0 means agent is concise, > 1.0 means agent overshoots.
+
+        Returns:
+            Average efficiency ratio (used/allocated)
+        """
+        if not self.token_efficiency_history:
+            return 1.0  # No history yet, assume perfect efficiency
+
+        # Return average of last 5 calls (or all if fewer)
+        recent_history = self.token_efficiency_history[-5:]
+        return sum(recent_history) / len(recent_history)
+
+    def get_adjusted_token_budget(self, base_budget: int) -> int:
+        """
+        Get token budget adjusted by learned efficiency factor.
+
+        Args:
+            base_budget: Base token budget from TokenBudgetManager
+
+        Returns:
+            Adjusted budget based on agent's learned efficiency
+        """
+        adjusted = int(base_budget * self._token_adjustment_factor)
+
+        # Ensure reasonable bounds (50%-150% of base)
+        min_budget = int(base_budget * 0.5)
+        max_budget = int(base_budget * 1.5)
+
+        return max(min_budget, min(adjusted, max_budget))
 
     # Helical checkpoint system for continuous communication
     HELICAL_CHECKPOINTS = [0.0, 0.3, 0.5, 0.7, 0.9]
@@ -789,8 +883,15 @@ class LLMAgent(Agent):
         temperature = self.get_adaptive_temperature(current_time)
         position_info = self.get_position_info(current_time)
 
-        # Ensure stage budget doesn't exceed agent's max_tokens
-        effective_token_budget = min(stage_token_budget, self.max_tokens)
+        # Apply learned adjustment factor to budget
+        adjusted_budget = self.get_adjusted_token_budget(stage_token_budget)
+
+        # Ensure adjusted budget doesn't exceed agent's max_tokens
+        effective_token_budget = min(adjusted_budget, self.max_tokens)
+
+        logger.debug(f"Agent {self.agent_id} async token budget: base={stage_token_budget}, "
+                    f"adjusted={adjusted_budget}, effective={effective_token_budget} "
+                    f"(adjustment_factor={self._token_adjustment_factor:.2f})")
 
         # Build collaborative prompt if context history available
         if hasattr(task, 'context_history') and task.context_history:
@@ -881,19 +982,22 @@ class LLMAgent(Agent):
                     logger.warning(f"[TOKEN OVERRUN] Agent {self.agent_id} used {llm_response.tokens_used} tokens "
                                  f"but was allocated only {stage_token_budget}")
 
+        # Learn from token usage for future adaptive behavior (async)
+        self._learn_from_token_usage(effective_token_budget, llm_response.tokens_used)
+
         # Record prompt metrics for optimization
         prompt_context = self._get_prompt_context(position_info.get("depth_ratio", 0.0))
         self._record_prompt_metrics(system_prompt, prompt_context, result)
-        
+
         # Update statistics
         self.processing_results.append(result)
         self.total_tokens_used += llm_response.tokens_used
         self.total_processing_time += processing_time
-        
+
         logger.info(f"Agent {self.agent_id} processed task {task.task_id} "
                    f"at depth {position_info.get('depth_ratio', 0):.2f} "
                    f"in {processing_time:.2f}s (async)")
-        
+
         return result
         
     def process_task_with_llm(self, task: LLMTask, current_time: float,
@@ -918,8 +1022,15 @@ class LLMAgent(Agent):
         temperature = self.get_adaptive_temperature(current_time)
         position_info = self.get_position_info(current_time)
 
-        # Ensure stage budget doesn't exceed agent's max_tokens
-        effective_token_budget = min(stage_token_budget, self.max_tokens)
+        # Apply learned adjustment factor to budget
+        adjusted_budget = self.get_adjusted_token_budget(stage_token_budget)
+
+        # Ensure adjusted budget doesn't exceed agent's max_tokens
+        effective_token_budget = min(adjusted_budget, self.max_tokens)
+
+        logger.debug(f"Agent {self.agent_id} token budget: base={stage_token_budget}, "
+                    f"adjusted={adjusted_budget}, effective={effective_token_budget} "
+                    f"(adjustment_factor={self._token_adjustment_factor:.2f})")
 
         # Build collaborative prompt if context history available
         if hasattr(task, 'context_history') and task.context_history:
@@ -933,6 +1044,13 @@ class LLMAgent(Agent):
         else:
             logger.info(f"Agent {self.agent_id} processing without collaborative context")
             user_prompt = task.description
+
+        # Create token-aware stream controller for budget enforcement
+        token_controller = TokenAwareStreamController(
+            token_budget=effective_token_budget,
+            soft_limit_ratio=0.85,  # Start concluding at 85% of budget
+            conclusion_signal=""  # No explicit signal, let LLM finish naturally
+        )
 
         # Streaming callback for real-time updates
         def streaming_callback(chunk):
@@ -971,7 +1089,8 @@ class LLMAgent(Agent):
                         temperature=temperature,
                         max_tokens=effective_token_budget,
                         batch_interval=0.1,
-                        callback=streaming_callback
+                        callback=streaming_callback,
+                        token_controller=token_controller
                     )
                 else:
                     llm_response = client.complete(
@@ -993,7 +1112,8 @@ class LLMAgent(Agent):
                     temperature=temperature,
                     max_tokens=effective_token_budget,
                     batch_interval=0.1,
-                    callback=streaming_callback
+                    callback=streaming_callback,
+                    token_controller=token_controller
                 )
             else:
                 llm_response = self.llm_client.complete(
@@ -1068,6 +1188,16 @@ class LLMAgent(Agent):
                 if llm_response.tokens_used > stage_token_budget:
                     logger.warning(f"[TOKEN OVERRUN] Agent {self.agent_id} used {llm_response.tokens_used} tokens "
                                  f"but was allocated only {stage_token_budget}")
+
+        # Learn from token usage for future adaptive behavior
+        self._learn_from_token_usage(effective_token_budget, llm_response.tokens_used)
+
+        # Get efficiency metrics from token controller if streaming was used
+        if enable_streaming and token_controller:
+            controller_metrics = token_controller.get_metrics()
+            logger.debug(f"Token controller metrics for {self.agent_id}: {controller_metrics}")
+            # The controller's token count may differ slightly from LLM's reported count
+            # Use LLM's count as authoritative for learning
 
         # Record prompt metrics for optimization
         prompt_context = self._get_prompt_context(position_info.get("depth_ratio", 0.0))
