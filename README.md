@@ -8,7 +8,7 @@ Felix is a Python multi-agent AI framework that leverages helical geometry for a
 
 Key features include helical progression from exploration (top_radius=3.0) to synthesis (bottom_radius=0.5), dynamic agent spawning based on confidence thresholds (0.80), role-specialized agents (Research/Analysis/Critic), smart CentralPost synthesis (adaptive temp 0.2-0.4, tokens 1500-3000), agent awareness with phase-based coordination, efficient hub-spoke messaging (O(N) complexity), web search integration (DuckDuckGo/SearxNG) with caching, workflow history tracking, persistent memory with SQLite storage and abstractive compression (target_length=100, ~0.3 ratio), local LLM integration via LMStudioClient with incremental token streaming and token budgeting (base=2048, strict mode), markdown result formatting, dark mode GUI theme support, and linear pipelines with chunking (chunk=512).
 
-Felix validates three key hypotheses: H1 (helical progression enhances agent adaptation by 20% workload distribution), H2 (hub-spoke communication optimizes resource allocation by 15% efficiency), and H3 (memory compression reduces latency by 25% attention focus). The framework supports up to 133 agents and is designed for applications like autonomous drone swarms, personalized AI assistants, and scalable chatbots.
+Felix validates three key hypotheses: H1 (helical progression enhances agent adaptation by 20% workload distribution), H2 (hub-spoke communication optimizes resource allocation by 15% efficiency), and H3 (memory compression reduces latency by 25% attention focus). The framework supports up to 50 agents and is designed for applications like autonomous drone swarms, personalized AI assistants, and scalable chatbots.
 
 For detailed structure, see [index.md](index.md).
 
@@ -26,7 +26,7 @@ For detailed structure, see [index.md](index.md).
 - **Markdown Export**: Professional formatting of synthesis results with agent metrics
 - **Dark Mode GUI**: Theme support with persistent user preferences
 - **Linear Pipelines**: Sequential processing with configurable chunking
-- **Scalability**: Supports teams from 5 to 133 agents
+- **Scalability**: Supports teams from 5 to 50 agents
 - **Hypothesis Validation**: Comprehensive benchmarking for H1-H3 gains
 
 ## Quick Start
