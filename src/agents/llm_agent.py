@@ -20,6 +20,7 @@ The agent's behavior adapts based on its position on the helix:
 import time
 import asyncio
 import logging
+import os
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
 
@@ -1251,7 +1252,7 @@ class LLMAgent(Agent):
             "agent_id": self.agent_id,
             "agent_type": self.agent_type,
             "task_id": result.task_id,
-            "content": result.get_content_summary(),  # Use summary for chunked content
+            "content": result.content,  # Use FULL content for pattern detection (SYSTEM_ACTION_NEEDED, WEB_SEARCH_NEEDED)
             "full_content_available": result.full_content_available,
             "position_info": result.position_info,
             "tokens_used": tokens_used,
@@ -1515,6 +1516,261 @@ class LLMAgent(Agent):
         return stats
 
 
+    # ========================================
+    # System Action Methods
+    # ========================================
+
+    def request_action(self, command: str, context: str = "") -> str:
+        """
+        Request system action execution through CentralPost.
+
+        This method allows agents to request command execution with automatic
+        trust classification and approval workflow. Commands are routed through
+        CentralPost which handles trust management and execution.
+
+        Args:
+            command: System command to execute
+            context: Context/reason for command execution
+
+        Returns:
+            Action ID for tracking the request
+
+        Example:
+            action_id = agent.request_action(
+                command="pip list",
+                context="Checking installed packages for task analysis"
+            )
+        """
+        if not hasattr(self, 'spoke') or self.spoke is None:
+            logger.warning(f"Agent {self.agent_id} has no spoke connection, cannot request action")
+            return ""
+
+        # Create system action request message
+        message = Message(
+            sender_id=self.agent_id,
+            message_type=MessageType.SYSTEM_ACTION_REQUEST,
+            content={
+                "command": command,
+                "context": context,
+                "agent_type": self.agent_type,
+                "position": self._progress
+            },
+            timestamp=time.time()
+        )
+
+        # Send message through spoke to CentralPost
+        self.spoke.send_message(message)
+
+        logger.info(f"Agent {self.agent_id} requested system action: {command[:50]}")
+
+        # Return a temporary action_id (will be replaced by CentralPost's actual ID)
+        # In practice, agents should wait for SYSTEM_ACTION_RESULT message
+        return f"pending_{self.agent_id}_{int(time.time() * 1000)}"
+
+    def check_action_result(self, action_id: str) -> Optional['CommandResult']:
+        """
+        Check if system action has completed and retrieve result.
+
+        This method polls for action results by checking received messages
+        for SYSTEM_ACTION_RESULT messages matching the action_id.
+
+        Args:
+            action_id: Action ID returned by request_action()
+
+        Returns:
+            CommandResult if action completed, None if still pending
+
+        Example:
+            result = agent.check_action_result(action_id)
+            if result:
+                print(f"Command output: {result.stdout}")
+        """
+        # Check received messages for action result
+        for message in self.received_messages:
+            if message.get("type") == "SYSTEM_ACTION_RESULT":
+                if message.get("action_id") == action_id:
+                    # Extract CommandResult from message
+                    from src.execution import CommandResult, ErrorCategory
+
+                    result_data = message.get("result", {})
+
+                    # Reconstruct CommandResult
+                    error_category = None
+                    if result_data.get("error_category"):
+                        error_category = ErrorCategory(result_data["error_category"])
+
+                    result = CommandResult(
+                        command=result_data.get("command", ""),
+                        exit_code=result_data.get("exit_code", -1),
+                        stdout=result_data.get("stdout", ""),
+                        stderr=result_data.get("stderr", ""),
+                        duration=result_data.get("duration", 0.0),
+                        success=result_data.get("success", False),
+                        error_category=error_category,
+                        cwd=result_data.get("cwd", ""),
+                        venv_active=result_data.get("venv_active", False),
+                        output_size=result_data.get("output_size", 0),
+                        timestamp=result_data.get("timestamp", time.time())
+                    )
+
+                    return result
+
+        return None
+
+    def wait_for_action_result(self, action_id: str, timeout: float = 10.0) -> Optional['CommandResult']:
+        """
+        Wait for system action to complete with timeout.
+
+        Blocks until action completes or timeout expires.
+
+        Args:
+            action_id: Action ID to wait for
+            timeout: Maximum time to wait in seconds
+
+        Returns:
+            CommandResult if action completed, None if timeout
+
+        Example:
+            result = agent.wait_for_action_result(action_id, timeout=30.0)
+            if result:
+                print(f"Success: {result.success}")
+        """
+        start_time = time.time()
+
+        while time.time() - start_time < timeout:
+            result = self.check_action_result(action_id)
+            if result is not None:
+                return result
+
+            # Brief sleep to avoid busy waiting
+            time.sleep(0.1)
+
+        logger.warning(f"Agent {self.agent_id} timed out waiting for action {action_id}")
+        return None
+
+    def get_system_state(self) -> Dict[str, Any]:
+        """
+        Get current system state from CentralPost.
+
+        Retrieves information about current working directory, virtual environment
+        status, and other system details.
+
+        Returns:
+            Dictionary with system state details:
+                - cwd: Current working directory
+                - venv_active: Whether virtual environment is active
+                - venv_path: Path to active virtual environment
+                - user: Current user
+                - home: Home directory
+                - python_executable: Path to Python executable
+
+        Example:
+            state = agent.get_system_state()
+            if not state.get('venv_active'):
+                agent.request_action("source .venv/bin/activate")
+        """
+        if not hasattr(self, 'spoke') or self.spoke is None:
+            logger.warning(f"Agent {self.agent_id} has no spoke connection")
+            return {}
+
+        # For now, return cached system state if available
+        # In future, could send a message to CentralPost to get fresh state
+        if hasattr(self, '_cached_system_state'):
+            return self._cached_system_state
+
+        # Default system state
+        return {
+            'cwd': os.getcwd() if 'os' in dir() else '.',
+            'venv_active': False,
+            'venv_path': None,
+            'user': 'unknown',
+            'home': '~',
+            'python_executable': '/usr/bin/python3'
+        }
+
+    def can_execute_commands(self) -> bool:
+        """
+        Check if agent has capability to request system command execution.
+
+        Returns:
+            True if agent can request commands, False otherwise
+        """
+        # Agent can execute commands if it has a spoke connection to CentralPost
+        return hasattr(self, 'spoke') and self.spoke is not None
+
+    def request_venv_activation(self, venv_path: Optional[str] = None) -> str:
+        """
+        Request activation of virtual environment.
+
+        Convenience method for common venv activation operation.
+
+        Args:
+            venv_path: Path to venv (None = auto-detect)
+
+        Returns:
+            Action ID for tracking
+
+        Example:
+            action_id = agent.request_venv_activation()
+            result = agent.wait_for_action_result(action_id)
+        """
+        if venv_path:
+            command = f"source {venv_path}/bin/activate"
+            context = f"Activating virtual environment at {venv_path}"
+        else:
+            # Auto-detect common venv locations
+            command = "source .venv/bin/activate 2>/dev/null || source venv/bin/activate 2>/dev/null || source env/bin/activate"
+            context = "Auto-detecting and activating virtual environment"
+
+        return self.request_action(command, context)
+
+    def request_package_install(self, package: str, use_pip: bool = True) -> str:
+        """
+        Request installation of Python package.
+
+        Convenience method for package installation.
+
+        Args:
+            package: Package name to install
+            use_pip: Use pip (True) or conda (False)
+
+        Returns:
+            Action ID for tracking
+
+        Example:
+            action_id = agent.request_package_install("numpy")
+        """
+        if use_pip:
+            command = f"pip install {package}"
+            context = f"Installing Python package: {package}"
+        else:
+            command = f"conda install -y {package}"
+            context = f"Installing package via conda: {package}"
+
+        return self.request_action(command, context)
+
+    def request_file_check(self, filepath: str) -> str:
+        """
+        Request check if file exists.
+
+        Convenience method for file existence checking.
+
+        Args:
+            filepath: Path to file
+
+        Returns:
+            Action ID for tracking
+
+        Example:
+            action_id = agent.request_file_check("requirements.txt")
+            result = agent.wait_for_action_result(action_id)
+            if result and result.success:
+                print("File exists!")
+        """
+        command = f"test -f {filepath} && echo 'exists' || echo 'not found'"
+        context = f"Checking if file exists: {filepath}"
+
+        return self.request_action(command, context)
 def create_llm_agents(helix: HelixGeometry, llm_client: LMStudioClient,
                      agent_configs: List[Dict[str, Any]]) -> List[LLMAgent]:
     """

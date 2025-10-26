@@ -99,7 +99,7 @@ class CollaborativeContextBuilder:
         recent_messages = self.central_post.get_recent_messages(
             limit=message_limit,
             since_time=None,  # Get all messages
-            message_types=[MessageType.STATUS_UPDATE],  # Agents post STATUS_UPDATE messages
+            message_types=[MessageType.STATUS_UPDATE, MessageType.SYSTEM_ACTION_RESULT],  # Include agent outputs AND system command results
             exclude_sender=agent_id  # Don't include own previous messages
         )
 
@@ -114,9 +114,35 @@ class CollaborativeContextBuilder:
         logger.info(f"  Building context history in chronological order...")
         for i, msg in enumerate(reversed(recent_messages), 1):  # Chronological order
             msg_content = msg.content
-            agent_response = msg_content.get("content", "")
-            agent_conf = msg_content.get("confidence", 0.0)
-            sender_type = msg_content.get("agent_type", "unknown")
+
+            # Handle different message types
+            if msg.message_type == MessageType.STATUS_UPDATE:
+                # Agent response
+                agent_response = msg_content.get("content", "")
+                agent_conf = msg_content.get("confidence", 0.0)
+                sender_type = msg_content.get("agent_type", "unknown")
+
+            elif msg.message_type == MessageType.SYSTEM_ACTION_RESULT:
+                # System command result
+                command = msg_content.get("command", "")
+                stdout = msg_content.get("stdout", "")
+                stderr = msg_content.get("stderr", "")
+                success = msg_content.get("success", False)
+                exit_code = msg_content.get("exit_code", -1)
+
+                # Format as readable context entry
+                agent_response = f"System Command Execution:\nCommand: {command}\nSuccess: {success}\nExit Code: {exit_code}"
+                if stdout:
+                    agent_response += f"\nOutput: {stdout}"
+                if stderr:
+                    agent_response += f"\nErrors: {stderr}"
+
+                agent_conf = 1.0  # High confidence for actual command results
+                sender_type = "system_action"
+
+            else:
+                # Unknown message type, skip
+                continue
 
             context_entry = {
                 "agent_id": msg.sender_id,

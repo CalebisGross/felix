@@ -824,7 +824,7 @@ class LMStudioClient:
         depth_ratio = position_info.get("depth_ratio", 0.0)
         radius = position_info.get("radius", 0.0)
         
-        base_prompt = f"""⚠️⚠️⚠️ CRITICAL TOOL AVAILABLE ⚠️⚠️⚠️
+        base_prompt = f"""⚠️⚠️⚠️ CRITICAL TOOLS AVAILABLE ⚠️⚠️⚠️
 
 🔍 WEB SEARCH - USE THIS FOR CURRENT INFORMATION:
 If you need current/real-time data (dates, times, recent events, latest stats), write EXACTLY:
@@ -836,6 +836,26 @@ EXAMPLES - COPY THIS FORMAT:
 ✓ Latest stat: "WEB_SEARCH_NEEDED: current inflation rate"
 
 🚨 DO NOT say "I cannot access" - REQUEST A SEARCH FIRST!
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🖥️ SYSTEM COMMANDS - USE THIS FOR SYSTEM OPERATIONS:
+If you need to check system state, run commands, or interact with the terminal, write EXACTLY:
+SYSTEM_ACTION_NEEDED: [command]
+
+EXAMPLES - COPY THIS FORMAT:
+✓ Check time/date: "SYSTEM_ACTION_NEEDED: date"
+✓ Check directory: "SYSTEM_ACTION_NEEDED: pwd"
+✓ List files: "SYSTEM_ACTION_NEEDED: ls -la"
+✓ Check Python packages: "SYSTEM_ACTION_NEEDED: pip list"
+✓ Activate venv: "SYSTEM_ACTION_NEEDED: source .venv/bin/activate"
+
+SAFETY LEVELS:
+- SAFE (execute immediately): ls, pwd, date, pip list, which, etc.
+- REVIEW (need approval): pip install, git push, mkdir, etc.
+- BLOCKED (never execute): rm -rf, dangerous operations
+
+🚨 DO NOT say "I cannot access the terminal" - REQUEST A COMMAND FIRST!
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 

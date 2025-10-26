@@ -2,8 +2,22 @@
 # Default prompts for agent types across different helix positions
 # These can be overridden with custom versions via the GUI
 
-version: "1.0"
-last_updated: "2025-10-23"
+version: "1.1"
+last_updated: "2025-10-25"
+
+# System Action Capabilities (added for system autonomy)
+system_actions:
+  enabled: true
+  description: "Agents can request system command execution via SYSTEM_ACTION_NEEDED: pattern"
+  examples:
+    - "SYSTEM_ACTION_NEEDED: date  # Get current date/time"
+    - "SYSTEM_ACTION_NEEDED: pwd   # Check current directory"
+    - "SYSTEM_ACTION_NEEDED: pip list  # List installed packages"
+    - "SYSTEM_ACTION_NEEDED: ls -la  # List files in directory"
+  safety_levels:
+    SAFE: "Read-only commands execute immediately (ls, pwd, date, pip list, which, etc.)"
+    REVIEW: "State-modifying commands require user approval (pip install, git push, mkdir, etc.)"
+    BLOCKED: "Dangerous commands never execute (rm -rf, credential access, etc.)"
 
 # Variable documentation for prompt templates
 variables:

@@ -9,8 +9,9 @@ for their role in the helix-based coordination system.
 Agent Types:
 - ResearchAgent: Broad information gathering and exploration
 - AnalysisAgent: Processing and organizing information from research
-- SynthesisAgent: Integration and final output generation  
+- SynthesisAgent: Integration and final output generation
 - CriticAgent: Quality assurance and review
+- SystemAgent: System operations and command execution (see system_agent.py)
 """
 
 import time
@@ -27,6 +28,54 @@ from src.llm.lm_studio_client import LMStudioClient
 logger = logging.getLogger(__name__)
 from src.llm.token_budget import TokenBudgetManager
 from src.llm.web_search_client import WebSearchClient, SearchResult
+
+
+# Shared tool instructions header for all specialized agents
+AGENT_TOOLS_HEADER = """⚠️⚠️⚠️ CRITICAL TOOLS AVAILABLE ⚠️⚠️⚠️
+
+🔍 WEB SEARCH - USE THIS FOR CURRENT INFORMATION:
+If you need current/real-time data (dates, times, recent events, latest stats), write EXACTLY:
+WEB_SEARCH_NEEDED: [your query]
+
+EXAMPLES:
+✓ "WEB_SEARCH_NEEDED: current date and time"
+✓ "WEB_SEARCH_NEEDED: 2024 election results"
+
+🖥️ SYSTEM COMMANDS - USE THIS FOR SYSTEM OPERATIONS:
+If you need to check system state, run commands, or interact with the terminal, write EXACTLY:
+SYSTEM_ACTION_NEEDED: [command]
+
+⚠️ CRITICAL FORMATTING RULES:
+1. Write the pattern ON ITS OWN LINE or at the START of your response
+2. Write ONLY the command after the colon - no explanation, no prose
+3. DO NOT embed the pattern in sentences or discuss it in your analysis
+
+✓ CORRECT FORMAT:
+"I need to check the directory.
+SYSTEM_ACTION_NEEDED: pwd"
+
+OR:
+"SYSTEM_ACTION_NEEDED: pwd
+This will tell us the current directory."
+
+✗ WRONG - DO NOT DO THIS:
+"I will use SYSTEM_ACTION_NEEDED: pwd to check the directory."
+"The command (SYSTEM_ACTION_NEEDED: pwd) will help us..."
+"...via SYSTEM_ACTION_NEEDED: pwd) is sufficient..."
+
+EXAMPLES OF CORRECT USAGE:
+✓ "SYSTEM_ACTION_NEEDED: date"  # Get current time/date
+✓ "SYSTEM_ACTION_NEEDED: pwd"   # Get current directory
+✓ "SYSTEM_ACTION_NEEDED: ls -la" # List files
+✓ "SYSTEM_ACTION_NEEDED: pip list" # Check installed packages
+
+SAFETY: Commands are classified as SAFE (execute immediately), REVIEW (need approval), or BLOCKED (never execute).
+
+🚨 DO NOT say "I cannot access" - REQUEST THE TOOL FIRST!
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+"""
 
 
 class ResearchAgent(LLMAgent):
@@ -192,21 +241,21 @@ Your response (15-30 words, direct answer only):"""
                 header_template = self.prompt_manager.get_prompt("research_base_header")
                 header = header_template.template if header_template else ""
 
-                # Render main template
+                # Render main prompt
                 main_prompt = self.prompt_manager.render_template(
                     prompt_template.template,
                     research_domain=self.research_domain,
                     depth_ratio=depth_ratio
                 )
 
-                # Combine header + main prompt
-                base_prompt = header + main_prompt
+                # Combine: tools_header + header + main prompt
+                base_prompt = AGENT_TOOLS_HEADER + header + main_prompt
             else:
                 # Fallback to hardcoded
-                base_prompt = self._build_hardcoded_prompt(depth_ratio, strict_mode)
+                base_prompt = AGENT_TOOLS_HEADER + self._build_hardcoded_prompt(depth_ratio, strict_mode)
         else:
             # No PromptManager, use hardcoded prompts
-            base_prompt = self._build_hardcoded_prompt(depth_ratio, strict_mode)
+            base_prompt = AGENT_TOOLS_HEADER + self._build_hardcoded_prompt(depth_ratio, strict_mode)
 
         # Add shared context
         if self.shared_context:
@@ -526,8 +575,8 @@ class AnalysisAgent(LLMAgent):
                 self.agent_id, depth_ratio, self.processing_stage + 1
             )
             stage_token_budget = token_allocation.stage_budget
-        
-        base_prompt = f"""You are a specialized ANALYSIS AGENT in the Felix multi-agent system.
+
+        base_prompt = AGENT_TOOLS_HEADER + f"""You are a specialized ANALYSIS AGENT in the Felix multi-agent system.
 
 Analysis Type: {self.analysis_type}
 Current Position: Depth {depth_ratio:.2f}/1.0 on the helix
@@ -687,8 +736,8 @@ class CriticAgent(LLMAgent):
                 self.agent_id, depth_ratio, self.processing_stage + 1
             )
             stage_token_budget = token_allocation.stage_budget
-        
-        base_prompt = f"""You are a specialized CRITIC AGENT in the Felix multi-agent system.
+
+        base_prompt = AGENT_TOOLS_HEADER + f"""You are a specialized CRITIC AGENT in the Felix multi-agent system.
 
 Review Focus: {self.review_focus}
 Current Position: Depth {depth_ratio:.2f}/1.0 on the helix

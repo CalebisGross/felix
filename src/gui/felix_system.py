@@ -21,6 +21,7 @@ from src.memory.knowledge_store import KnowledgeStore
 from src.memory.task_memory import TaskMemory
 from src.memory.context_compression import ContextCompressor, CompressionConfig, CompressionStrategy, CompressionLevel
 from src.agents import ResearchAgent, AnalysisAgent, CriticAgent, PromptOptimizer
+from src.agents.system_agent import SystemAgent
 from src.agents.agent import AgentState
 
 logger = logging.getLogger(__name__)
@@ -418,6 +419,15 @@ class FelixSystem:
                     review_focus=domain,
                     token_budget_manager=self.token_budget_manager,
                     max_tokens=800
+                )
+            elif agent_type.lower() == "system":
+                agent = SystemAgent(
+                    agent_id=agent_id,
+                    spawn_time=spawn_time,
+                    helix=self.helix,
+                    llm_client=self.lm_client,
+                    max_tokens=1500,  # SystemAgent uses higher token budget for precise commands
+                    token_budget_manager=self.token_budget_manager
                 )
             else:
                 logger.error(f"Unknown agent type: {agent_type}")
