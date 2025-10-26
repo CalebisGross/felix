@@ -3,6 +3,7 @@ from tkinter import ttk, messagebox
 import sqlite3
 import json
 from .utils import ThreadManager, DBHelper, logger
+from .workflow_history_frame import WorkflowHistoryFrame
 
 try:
     from src.memory import knowledge_store, task_memory
@@ -29,12 +30,18 @@ class MemoryFrame(ttk.Frame):
         self.knowledge_subframe = MemorySubFrame(self.notebook, self.thread_manager, self.db_helper, 'felix_knowledge.db', 'knowledge', theme_manager=self.theme_manager)
         self.notebook.add(self.knowledge_subframe, text="Knowledge")
 
+        # Workflow History tab (NEW)
+        self.workflow_history_subframe = WorkflowHistoryFrame(self.notebook, self.thread_manager, theme_manager=self.theme_manager)
+        self.notebook.add(self.workflow_history_subframe, text="Workflow History")
+
     def apply_theme(self):
         """Apply current theme to memory frame widgets."""
         if hasattr(self.memory_subframe, 'apply_theme'):
             self.memory_subframe.apply_theme()
         if hasattr(self.knowledge_subframe, 'apply_theme'):
             self.knowledge_subframe.apply_theme()
+        if hasattr(self.workflow_history_subframe, 'apply_theme'):
+            self.workflow_history_subframe.apply_theme()
 
 class MemorySubFrame(ttk.Frame):
     def __init__(self, parent, thread_manager, db_helper, db_name, table_name, theme_manager=None):

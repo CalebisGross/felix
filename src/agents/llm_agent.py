@@ -546,6 +546,38 @@ class LLMAgent(Agent):
             context_summary = "\n\nShared Context from Other Agents:\n"
             for key, value in self.shared_context.items():
                 context_summary += f"- {key}: {value}\n"
+
+        # Add knowledge entries if available
+        knowledge_summary = ""
+        if task.knowledge_entries and len(task.knowledge_entries) > 0:
+            knowledge_summary = "\n\nRelevant Knowledge from Memory:\n"
+            for entry in task.knowledge_entries:
+                # Extract key information from knowledge entry
+                if hasattr(entry, 'content'):
+                    # Extract 'result' key from dictionary if present (web search results)
+                    if isinstance(entry.content, dict):
+                        content_str = entry.content.get('result', str(entry.content))
+                    else:
+                        content_str = str(entry.content)
+                else:
+                    content_str = str(entry)
+
+                confidence = entry.confidence_level.value if hasattr(entry, 'confidence_level') else "unknown"
+                source = entry.source_agent if hasattr(entry, 'source_agent') else "system"
+                domain = entry.domain if hasattr(entry, 'domain') else "unknown"
+
+                # Use longer truncation for web_search domain (detailed factual data)
+                max_chars = 400 if domain == "web_search" else 200
+                if len(content_str) > max_chars:
+                    content_str = content_str[:max_chars-3] + "..."
+
+                # Add emoji prefix for web search entries
+                prefix = "🌐" if domain == "web_search" else "📝"
+                knowledge_summary += f"{prefix} [{source}, conf: {confidence}]: {content_str}\n"
+
+            # Add important instructions for using available knowledge
+            knowledge_summary += "\nIMPORTANT: Use the knowledge provided above to answer the task if possible. "
+            knowledge_summary += "Only request additional web search if the available knowledge is insufficient or outdated.\n"
         
         # Generate prompt ID for optimization tracking
         prompt_id = f"{self.agent_type}_{prompt_context.value}_stage_{self.processing_stage}"
@@ -567,19 +599,42 @@ class LLMAgent(Agent):
             base_prompt = self.llm_client.create_agent_system_prompt(
                 agent_type=self.agent_type,
                 position_info=position_info,
-                task_context=f"{task.context}{context_summary}"
+                task_context=f"{task.context}{context_summary}{knowledge_summary}"
             )
         
-        # Add token budget guidance if available
-        if token_allocation:
-            budget_guidance = f"\n\nToken Budget Guidance:\n{token_allocation.style_guidance}"
-            if token_allocation.compression_ratio > 0.5:
-                budget_guidance += f"\nCompress previous insights by ~{token_allocation.compression_ratio:.0%} while preserving key points."
-            
-            enhanced_prompt = base_prompt + budget_guidance
+        # Calculate temperature for metadata
+        temperature = self.get_adaptive_temperature(current_time)
+
+        # Build metadata section
+        metadata_parts = ["\n\n=== Processing Parameters ==="]
+
+        # Add temperature guidance
+        if temperature < 0.3:
+            temp_guidance = "PRECISE mode (low creativity): Focus on accuracy and specific details"
+        elif temperature < 0.5:
+            temp_guidance = "BALANCED mode: Mix precision with moderate exploration"
+        elif temperature < 0.7:
+            temp_guidance = "EXPLORATORY mode: Consider diverse perspectives and connections"
         else:
-            enhanced_prompt = base_prompt
-        
+            temp_guidance = "CREATIVE mode (high creativity): Generate novel insights and broad exploration"
+
+        metadata_parts.append(f"Temperature: {temperature:.2f} - {temp_guidance}")
+
+        # Add token budget information
+        if token_allocation:
+            metadata_parts.append(f"Token Budget: {stage_token_budget} tokens (remaining: {token_allocation.remaining_budget})")
+            metadata_parts.append(f"Compression Target: {token_allocation.compression_ratio:.0%}")
+            metadata_parts.append(f"Output Guidance: {token_allocation.style_guidance}")
+        else:
+            metadata_parts.append(f"Token Budget: {stage_token_budget} tokens")
+
+        # Add position information
+        metadata_parts.append(f"Helix Position: {depth_ratio:.1%} depth (stage {self.processing_stage + 1})")
+
+        # Combine everything
+        metadata_section = "\n".join(metadata_parts)
+        enhanced_prompt = base_prompt + metadata_section
+
         return enhanced_prompt, stage_token_budget
     
     def _get_prompt_context(self, depth_ratio: float) -> PromptContext:
@@ -684,69 +739,32 @@ class LLMAgent(Agent):
                 f"\n{i}. {prev_agent_type.upper()} Agent (confidence: {prev_confidence:.2f}):\n{prev_response}"
             )
 
-        # Add agent-type-specific instructions with confidence improvement guidance
+        # Add concise collaborative instructions
         context_parts.append("\n---")
-        context_parts.append("\n**COLLABORATIVE CONTEXT AVAILABLE**: You have access to previous agents' outputs above. "
-                           "Use this collaborative context to produce a MORE CONFIDENT and COMPREHENSIVE response "
-                           "than any single agent could provide alone.\n\n"
-                           "**CRITICAL**: Do NOT simply repeat what previous agents have already said. "
-                           "BUILD UPON their work by:\n"
-                           "- Adding NEW information, insights, or perspectives\n"
-                           "- Resolving contradictions or uncertainties\n"
-                           "- Deepening the analysis with additional detail\n"
-                           "- Synthesizing multiple perspectives into a coherent whole")
+        context_parts.append("\n**Collaborative Context**: Build upon previous agents' work. DO NOT repeat - ADD NEW insights.")
 
         if agent_type == "research":
             context_parts.append(
-                "\n\nAs a RESEARCH agent with collaborative context:\n"
-                "1. Review what previous agents have already discovered\n"
-                "2. Identify gaps, uncertainties, or areas needing deeper investigation\n"
-                "3. Expand on those gaps with NEW research findings\n"
-                "4. Build confidence by resolving uncertainties identified by critics\n"
-                "5. Your output should be MORE CONFIDENT because you're addressing known gaps"
+                "\n\n**Research Focus**: Identify gaps in previous findings and explore them with NEW discoveries."
             )
         elif agent_type == "critic":
             # Add agent-specific focus for diversity
             import random
-            focus_areas = [
-                "logical consistency and reasoning",
-                "factual accuracy and evidence quality",
-                "completeness and coverage of key points",
-                "clarity and communication effectiveness",
-                "novelty and originality of insights"
-            ]
-            # Use agent_id as seed for deterministic but varied focus
+            focus_areas = ["logic", "accuracy", "completeness", "clarity", "novelty"]
             random.seed(hash(self.agent_id))
             focus = random.choice(focus_areas)
 
             context_parts.append(
-                f"\n\nAs a CRITIC agent with collaborative context:\n"
-                f"**YOUR SPECIFIC FOCUS**: Prioritize evaluation of {focus}.\n"
-                "1. Evaluate ALL previous outputs collectively for accuracy and consistency\n"
-                "2. Identify contradictions between different agents' findings\n"
-                "3. Assess whether previous critics' concerns have been addressed\n"
-                "4. If multiple agents agree on findings, your confidence should be HIGHER\n"
-                "5. Provide constructive critique that helps the team reach consensus\n"
-                "6. If team is converging on consistent conclusions, validate with high confidence"
+                f"\n\n**Critic Focus ({focus})**: Evaluate collective outputs for consistency and quality. "
+                "Higher confidence when agents agree."
             )
         elif agent_type == "analysis":
             context_parts.append(
-                "\n\nAs an ANALYSIS agent with collaborative context:\n"
-                "1. SYNTHESIZE all previous outputs into coherent insights\n"
-                "2. Identify patterns and connections across multiple agents' findings\n"
-                "3. Resolve contradictions by weighing evidence from multiple sources\n"
-                "4. Build on critiques to produce more robust analysis\n"
-                "5. Your confidence should be HIGHER when multiple agents' findings align\n"
-                "6. Produce insights that are MORE CERTAIN than any individual agent's output"
+                "\n\n**Analysis Focus**: Synthesize findings into patterns. Resolve contradictions using evidence."
             )
         elif agent_type == "synthesis":
             context_parts.append(
-                "\n\nAs a SYNTHESIS agent with collaborative context:\n"
-                "1. Create a comprehensive response integrating ALL previous findings\n"
-                "2. Resolve any remaining contradictions using consensus from multiple agents\n"
-                "3. Build on the collective knowledge to produce a definitive answer\n"
-                "4. Your confidence should be HIGHEST because you have the full collaborative context\n"
-                "5. Produce a unified, authoritative response that represents team consensus"
+                "\n\n**Synthesis Focus**: Integrate ALL findings into comprehensive conclusion. Highest confidence from consensus."
             )
 
         return "\n".join(context_parts)
@@ -844,10 +862,25 @@ class LLMAgent(Agent):
             collaborative_context_count=collaborative_count
         )
         
-        # Record token usage with budget manager
+        # Record token usage with budget manager and log for monitoring
         if self.token_budget_manager:
             self.token_budget_manager.record_usage(self.agent_id, llm_response.tokens_used)
-        
+
+            # Debug logging for token usage monitoring
+            budget_status = self.token_budget_manager.get_agent_status(self.agent_id)
+            if budget_status:
+                logger.debug(f"[TOKEN MONITOR] Agent {self.agent_id} ({self.agent_type}):")
+                logger.debug(f"  - Stage budget: {stage_token_budget} tokens")
+                logger.debug(f"  - Actual used: {llm_response.tokens_used} tokens")
+                logger.debug(f"  - Total used: {budget_status['tokens_used']}/{budget_status['total_budget']} "
+                           f"({budget_status['usage_ratio']:.1%})")
+                logger.debug(f"  - Remaining: {budget_status['tokens_remaining']} tokens")
+
+                # Warn if usage exceeds budget
+                if llm_response.tokens_used > stage_token_budget:
+                    logger.warning(f"[TOKEN OVERRUN] Agent {self.agent_id} used {llm_response.tokens_used} tokens "
+                                 f"but was allocated only {stage_token_budget}")
+
         # Record prompt metrics for optimization
         prompt_context = self._get_prompt_context(position_info.get("depth_ratio", 0.0))
         self._record_prompt_metrics(system_prompt, prompt_context, result)
@@ -1017,9 +1050,24 @@ class LLMAgent(Agent):
             except Exception as e:
                 logger.warning(f"Failed to finalize streaming thought with hub: {e}")
 
-        # Record token usage with budget manager
+        # Record token usage with budget manager and log for monitoring
         if self.token_budget_manager:
             self.token_budget_manager.record_usage(self.agent_id, llm_response.tokens_used)
+
+            # Debug logging for token usage monitoring
+            budget_status = self.token_budget_manager.get_agent_status(self.agent_id)
+            if budget_status:
+                logger.debug(f"[TOKEN MONITOR] Agent {self.agent_id} ({self.agent_type}):")
+                logger.debug(f"  - Stage budget: {stage_token_budget} tokens")
+                logger.debug(f"  - Actual used: {llm_response.tokens_used} tokens")
+                logger.debug(f"  - Total used: {budget_status['tokens_used']}/{budget_status['total_budget']} "
+                           f"({budget_status['usage_ratio']:.1%})")
+                logger.debug(f"  - Remaining: {budget_status['tokens_remaining']} tokens")
+
+                # Warn if usage exceeds budget
+                if llm_response.tokens_used > stage_token_budget:
+                    logger.warning(f"[TOKEN OVERRUN] Agent {self.agent_id} used {llm_response.tokens_used} tokens "
+                                 f"but was allocated only {stage_token_budget}")
 
         # Record prompt metrics for optimization
         prompt_context = self._get_prompt_context(position_info.get("depth_ratio", 0.0))

@@ -111,6 +111,37 @@ class SettingsFrame(ttk.Frame):
                                                    ["abstractive", "hierarchical"], "abstractive")
         current_row += 1
 
+        # Web Search Section
+        current_row = self._create_section(current_row, "Web Search Configuration")
+        current_row = self._create_checkbox_field(current_row, "web_search_enabled", "Enable Web Search", False,
+                                                   "Enable web search by CentralPost when confidence is low (requires ddgs: pip install ddgs)")
+        current_row = self._create_dropdown_field(current_row, "web_search_provider", "Search Provider:",
+                                                   ["duckduckgo", "searxng"], "duckduckgo",
+                                                   "DuckDuckGo (free, no setup) or SearxNG (self-hosted)")
+        current_row = self._create_int_field(current_row, "web_search_max_results", "Max Results per Query:", 5,
+                                             "Maximum search results to fetch per query")
+        current_row = self._create_int_field(current_row, "web_search_max_queries", "Max Queries per Search:", 3,
+                                            "Maximum queries per web search session")
+        current_row = self._create_text_field(current_row, "searxng_url", "SearxNG URL (optional):", "",
+                                              "URL for SearxNG instance (only if provider=searxng, e.g. http://localhost:8080)")
+        current_row = self._create_text_area_field(current_row, "web_search_blocked_domains",
+                                                   "Blocked Domains\n(one per line):",
+                                                   "wikipedia.org\nreddit.com",
+                                                   height=4,
+                                                   tooltip="Search results from these domains will be filtered out")
+
+        # Web Search Trigger Configuration (subsection)
+        current_row = self._create_float_field(current_row, "web_search_confidence_threshold",
+                                                "Confidence Threshold:", 0.7,
+                                                "Trigger web search when avg confidence < this value (0.0-1.0)")
+        current_row = self._create_int_field(current_row, "web_search_min_samples",
+                                             "Min Confidence Samples:", 1,
+                                             "Minimum confidence scores before checking average (1+ recommended)")
+        current_row = self._create_float_field(current_row, "web_search_cooldown",
+                                                "Search Cooldown (seconds):", 10.0,
+                                                "Minimum time between web searches to prevent spam")
+        current_row += 1
+
         # Feature Toggles Section
         current_row = self._create_section(current_row, "Feature Toggles")
         current_row = self._create_checkbox_field(current_row, "enable_metrics", "Enable Metrics", True,
@@ -133,6 +164,20 @@ class SettingsFrame(ttk.Frame):
         current_row = self._create_section(current_row, "Appearance")
         current_row = self._create_checkbox_field(current_row, "dark_mode", "Dark Mode", False,
                                                    "Use dark color scheme for the GUI")
+        current_row += 1
+
+        # Workflow Early Stopping Section
+        current_row = self._create_section(current_row, "Workflow Early Stopping (Adaptive Complexity)")
+        current_row = self._create_int_field(current_row, "workflow_max_steps_simple", "Max Steps (Simple):", 5,
+                                             "Maximum steps for simple tasks (high confidence)")
+        current_row = self._create_int_field(current_row, "workflow_max_steps_medium", "Max Steps (Medium):", 10,
+                                             "Maximum steps for medium complexity tasks")
+        current_row = self._create_int_field(current_row, "workflow_max_steps_complex", "Max Steps (Complex):", 20,
+                                             "Maximum steps for complex tasks (low confidence)")
+        current_row = self._create_float_field(current_row, "workflow_simple_threshold", "Simple Threshold:", 0.75,
+                                                "Confidence threshold for simple tasks (>= this value)")
+        current_row = self._create_float_field(current_row, "workflow_medium_threshold", "Medium Threshold:", 0.50,
+                                                "Confidence threshold for medium tasks (>= this value)")
         current_row += 1
 
         # Action Buttons
@@ -224,6 +269,36 @@ class SettingsFrame(ttk.Frame):
         self.setting_widgets[key] = var
         return row + 1
 
+    def _create_text_area_field(self, row: int, key: str, label: str, default_text: str,
+                                height: int = 4, tooltip: str = "") -> int:
+        """Create a multi-line text area field."""
+        label_widget = ttk.Label(self.scrollable_frame, text=label)
+        label_widget.grid(row=row, column=0, sticky="nw", padx=(20, 5), pady=2)
+
+        # Create frame for text widget and scrollbar
+        text_frame = ttk.Frame(self.scrollable_frame)
+        text_frame.grid(row=row, column=1, sticky="w", padx=5, pady=2)
+
+        # Create text widget with scrollbar
+        text_widget = tk.Text(text_frame, width=30, height=height, wrap=tk.WORD)
+        scrollbar = ttk.Scrollbar(text_frame, orient="vertical", command=text_widget.yview)
+        text_widget.config(yscrollcommand=scrollbar.set)
+
+        text_widget.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        # Insert default text
+        if default_text:
+            text_widget.insert("1.0", default_text)
+
+        if tooltip:
+            tooltip_label = ttk.Label(self.scrollable_frame, text=f"({tooltip})",
+                                     foreground="gray", font=("TkDefaultFont", 8))
+            tooltip_label.grid(row=row, column=2, sticky="nw", padx=5, pady=2)
+
+        self.setting_widgets[key] = text_widget
+        return row + 1
+
     def get_settings_dict(self) -> Dict[str, Any]:
         """Get current settings as a dictionary."""
         settings = {}
@@ -233,6 +308,9 @@ class SettingsFrame(ttk.Frame):
                 settings[key] = widget.get()
             elif isinstance(widget, ttk.Entry):
                 settings[key] = widget.get()
+            elif isinstance(widget, tk.Text):
+                # Get all text from Text widget
+                settings[key] = widget.get("1.0", "end-1c")
 
         return settings
 
@@ -249,6 +327,9 @@ class SettingsFrame(ttk.Frame):
                 elif isinstance(widget, ttk.Entry):
                     widget.delete(0, tk.END)
                     widget.insert(0, str(value))
+                elif isinstance(widget, tk.Text):
+                    widget.delete("1.0", tk.END)
+                    widget.insert("1.0", str(value))
 
     def validate_settings(self) -> tuple[bool, str]:
         """Validate all settings. Returns (is_valid, error_message)."""
@@ -290,6 +371,49 @@ class SettingsFrame(ttk.Frame):
             port = int(settings["lm_port"])
             if port < 1 or port > 65535:
                 return False, "Port must be between 1 and 65535"
+
+            # Validate web search thresholds
+            if "web_search_confidence_threshold" in settings:
+                ws_conf_threshold = float(settings["web_search_confidence_threshold"])
+                if not 0.0 <= ws_conf_threshold <= 1.0:
+                    return False, "Web search confidence threshold must be between 0.0 and 1.0"
+
+            if "web_search_min_samples" in settings:
+                ws_min_samples = int(settings["web_search_min_samples"])
+                if ws_min_samples < 1:
+                    return False, "Web search min samples must be at least 1"
+
+            if "web_search_cooldown" in settings:
+                ws_cooldown = float(settings["web_search_cooldown"])
+                if ws_cooldown < 0:
+                    return False, "Web search cooldown must be non-negative"
+
+            # Validate workflow thresholds
+            if "workflow_simple_threshold" in settings:
+                wf_simple = float(settings["workflow_simple_threshold"])
+                if not 0.0 <= wf_simple <= 1.0:
+                    return False, "Workflow simple threshold must be between 0.0 and 1.0"
+
+            if "workflow_medium_threshold" in settings:
+                wf_medium = float(settings["workflow_medium_threshold"])
+                if not 0.0 <= wf_medium <= 1.0:
+                    return False, "Workflow medium threshold must be between 0.0 and 1.0"
+
+            # Validate workflow max steps
+            if "workflow_max_steps_simple" in settings:
+                wf_max_simple = int(settings["workflow_max_steps_simple"])
+                if wf_max_simple < 1:
+                    return False, "Workflow max steps (simple) must be at least 1"
+
+            if "workflow_max_steps_medium" in settings:
+                wf_max_medium = int(settings["workflow_max_steps_medium"])
+                if wf_max_medium < 1:
+                    return False, "Workflow max steps (medium) must be at least 1"
+
+            if "workflow_max_steps_complex" in settings:
+                wf_max_complex = int(settings["workflow_max_steps_complex"])
+                if wf_max_complex < 1:
+                    return False, "Workflow max steps (complex) must be at least 1"
 
             return True, ""
 
@@ -404,6 +528,20 @@ class SettingsFrame(ttk.Frame):
                 "compression_target_length": "100",
                 "compression_ratio": "0.3",
                 "compression_strategy": "abstractive",
+                "web_search_enabled": False,
+                "web_search_provider": "duckduckgo",
+                "web_search_max_results": "5",
+                "web_search_max_queries": "3",
+                "searxng_url": "",
+                "web_search_blocked_domains": "wikipedia.org\nreddit.com",
+                "web_search_confidence_threshold": "0.7",
+                "web_search_min_samples": "1",
+                "web_search_cooldown": "10.0",
+                "workflow_max_steps_simple": "5",
+                "workflow_max_steps_medium": "10",
+                "workflow_max_steps_complex": "20",
+                "workflow_simple_threshold": "0.75",
+                "workflow_medium_threshold": "0.50",
                 "enable_metrics": True,
                 "enable_memory": True,
                 "enable_dynamic_spawning": True,
@@ -424,12 +562,16 @@ class SettingsFrame(ttk.Frame):
 
         # Integer fields
         int_fields = ["lm_port", "max_agents", "base_token_budget",
-                     "token_budget_limit", "compression_target_length"]
+                     "token_budget_limit", "compression_target_length",
+                     "web_search_max_results", "web_search_max_queries", "web_search_min_samples",
+                     "workflow_max_steps_simple", "workflow_max_steps_medium", "workflow_max_steps_complex"]
 
         # Float fields
         float_fields = ["helix_top_radius", "helix_bottom_radius", "helix_height",
                        "helix_turns", "confidence_threshold", "volatility_threshold",
-                       "time_window_minutes", "compression_ratio"]
+                       "time_window_minutes", "compression_ratio",
+                       "web_search_confidence_threshold", "web_search_cooldown",
+                       "workflow_simple_threshold", "workflow_medium_threshold"]
 
         for key, value in settings.items():
             if key in int_fields:
