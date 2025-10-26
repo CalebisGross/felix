@@ -1,8 +1,4 @@
-"""
-Configuration handler with error handling for Felix Framework.
-
-Provides robust configuration management with validation and fallbacks.
-"""
+"""Configuration handler with error handling for Felix Framework."""
 
 import yaml
 import json
@@ -14,10 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 class ConfigHandler:
-    """
-    Handle configuration loading, validation, and management
-    with comprehensive error handling.
-    """
+    """Handle configuration loading, validation, and management with error handling."""
 
     DEFAULT_CONFIG = {
         'helix': {

@@ -1,9 +1,4 @@
-"""
-Database reader module for Felix Framework.
-
-Provides safe read-only access to Felix databases with pandas DataFrames
-for easy visualization in Streamlit.
-"""
+"""Database reader module for Felix Framework."""
 
 import sqlite3
 import pandas as pd
@@ -16,10 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 class DatabaseReader:
-    """
-    Safe read-only access to Felix databases.
-    Provides pandas DataFrames for easy visualization.
-    """
+    """Safe read-only access to Felix databases with pandas DataFrames."""
 
     def __init__(self, db_dir: Optional[str] = None):
         """
@@ -38,7 +30,8 @@ class DatabaseReader:
         self.db_paths = {
             "knowledge": os.path.join(db_dir, "felix_knowledge.db"),
             "memory": os.path.join(db_dir, "felix_memory.db"),
-            "task_memory": os.path.join(db_dir, "felix_task_memory.db")
+            "task_memory": os.path.join(db_dir, "felix_task_memory.db"),
+            "workflow_history": os.path.join(db_dir, "felix_workflow_history.db")
         }
 
     def _read_query(self, db_name: str, query: str) -> Optional[pd.DataFrame]:
@@ -193,22 +186,70 @@ class DatabaseReader:
             return pd.DataFrame(columns=["time", "entries", "avg_confidence"])
         return df
 
-    def get_workflow_history(self, limit: int = 50) -> pd.DataFrame:
-        """Get workflow execution history."""
-        # First try the task_memory database
+    def get_workflow_history(
+        self,
+        limit: int = 100,
+        status_filter: Optional[str] = None,
+        days_back: int = 7,
+        search_query: Optional[str] = None
+    ) -> pd.DataFrame:
+        """
+        Get workflow execution history.
+
+        Args:
+            limit: Maximum number of workflows to return
+            status_filter: Filter by status ("completed", "failed", None for all)
+            days_back: Number of days back to search
+            search_query: Search term for task_input
+
+        Returns:
+            DataFrame with workflow history
+        """
+        from datetime import datetime, timedelta
+
+        # Build WHERE clause
+        where_clauses = []
+
+        if status_filter:
+            where_clauses.append(f"status = '{status_filter}'")
+
+        if days_back:
+            cutoff_date = datetime.now() - timedelta(days=days_back)
+            where_clauses.append(f"created_at >= '{cutoff_date.isoformat()}'")
+
+        if search_query:
+            where_clauses.append(f"task_input LIKE '%{search_query}%'")
+
+        where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+
         query = f"""
             SELECT
-                task_type as task,
-                created_at as timestamp,
-                complexity as pattern,
-                success_rate as success
-            FROM task_patterns
+                workflow_id,
+                task_input,
+                status,
+                created_at,
+                completed_at,
+                confidence,
+                agents_count,
+                tokens_used,
+                max_tokens,
+                processing_time,
+                temperature,
+                final_synthesis
+            FROM workflow_outputs
+            {where_sql}
             ORDER BY created_at DESC
             LIMIT {limit}
         """
-        df = self._read_query("memory", query)
+
+        df = self._read_query("workflow_history", query)
         if df is None:
-            return pd.DataFrame(columns=["task", "timestamp", "pattern", "success"])
+            return pd.DataFrame(columns=[
+                "workflow_id", "task_input", "status", "created_at",
+                "completed_at", "confidence", "agents_count", "tokens_used",
+                "max_tokens", "processing_time", "temperature", "final_synthesis"
+            ])
+
         return df
 
     def get_database_stats(self) -> Dict[str, Dict[str, Any]]:
@@ -341,3 +382,58 @@ class DatabaseReader:
             return pd.concat(dfs, ignore_index=True).sort_values('timestamp', ascending=False)
         else:
             return pd.DataFrame(columns=["source", "timestamp", "agent_id", "confidence"])
+
+    def get_workflow_by_id(self, workflow_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Get complete workflow details by ID.
+
+        Args:
+            workflow_id: Workflow ID to retrieve
+
+        Returns:
+            Dictionary with workflow data or None
+        """
+        query = f"""
+            SELECT *
+            FROM workflow_outputs
+            WHERE workflow_id = {workflow_id}
+        """
+
+        df = self._read_query("workflow_history", query)
+        if df is None or df.empty:
+            return None
+
+        return df.iloc[0].to_dict()
+
+    def get_workflow_stats(self) -> Dict[str, Any]:
+        """
+        Get aggregate workflow statistics.
+
+        Returns:
+            Dictionary with summary statistics
+        """
+        query = """
+            SELECT
+                COUNT(*) as total_count,
+                SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed_count,
+                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed_count,
+                AVG(confidence) as avg_confidence,
+                AVG(processing_time) as avg_processing_time,
+                AVG(agents_count) as avg_agents,
+                AVG(tokens_used) as avg_tokens
+            FROM workflow_outputs
+        """
+
+        df = self._read_query("workflow_history", query)
+        if df is None or df.empty:
+            return {
+                'total_count': 0,
+                'completed_count': 0,
+                'failed_count': 0,
+                'avg_confidence': 0.0,
+                'avg_processing_time': 0.0,
+                'avg_agents': 0,
+                'avg_tokens': 0
+            }
+
+        return df.iloc[0].to_dict()

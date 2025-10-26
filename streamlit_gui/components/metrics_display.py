@@ -1,8 +1,4 @@
-"""
-Reusable metrics display components for the Streamlit GUI.
-
-Provides pre-styled metric cards and displays for consistent UI.
-"""
+"""Reusable metrics display components for the Streamlit GUI."""
 
 import streamlit as st
 import plotly.graph_objects as go

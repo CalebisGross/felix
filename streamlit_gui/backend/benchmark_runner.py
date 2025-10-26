@@ -1,9 +1,4 @@
-"""
-Benchmark runner module for Felix Framework.
-
-Provides isolated benchmark execution and hypothesis validation
-without interfering with the running system.
-"""
+"""Benchmark runner module for Felix Framework."""
 
 import time
 import numpy as np
@@ -24,9 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 class BenchmarkRunner:
-    """
-    Run isolated benchmarks for Felix Framework hypothesis validation.
-    """
+    """Run isolated benchmarks for Felix Framework hypothesis validation."""
 
     def __init__(self, use_isolated_db: bool = True):
         """

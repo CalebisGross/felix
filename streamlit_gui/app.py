@@ -1,9 +1,4 @@
-"""
-Streamlit GUI for Felix Framework
-
-This is the main entry point for the Streamlit monitoring and visualization interface.
-Run with: streamlit run streamlit_gui/app.py
-"""
+"""Streamlit GUI for Felix Framework monitoring and visualization."""
 
 import streamlit as st
 import sys

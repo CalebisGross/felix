@@ -1,8 +1,4 @@
-"""
-Configuration viewer component for Felix Framework.
-
-Provides configuration display and manipulation utilities.
-"""
+"""Configuration viewer component for Felix Framework."""
 
 import streamlit as st
 import yaml

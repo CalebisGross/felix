@@ -1,9 +1,4 @@
-"""
-Dashboard page for Felix Framework monitoring.
-
-Provides real-time system metrics, agent activity visualization,
-and performance trends.
-"""
+"""Dashboard page for Felix Framework monitoring."""
 
 import streamlit as st
 import plotly.express as px
@@ -74,11 +69,12 @@ def main():
     st.divider()
 
     # Real-time Metrics
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📊 Agent Activity",
         "📈 Performance Trends",
         "🔄 Recent Workflows",
-        "💾 Database Status"
+        "💾 Database Status",
+        "📜 Workflow History"
     ])
 
     with tab1:
@@ -249,6 +245,12 @@ def main():
             "The Streamlit GUI monitors shared databases without modifying them. "
             "All write operations are performed by the tkinter GUI and Felix system."
         )
+
+    with tab5:
+        from streamlit_gui.components.workflow_history_viewer import WorkflowHistoryViewer
+
+        history_viewer = WorkflowHistoryViewer(db_reader)
+        history_viewer.render()
 
     # Auto-refresh option
     st.divider()

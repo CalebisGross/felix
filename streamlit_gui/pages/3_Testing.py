@@ -1,9 +1,4 @@
-"""
-Testing page for Felix Framework.
-
-Provides workflow result analysis, test execution monitoring,
-and performance evaluation tools.
-"""
+"""Testing page for Felix Framework."""
 # -*- coding: utf-8 -*-
 
 import streamlit as st

@@ -1,9 +1,4 @@
-"""
-Configuration page for Felix Framework.
-
-Provides read-only configuration viewing, helix geometry visualization,
-and configuration export functionality.
-"""
+"""Configuration page for Felix Framework."""
 
 import streamlit as st
 import yaml
@@ -33,6 +28,10 @@ def load_config_file(file_path: str) -> dict:
     Returns:
         Configuration dictionary
     """
+    # Handle special default config marker
+    if file_path == "<defaults>":
+        return get_default_felix_config()
+
     if not Path(file_path).exists():
         return {}
 
@@ -45,6 +44,58 @@ def load_config_file(file_path: str) -> dict:
     except Exception as e:
         st.error(f"Error loading config: {e}")
         return {}
+
+
+def get_default_felix_config() -> dict:
+    """
+    Return default Felix configuration based on CLAUDE.md documentation.
+
+    Returns:
+        Default configuration dictionary
+    """
+    return {
+        # Helix geometry
+        'helix_top_radius': 3.0,
+        'helix_bottom_radius': 0.5,
+        'helix_height': 8.0,
+        'helix_turns': 2,
+
+        # Agent configuration
+        'max_agents': 10,
+        'base_token_budget': 2048,
+        'temperature_top': 1.0,
+        'temperature_bottom': 0.2,
+
+        # Dynamic spawning
+        'confidence_threshold': 0.80,
+        'enable_dynamic_spawning': True,
+        'volatility_threshold': 0.15,
+        'time_window_minutes': 5.0,
+
+        # LM Studio connection
+        'lm_host': '127.0.0.1',
+        'lm_port': 1234,
+        'model': 'default',
+        'enable_streaming': True,
+
+        # Memory and compression
+        'compression_ratio': 0.3,
+        'compression_strategy': 'abstractive',
+        'compression_target_length': 100,
+        'enable_compression': True,
+        'enable_memory': True,
+
+        # Web search
+        'web_search_enabled': False,
+        'web_search_provider': 'duckduckgo',
+        'web_search_max_results': 5,
+        'web_search_confidence_threshold': 0.7,
+
+        # Feature toggles
+        'enable_metrics': True,
+        'enable_spoke_topology': True,
+        'verbose_llm_logging': False
+    }
 
 
 def create_helix_3d_visualization(helix_config: dict) -> go.Figure:
@@ -213,13 +264,25 @@ def main():
     st.title("⚙️ Configuration Viewer")
     st.markdown("View and export Felix configuration (read-only)")
 
-    # Configuration sources
-    config_sources = {
-        "felix_gui_config.json": "tkinter GUI Configuration",
-        "streamlit_config.yaml": "Streamlit Configuration",
-        "configs/default_config.yaml": "Default Configuration",
-        "exp/optimal_parameters.yaml": "Optimal Parameters"
+    # Configuration sources - only list files that exist
+    # Build path from current script location
+    project_root = Path(__file__).parent.parent.parent
+
+    config_sources = {}
+    potential_configs = {
+        "felix_gui_config.json": "Felix GUI Configuration (Main)",
     }
+
+    # Only add configs that exist
+    for file_path, description in potential_configs.items():
+        full_path = project_root / file_path
+        if full_path.exists():
+            config_sources[str(full_path)] = description
+
+    # If no configs found, show default
+    if not config_sources:
+        st.warning("⚠️ No configuration files found. Using default Felix parameters.")
+        config_sources = {"<defaults>": "Default Felix Configuration"}
 
     # Create tabs
     tab1, tab2, tab3 = st.tabs(["📋 View Config", "📊 Compare", "💾 Export"])
@@ -244,57 +307,97 @@ def main():
             st.session_state['last_source'] = selected_source
 
         if config:
-            # Display configuration sections
+            # Display configuration sections in organized layout
             col1, col2 = st.columns(2)
 
             with col1:
                 # Helix Geometry
                 st.markdown("### 🌀 Helix Geometry")
-                helix_config = config.get('helix', {
-                    'top_radius': 3.0,
-                    'bottom_radius': 0.5,
-                    'height': 8.0,
-                    'turns': 2
-                })
+                helix_config = {
+                    'top_radius': config.get('helix_top_radius', config.get('helix', {}).get('top_radius', 3.0)),
+                    'bottom_radius': config.get('helix_bottom_radius', config.get('helix', {}).get('bottom_radius', 0.5)),
+                    'height': config.get('helix_height', config.get('helix', {}).get('height', 8.0)),
+                    'turns': config.get('helix_turns', config.get('helix', {}).get('turns', 2))
+                }
 
-                for key, value in helix_config.items():
-                    st.text(f"{key}: {value}")
+                hcol1, hcol2 = st.columns(2)
+                with hcol1:
+                    st.metric("Top Radius", f"{helix_config['top_radius']:.1f}", help="Wide exploration phase breadth")
+                    st.metric("Height", f"{helix_config['height']:.1f}", help="Total progression depth")
+                with hcol2:
+                    st.metric("Bottom Radius", f"{helix_config['bottom_radius']:.1f}", help="Narrow synthesis focus")
+                    st.metric("Turns", int(helix_config['turns']), help="Spiral complexity")
 
                 # Agent Configuration
                 st.markdown("### 🤖 Agent Configuration")
-                agent_config = {
-                    'max_agents': config.get('max_agents', 25),
-                    'base_token_budget': config.get('base_token_budget', 2500),
-                    'temperature_top': config.get('temperature', {}).get('top', 1.0),
-                    'temperature_bottom': config.get('temperature', {}).get('bottom', 0.2)
-                }
+                acol1, acol2 = st.columns(2)
+                with acol1:
+                    max_agents = config.get('max_agents', 25)
+                    st.metric("Max Agents", max_agents, help="Team size limit")
+                    temp_top = config.get('temperature_top', config.get('temperature', {}).get('top', 1.0))
+                    st.metric("Temp (Exploration)", f"{temp_top:.2f}", help="Temperature at helix top")
+                with acol2:
+                    token_budget = config.get('base_token_budget', 2048)
+                    st.metric("Base Token Budget", token_budget, help="Per-agent token allocation")
+                    temp_bottom = config.get('temperature_bottom', config.get('temperature', {}).get('bottom', 0.2))
+                    st.metric("Temp (Synthesis)", f"{temp_bottom:.2f}", help="Temperature at helix bottom")
 
-                for key, value in agent_config.items():
-                    st.text(f"{key}: {value}")
+                # Memory & Compression
+                st.markdown("### 💾 Memory & Compression")
+                mcol1, mcol2 = st.columns(2)
+                with mcol1:
+                    comp_ratio = config.get('compression_ratio', 0.3)
+                    st.metric("Compression Ratio", f"{comp_ratio:.1f}", help="Context compression ratio")
+                    comp_enabled = config.get('enable_compression', True)
+                    st.metric("Compression", "Enabled" if comp_enabled else "Disabled")
+                with mcol2:
+                    comp_strategy = config.get('compression_strategy', 'abstractive')
+                    st.metric("Strategy", comp_strategy.title(), help="Compression approach")
+                    comp_target = config.get('compression_target_length', 100)
+                    st.metric("Target Length", comp_target, help="Compressed context length")
 
             with col2:
                 # LM Studio Connection
                 st.markdown("### 🔌 LM Studio Connection")
-                lm_config = {
-                    'host': config.get('lm_host', '127.0.0.1'),
-                    'port': config.get('lm_port', 1234),
-                    'model': config.get('model', 'default'),
-                    'timeout': config.get('timeout', 30)
-                }
-
-                for key, value in lm_config.items():
-                    st.text(f"{key}: {value}")
+                lcol1, lcol2 = st.columns(2)
+                with lcol1:
+                    lm_host = config.get('lm_host', '127.0.0.1')
+                    st.metric("Host", lm_host)
+                    model_name = config.get('model', 'default')
+                    st.metric("Model", model_name)
+                with lcol2:
+                    lm_port = config.get('lm_port', 1234)
+                    st.metric("Port", lm_port)
+                    streaming = config.get('enable_streaming', True)
+                    st.metric("Streaming", "Enabled" if streaming else "Disabled")
 
                 # Dynamic Spawning
                 st.markdown("### 🔄 Dynamic Spawning")
-                spawn_config = config.get('spawning', {
-                    'confidence_threshold': 0.75,
-                    'max_depth': 5,
-                    'spawn_delay': 0.5
-                })
+                scol1, scol2 = st.columns(2)
+                with scol1:
+                    conf_threshold = config.get('confidence_threshold', config.get('spawning', {}).get('confidence_threshold', 0.80))
+                    st.metric("Confidence Threshold", f"{conf_threshold:.2f}", help="Trigger for dynamic spawning")
+                    spawn_enabled = config.get('enable_dynamic_spawning', True)
+                    st.metric("Dynamic Spawning", "Enabled" if spawn_enabled else "Disabled")
+                with scol2:
+                    volatility = config.get('volatility_threshold', 0.15)
+                    st.metric("Volatility Threshold", f"{volatility:.2f}", help="Confidence variance limit")
+                    time_window = config.get('time_window_minutes', 5.0)
+                    st.metric("Time Window", f"{time_window:.0f} min", help="Metric aggregation period")
 
-                for key, value in spawn_config.items():
-                    st.text(f"{key}: {value}")
+                # Web Search Configuration
+                st.markdown("### 🔍 Web Search")
+                wcol1, wcol2 = st.columns(2)
+                with wcol1:
+                    web_enabled = config.get('web_search_enabled', True)
+                    st.metric("Web Search", "Enabled" if web_enabled else "Disabled")
+                    web_max_results = config.get('web_search_max_results', 5)
+                    st.metric("Max Results", web_max_results)
+                with wcol2:
+                    web_provider = config.get('web_search_provider', 'duckduckgo')
+                    st.metric("Provider", web_provider.title())
+                    web_confidence = config.get('web_search_confidence_threshold', 0.7)
+                    st.metric("Min Confidence", f"{web_confidence:.2f}")
 
             # Full configuration in expandable section
             with st.expander("📄 View Full Configuration"):

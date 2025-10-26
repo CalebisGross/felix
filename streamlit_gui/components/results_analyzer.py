@@ -1,8 +1,4 @@
-"""
-Results analyzer component for Felix Framework.
-
-Provides analysis tools for workflow results and test outcomes.
-"""
+"""Results analyzer component for Felix Framework."""
 
 import streamlit as st
 import pandas as pd

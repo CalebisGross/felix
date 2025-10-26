@@ -1,8 +1,4 @@
-"""
-System monitoring module for Felix Framework.
-
-Provides read-only monitoring of the running Felix system and shared databases.
-"""
+"""System monitoring module for Felix Framework."""
 
 import sqlite3
 from typing import Dict, Any, Optional, List
@@ -32,10 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 class SystemMonitor:
-    """
-    Monitor running Felix system and databases in read-only mode.
-    This class provides safe, non-interfering access to Felix data.
-    """
+    """Monitor running Felix system and databases in read-only mode."""
 
     def __init__(self, db_dir: Optional[str] = None):
         """

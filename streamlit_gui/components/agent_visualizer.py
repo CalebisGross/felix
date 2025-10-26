@@ -1,8 +1,4 @@
-"""
-Agent visualization components for Felix Framework.
-
-Provides visualizations for agent state, interactions, and performance.
-"""
+"""Agent visualization components for Felix Framework."""
 
 import streamlit as st
 import plotly.graph_objects as go

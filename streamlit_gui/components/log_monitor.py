@@ -1,8 +1,4 @@
-"""
-Log monitoring component for Felix Framework.
-
-Provides real-time log streaming and display with auto-refresh capability.
-"""
+"""Log monitoring component for Felix Framework."""
 
 import streamlit as st
 import pandas as pd
