@@ -16,6 +16,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 
 from streamlit_gui.backend.system_monitor import SystemMonitor
 from streamlit_gui.backend.db_reader import DatabaseReader
+from streamlit_gui.backend.real_benchmark_runner import RealBenchmarkRunner
 
 st.set_page_config(
     page_title="Felix Dashboard",
@@ -195,6 +196,97 @@ def main():
             st.plotly_chart(fig2, width='stretch')
         else:
             st.info("No trend data available. Metrics will appear as system runs.")
+
+        st.divider()
+
+        # Advanced Analytics Section
+        st.subheader("Advanced Analytics")
+
+        # A. Hypothesis Performance Tracker
+        st.markdown("### Hypothesis Validation: Target vs Actual")
+
+        benchmark_runner = RealBenchmarkRunner()
+        benchmark_results = benchmark_runner.get_latest_results()
+
+        if benchmark_results and 'results' in benchmark_results:
+            # Extract hypothesis data
+            hypothesis_data = []
+            targets = {'H1': 20, 'H2': 15, 'H3': 25}
+
+            for hypothesis, target in targets.items():
+                if hypothesis in benchmark_results['results']:
+                    actual = benchmark_results['results'][hypothesis].get('improvement_pct', 0)
+                    hypothesis_data.append({
+                        'Hypothesis': hypothesis,
+                        'Type': 'Target',
+                        'Improvement (%)': target
+                    })
+                    hypothesis_data.append({
+                        'Hypothesis': hypothesis,
+                        'Type': 'Actual',
+                        'Improvement (%)': actual
+                    })
+
+            if hypothesis_data:
+                df_hypothesis = pd.DataFrame(hypothesis_data)
+
+                # Create grouped bar chart
+                fig_hypothesis = px.bar(
+                    df_hypothesis,
+                    x='Hypothesis',
+                    y='Improvement (%)',
+                    color='Type',
+                    barmode='group',
+                    color_discrete_map={'Target': '#3498db', 'Actual': '#2ecc71'},
+                    title='Target vs Actual Performance by Hypothesis'
+                )
+                fig_hypothesis.update_layout(height=400)
+                st.plotly_chart(fig_hypothesis, width='stretch')
+            else:
+                st.info("Run hypothesis validation tests to see analytics")
+        else:
+            st.info("Run hypothesis validation tests to see analytics")
+
+        # B. Agent Efficiency Matrix
+        st.markdown("### Agent Efficiency Matrix")
+
+        agent_df = db_reader.get_agent_metrics()
+
+        if not agent_df.empty:
+            # Calculate efficiency metric
+            agent_df['efficiency'] = agent_df['output_count'] * agent_df['avg_confidence']
+
+            # Create scatter plot
+            fig_efficiency = px.scatter(
+                agent_df,
+                x='output_count',
+                y='avg_confidence',
+                size='efficiency',
+                color='efficiency',
+                hover_data=['agent_id'],
+                title='Agent Efficiency: Output Volume vs Confidence',
+                labels={
+                    'output_count': 'Number of Outputs',
+                    'avg_confidence': 'Average Confidence',
+                    'efficiency': 'Efficiency Score'
+                },
+                color_continuous_scale='Viridis'
+            )
+            fig_efficiency.update_layout(height=400)
+            st.plotly_chart(fig_efficiency, width='stretch')
+
+            # Show efficiency summary
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Total Agents", len(agent_df))
+            with col2:
+                max_efficiency = agent_df['efficiency'].max()
+                st.metric("Max Efficiency", f"{max_efficiency:.2f}")
+            with col3:
+                avg_efficiency = agent_df['efficiency'].mean()
+                st.metric("Avg Efficiency", f"{avg_efficiency:.2f}")
+        else:
+            st.info("No agent activity recorded yet. Start Felix system to begin monitoring.")
 
     with tab3:
         st.subheader("Recent Workflow Results")

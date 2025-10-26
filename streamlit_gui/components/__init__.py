@@ -36,6 +36,7 @@ from .log_monitor import (
 )
 
 from .web_search_monitor import WebSearchMonitor
+from .truth_assessment_display import TruthAssessmentDisplay
 
 __all__ = [
     # Metrics display
@@ -69,5 +70,8 @@ __all__ = [
     'load_dashboard_state',
 
     # Web search monitor
-    'WebSearchMonitor'
+    'WebSearchMonitor',
+
+    # Truth assessment display
+    'TruthAssessmentDisplay'
 ]

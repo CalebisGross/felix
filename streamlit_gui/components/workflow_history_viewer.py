@@ -7,6 +7,7 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 import json
+from .truth_assessment_display import TruthAssessmentDisplay
 
 
 class WorkflowHistoryViewer:
@@ -166,6 +167,9 @@ class WorkflowHistoryViewer:
         status_icon = "✅" if workflow['status'] == 'completed' else "❌"
         st.markdown(f"### {status_icon} Status: {workflow['status']}")
 
+        # Truth Assessment Badge (if applicable)
+        TruthAssessmentDisplay.render_assessment_badge(workflow)
+
         # PROMINENT FINAL OUTPUT DISPLAY
         st.divider()
         st.markdown("### 📄 Final Synthesis Output")
@@ -212,6 +216,9 @@ class WorkflowHistoryViewer:
             disabled=True,
             label_visibility="collapsed"
         )
+
+        # Truth Assessment Details (if applicable)
+        TruthAssessmentDisplay.render_assessment_details(workflow)
 
         # Metadata last
         if workflow.get('metadata'):

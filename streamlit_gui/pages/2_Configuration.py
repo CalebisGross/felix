@@ -399,6 +399,80 @@ def main():
                     web_confidence = config.get('web_search_confidence_threshold', 0.7)
                     st.metric("Min Confidence", f"{web_confidence:.2f}")
 
+            # Web Search Configuration Details
+            st.divider()
+            st.markdown("### 🔍 Web Search Configuration Details")
+
+            wscol1, wscol2 = st.columns(2)
+
+            with wscol1:
+                # Status and max results
+                web_enabled = config.get('web_search_enabled', False)
+                st.metric(
+                    "Status",
+                    "Enabled" if web_enabled else "Disabled",
+                    help="Whether web search is active during workflows"
+                )
+
+                web_max_results = config.get('web_search_max_results', 5)
+                st.metric(
+                    "Max Results per Query",
+                    web_max_results,
+                    help="Maximum search results to retrieve per query"
+                )
+
+                # Blocked domains
+                blocked_domains = config.get('web_search_blocked_domains', '')
+                if blocked_domains:
+                    domain_list = [d.strip() for d in blocked_domains.split('\n') if d.strip()]
+                    st.metric(
+                        "Blocked Domains",
+                        len(domain_list),
+                        help="Number of domains filtered from results"
+                    )
+                    with st.expander("View Blocked Domains"):
+                        for domain in domain_list:
+                            st.text(f"• {domain}")
+                else:
+                    st.metric("Blocked Domains", 0, help="No domains blocked")
+
+            with wscol2:
+                # Provider
+                web_provider = config.get('web_search_provider', 'duckduckgo')
+                st.metric(
+                    "Search Provider",
+                    web_provider.title(),
+                    help="Search engine backend"
+                )
+
+                # Max queries
+                web_max_queries = config.get('web_search_max_queries', 3)
+                st.metric(
+                    "Max Queries per Workflow",
+                    web_max_queries,
+                    help="Maximum number of search queries per task"
+                )
+
+                # Confidence threshold
+                web_conf_threshold = config.get('web_search_confidence_threshold', 0.7)
+                st.metric(
+                    "Confidence Threshold",
+                    f"{web_conf_threshold * 100:.0f}%",
+                    help="Minimum confidence to trigger web search"
+                )
+
+            # SearxNG URL if applicable
+            if web_provider.lower() == 'searxng':
+                searxng_url = config.get('searxng_url', '')
+                if searxng_url:
+                    st.metric(
+                        "SearxNG Instance URL",
+                        searxng_url,
+                        help="Custom SearxNG server endpoint"
+                    )
+                else:
+                    st.warning("⚠️ SearxNG selected but no URL configured")
+
             # Full configuration in expandable section
             with st.expander("📄 View Full Configuration"):
                 st.json(config)
