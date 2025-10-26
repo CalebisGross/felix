@@ -87,7 +87,8 @@ def _classify_task_complexity(task_input: str) -> str:
 
 def run_felix_workflow(felix_system, task_input: str,
                        progress_callback: Optional[Callable[[str, float], None]] = None,
-                       max_steps_override: Optional[int] = None) -> Dict[str, Any]:
+                       max_steps_override: Optional[int] = None,
+                       parent_workflow_id: Optional[int] = None) -> Dict[str, Any]:
     """
     Run a workflow using the Felix framework components.
 
@@ -97,12 +98,14 @@ def run_felix_workflow(felix_system, task_input: str,
     - Uses felix_system.agent_manager for registration
     - Uses felix_system.knowledge_store for memory
     - Uses felix_system.lm_client shared across all agents
+    - Supports conversation continuity via parent_workflow_id
 
     Args:
         felix_system: Initialized FelixSystem instance from GUI
-        task_input: Task description to process
+        task_input: Task description to process (or follow-up question if continuing)
         progress_callback: Optional callback(status_message, progress_percentage)
         max_steps_override: Optional override for max workflow steps (None = adaptive)
+        parent_workflow_id: Optional ID of parent workflow to continue from
 
     Returns:
         Dictionary with workflow results and metadata
@@ -112,9 +115,17 @@ def run_felix_workflow(felix_system, task_input: str,
         # Track workflow execution time for task memory
         workflow_start_time = time.time()
 
+        # Track spawned agents for cleanup in finally block
+        spawned_agent_ids = []
+
+        # Generate unique workflow ID for approval rule scoping
+        import uuid
+        workflow_id = f"workflow_{uuid.uuid4().hex[:8]}"
+
         logger.info("="*60)
         logger.info("FELIX WORKFLOW STARTING")
         logger.info(f"Task: {task_input}")
+        logger.info(f"Workflow ID: {workflow_id}")
         logger.info(f"Streaming: {'ENABLED' if felix_system.config.enable_streaming else 'DISABLED'}")
         logger.info("="*60)
 
@@ -123,6 +134,37 @@ def run_felix_workflow(felix_system, task_input: str,
         agent_factory = felix_system.agent_factory
         agent_manager = felix_system.agent_manager
         knowledge_store = felix_system.knowledge_store
+
+        # Set workflow ID in CentralPost for approval scoping
+        central_post.set_current_workflow(workflow_id)
+
+        # Load parent workflow context if continuing conversation
+        parent_context = None
+        original_task_input = task_input
+        if parent_workflow_id:
+            logger.info("=" * 60)
+            logger.info(f"CONTINUING FROM PARENT WORKFLOW #{parent_workflow_id}")
+            from src.workflows.conversation_loader import ConversationContextLoader
+            from src.memory.workflow_history import WorkflowHistory
+
+            workflow_history = WorkflowHistory()
+            context_loader = ConversationContextLoader(workflow_history)
+
+            parent_result = context_loader.load_parent_workflow(parent_workflow_id)
+            if parent_result:
+                # Build continuation prompt that includes parent context
+                task_input = context_loader.build_continuation_prompt(
+                    parent_result,
+                    follow_up_question=original_task_input,
+                    max_context_length=1000
+                )
+                parent_context = parent_result
+                logger.info(f"  ✓ Parent task: {parent_result['task_input'][:80]}...")
+                logger.info(f"  ✓ Parent confidence: {parent_result['confidence']:.2f}")
+                logger.info(f"  ✓ Follow-up: {original_task_input[:80]}...")
+            else:
+                logger.warning(f"  ⚠ Could not load parent workflow {parent_workflow_id}, proceeding as new workflow")
+            logger.info("=" * 60)
 
         # Initialize context compressor for managing growing collaborative context
         compression_config = CompressionConfig(
@@ -215,6 +257,8 @@ def run_felix_workflow(felix_system, task_input: str,
         # Track results
         results = {
             "task": task_input,
+            "task_input": original_task_input if parent_workflow_id else task_input,  # Store original for history
+            "parent_workflow_id": parent_workflow_id,  # Track parent for conversation threading
             "agents_spawned": [],
             "messages_processed": [],
             "llm_responses": [],
@@ -301,6 +345,7 @@ def run_felix_workflow(felix_system, task_input: str,
             }
 
         results["agents_spawned"].append(research_agent.agent_id)
+        spawned_agent_ids.append(research_agent.agent_id)  # Track for cleanup
         logger.info(f"Created research agent: {research_agent.agent_id} (spawn_time=0.0)")
 
         if progress_callback:
@@ -416,18 +461,31 @@ def run_felix_workflow(felix_system, task_input: str,
                         if agent.agent_type == "research" and knowledge_store:
                             try:
                                 from src.memory.knowledge_store import KnowledgeQuery, ConfidenceLevel
-                                from src.workflows.truth_assessment import assess_answer_confidence, detect_contradictions
+                                from src.workflows.truth_assessment import assess_answer_confidence, detect_contradictions, detect_query_type, QueryType
 
-                                # Retrieve recent knowledge entries
+                                # Retrieve recent knowledge entries with dynamic freshness based on query type
                                 import time as time_module
                                 current_time_ts = time_module.time()
-                                one_hour_ago = current_time_ts - 3600
+
+                                # Detect query type to determine appropriate freshness window
+                                query_type = detect_query_type(task_input)
+                                freshness_limits = {
+                                    QueryType.TIME: 300,           # 5 minutes for time queries
+                                    QueryType.DATE: 3600,          # 1 hour for date queries
+                                    QueryType.CURRENT_EVENT: 1800, # 30 minutes for current events
+                                    QueryType.GENERAL_FACT: 86400, # 24 hours for general facts
+                                    QueryType.ANALYSIS: 86400,     # 24 hours for analysis
+                                }
+                                max_age = freshness_limits.get(query_type, 3600)  # Default to 1 hour
+                                time_window_start = current_time_ts - max_age
+
+                                logger.info(f"📊 Knowledge Retrieval: query_type={query_type.value}, freshness_window={max_age}s ({max_age/60:.1f} min)")
 
                                 knowledge_entries = knowledge_store.retrieve_knowledge(
                                     KnowledgeQuery(
                                         domains=["web_search"],
                                         min_confidence=ConfidenceLevel.HIGH,
-                                        time_range=(one_hour_ago, current_time_ts),
+                                        time_range=(time_window_start, current_time_ts),
                                         limit=5
                                     )
                                 )
@@ -488,6 +546,33 @@ def run_felix_workflow(felix_system, task_input: str,
 
             if messages_this_step > 0:
                 logger.info(f"Processed {messages_this_step} messages through CentralPost")
+
+            # EARLY TERMINATION: Check if system actions completed successfully
+            # If task requires only system actions (like file creation), exit early
+            if step >= 1:  # After first step to allow actions to execute
+                # Get all completed system action results from CentralPost
+                # _action_results is a dict mapping action_id -> CommandResult
+                action_results = list(central_post._action_results.values())
+
+                if action_results:
+                    # Check if ALL actions succeeded
+                    # CommandResult has a 'success' attribute
+                    all_succeeded = all(result.success for result in action_results)
+
+                    if all_succeeded and len(action_results) > 0:
+                        logger.info("=" * 60)
+                        logger.info("⚡ EARLY TERMINATION TRIGGERED")
+                        logger.info(f"  Reason: All system actions completed successfully")
+                        logger.info(f"  Actions completed: {len(action_results)}")
+                        logger.info(f"  Step: {step}/{total_steps}")
+                        logger.info(f"  Skipping remaining {total_steps - step - 1} steps")
+                        logger.info("=" * 60)
+
+                        if progress_callback:
+                            progress_callback("System actions complete - finishing workflow", 90.0)
+
+                        # Break early - will proceed to final synthesis
+                        break
 
             # Adaptive complexity assessment (only once after sample period)
             if adaptive_mode and not complexity_assessed and step >= sample_period:
@@ -567,6 +652,7 @@ def run_felix_workflow(felix_system, task_input: str,
                     if registration_successful:
                         active_agents.append(analysis_agent)
                         results["agents_spawned"].append(analysis_agent.agent_id)
+                        spawned_agent_ids.append(analysis_agent.agent_id)  # Track for cleanup
                         logger.info(f"  → Spawned {analysis_agent.agent_type}: {analysis_agent.agent_id}")
                     else:
                         logger.warning(f"⚠ Agent cap reached during fallback spawning - skipping {analysis_agent.agent_id}")
@@ -594,6 +680,7 @@ def run_felix_workflow(felix_system, task_input: str,
                         if registration_successful:
                             active_agents.append(critic_agent)
                             results["agents_spawned"].append(critic_agent.agent_id)
+                            spawned_agent_ids.append(critic_agent.agent_id)  # Track for cleanup
                             logger.info(f"  → Spawned {critic_agent.agent_type}: {critic_agent.agent_id}")
                         else:
                             logger.warning(f"⚠ Agent cap reached during fallback spawning - skipping {critic_agent.agent_id}")
@@ -648,6 +735,7 @@ def run_felix_workflow(felix_system, task_input: str,
                         if registration_successful:
                             active_agents.append(new_agent)
                             results["agents_spawned"].append(new_agent.agent_id)
+                            spawned_agent_ids.append(new_agent.agent_id)  # Track for cleanup
                             logger.info(f"  → {new_agent.agent_type} agent: {new_agent.agent_id}")
 
                             if progress_callback:
@@ -834,3 +922,28 @@ def run_felix_workflow(felix_system, task_input: str,
             "agents_spawned": results.get("agents_spawned", []) if 'results' in locals() else [],
             "llm_responses": results.get("llm_responses", []) if 'results' in locals() else []
         }
+
+    finally:
+        # Cleanup: Remove all spokes and deregister agents for this workflow
+        if 'spawned_agent_ids' in locals() and 'felix_system' in locals():
+            logger.info(f"Cleaning up {len(spawned_agent_ids)} workflow agents...")
+            for agent_id in spawned_agent_ids:
+                # Remove spoke
+                if felix_system.spoke_manager:
+                    removed = felix_system.spoke_manager.remove_spoke(agent_id)
+                    if removed:
+                        logger.info(f"  ✓ Removed spoke for {agent_id}")
+                    else:
+                        logger.debug(f"  - Spoke not found for {agent_id}")
+
+                # Deregister from agent manager
+                if felix_system.agent_manager and agent_id in felix_system.agent_manager.agents:
+                    felix_system.agent_manager.deregister_agent(agent_id)
+                    logger.info(f"  ✓ Deregistered agent {agent_id}")
+
+            logger.info("✓ Workflow cleanup complete")
+
+        # Clear workflow ID and approval rules in CentralPost
+        if 'central_post' in locals() and 'workflow_id' in locals():
+            central_post.clear_current_workflow()
+            logger.info(f"✓ Cleared workflow approval rules for {workflow_id}")

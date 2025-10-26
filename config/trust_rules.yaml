@@ -1,0 +1,203 @@
+# Felix System Autonomy - Trust Rules Configuration
+#
+# Three trust levels:
+# - SAFE: Commands that auto-execute without approval
+# - REVIEW: Commands that require user approval
+# - BLOCKED: Commands that are never allowed to execute
+#
+# Rules use regex patterns. First match wins.
+# Check order: BLOCKED → SAFE → REVIEW → (default: REVIEW)
+
+# SAFE: Read-only, information gathering commands
+safe:
+  # File system info (read-only)
+  - '^ls\s'
+  - '^pwd$'
+  - '^echo\s(?!.*>)'  # echo for display only (no redirects)
+  - '^cat\s(?!.*\.ssh|.*\.aws|.*password|.*secret)'  # cat but not credentials
+  - '^head\s'
+  - '^tail\s'
+  - '^grep\s'
+  - '^find\s'
+  - '^which\s'
+  - '^whereis\s'
+  - '^whoami$'
+  - '^date$'
+  - '^uptime$'
+
+  # System info
+  - '^df\s'
+  - '^du\s'
+  - '^free\s'
+  - '^ps\s'
+  - '^top\s'
+  - '^htop\s'
+  - '^lsof\s'
+  - '^netstat\s'
+
+  # Git read-only operations
+  - '^git\s+status'
+  - '^git\s+log'
+  - '^git\s+diff'
+  - '^git\s+show'
+  - '^git\s+branch(\s|$)'
+  - '^git\s+remote\s+'
+  - '^git\s+config\s+--list'
+
+  # Python/pip info
+  - '^python\s+--version'
+  - '^python3\s+--version'
+  - '^pip\s+list'
+  - '^pip\s+show\s'
+  - '^pip\s+freeze'
+  - '^pip\s+check'
+
+  # Virtual environment activation (safe - just changes shell state)
+  - '^source\s+\.?v?env/bin/activate'
+  - '^source\s+[^/]+/bin/activate'
+  - '^\./?\.?v?env/Scripts/activate'
+  - 'activate$'
+
+  # Node/npm info
+  - '^npm\s+list'
+  - '^npm\s+outdated'
+  - '^npm\s+view'
+  - '^node\s+--version'
+
+  # Environment inspection
+  - '^env$'
+  - '^printenv'
+  - '^export\s+-p'
+
+# REVIEW: Commands that modify state but are generally safe with approval
+review:
+  # File operations (write)
+  - '^echo\s.*>'  # Echo with redirect (file write/append)
+
+  # Package management
+  - '^pip\s+install\s'
+  - '^pip\s+uninstall\s'
+  - '^pip3\s+install\s'
+  - '^npm\s+install'
+  - '^npm\s+uninstall'
+  - '^npm\s+ci'
+  - '^yarn\s+install'
+  - '^yarn\s+add'
+
+  # Git write operations
+  - '^git\s+add\s'
+  - '^git\s+commit'
+  - '^git\s+push'
+  - '^git\s+pull'
+  - '^git\s+merge'
+  - '^git\s+rebase'
+  - '^git\s+checkout\s'
+  - '^git\s+clone\s'
+  - '^git\s+stash'
+  - '^git\s+reset'
+
+  # File operations (write)
+  - '^mv\s'
+  - '^cp\s'
+  - '^mkdir\s'
+  - '^touch\s'
+  - '^chmod\s'
+  - '^chown\s'
+
+  # Script execution
+  - '^python\s+[^-]'  # Python script (not --version)
+  - '^python3\s+[^-]'
+  - '^bash\s'
+  - '^sh\s'
+  - '^node\s[^-]'
+
+  # Build/test operations
+  - '^make\s'
+  - '^npm\s+run\s'
+  - '^npm\s+test'
+  - '^npm\s+build'
+  - '^pytest\s'
+  - '^cargo\s+build'
+  - '^cargo\s+test'
+  - '^cargo\s+run'
+  - '^mvn\s+test'
+  - '^mvn\s+package'
+  - '^gradle\s+test'
+
+  # Docker (non-destructive)
+  - '^docker\s+ps'
+  - '^docker\s+logs'
+  - '^docker\s+inspect'
+  - '^docker\s+build'
+  - '^docker\s+run\s'
+
+  # Database (read-mostly)
+  - '^psql\s.*SELECT'
+  - '^mysql\s.*SELECT'
+
+# BLOCKED: Dangerous commands that should never execute
+blocked:
+  # Destructive file operations
+  - 'sudo\s+rm\s+-rf\s+/'
+  - 'rm\s+-rf\s+/(?!tmp|var/tmp)'  # Block except temp dirs
+  - 'rm\s+-rf\s+\*'
+  - 'rm\s+-rf\s+~'
+  - '^dd\s'
+  - '^mkfs\s'
+  - '^fdisk\s'
+  - '^parted\s'
+
+  # System shutdown/restart
+  - '^shutdown'
+  - '^reboot'
+  - '^halt'
+  - '^init\s+[06]'
+  - '^systemctl\s+(halt|poweroff|reboot)'
+
+  # Fork bomb and similar
+  - ':\(\)\s*\{\s*:\|:\&\s*\}'
+  - 'while\s+true.*do'
+
+  # System-wide package operations requiring sudo
+  - '^sudo\s+apt\s+'
+  - '^sudo\s+apt-get\s+'
+  - '^sudo\s+yum\s+'
+  - '^sudo\s+dnf\s+'
+  - '^sudo\s+pacman\s+'
+  - '^sudo\s+brew\s+'
+
+  # Dangerous redirects
+  - '>\s*/dev/sd[a-z]'
+  - '>\s*/dev/nvme'
+  - '>\s*/dev/vd[a-z]'
+
+  # Credential/secret access
+  - 'cat\s+.*\.ssh/(id_rsa|id_ed25519|id_ecdsa)(?!\.pub)'  # Private keys
+  - 'cat\s+.*\.aws/credentials'
+  - 'cat\s+.*\.docker/config'
+  - 'cat\s+.*/password'
+  - 'cat\s+.*/secret'
+  - 'cat\s+.*\.pem(?!\.pub)'
+
+  # Database destructive operations
+  - 'DROP\s+DATABASE'
+  - 'DROP\s+TABLE'
+  - 'TRUNCATE\s+TABLE'
+  - 'DELETE\s+FROM.*WHERE\s+1\s*=\s*1'
+
+  # Network attacks
+  - '^nmap\s'
+  - '^hping'
+  - '^arp-scan'
+  - '^nikto'
+  - '^sqlmap'
+
+  # Kernel module manipulation
+  - '^modprobe\s'
+  - '^insmod\s'
+  - '^rmmod\s'
+
+  # Service manipulation (sudo)
+  - '^sudo\s+systemctl\s+stop'
+  - '^sudo\s+systemctl\s+disable'
+  - '^sudo\s+service\s+.*\s+stop'

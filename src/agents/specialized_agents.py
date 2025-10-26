@@ -9,8 +9,9 @@ for their role in the helix-based coordination system.
 Agent Types:
 - ResearchAgent: Broad information gathering and exploration
 - AnalysisAgent: Processing and organizing information from research
-- SynthesisAgent: Integration and final output generation  
+- SynthesisAgent: Integration and final output generation
 - CriticAgent: Quality assurance and review
+- SystemAgent: System operations and command execution (see system_agent.py)
 """
 
 import time
@@ -29,6 +30,162 @@ from src.llm.token_budget import TokenBudgetManager
 from src.llm.web_search_client import WebSearchClient, SearchResult
 
 
+# Shared tool instructions header for all specialized agents
+AGENT_TOOLS_HEADER = """⚠️⚠️⚠️ CRITICAL TOOLS AVAILABLE ⚠️⚠️⚠️
+
+🔍 WEB SEARCH - USE THIS FOR CURRENT INFORMATION:
+If you need current/real-time data (dates, times, recent events, latest stats), write EXACTLY:
+WEB_SEARCH_NEEDED: [your query]
+
+EXAMPLES:
+✓ "WEB_SEARCH_NEEDED: current date and time"
+✓ "WEB_SEARCH_NEEDED: 2024 election results"
+
+🖥️ SYSTEM COMMANDS - USE THIS FOR ANY SYSTEM OPERATION:
+If you need to CHECK system state, RUN COMMANDS, CREATE FILES, OPEN APPLICATIONS, or MODIFY THE SYSTEM, write EXACTLY:
+SYSTEM_ACTION_NEEDED: [command]
+
+⚠️ CRITICAL FORMATTING RULES:
+1. Write the pattern ON ITS OWN LINE or at the START of your response
+2. Write ONLY the command after the colon - no explanation, no prose
+3. DO NOT embed the pattern in sentences or discuss it in your analysis
+
+✓ CORRECT FORMAT:
+"I need to check the directory.
+SYSTEM_ACTION_NEEDED: pwd"
+
+OR:
+"SYSTEM_ACTION_NEEDED: pwd
+This will tell us the current directory."
+
+✗ WRONG - DO NOT DO THIS:
+"I will use SYSTEM_ACTION_NEEDED: pwd to check the directory."
+"The command (SYSTEM_ACTION_NEEDED: pwd) will help us..."
+"...via SYSTEM_ACTION_NEEDED: pwd) is sufficient..."
+
+EXAMPLES OF CORRECT USAGE:
+✓ "SYSTEM_ACTION_NEEDED: date"  # Get current time/date
+✓ "SYSTEM_ACTION_NEEDED: pwd"   # Get current directory
+✓ "SYSTEM_ACTION_NEEDED: ls -la" # List files
+✓ "SYSTEM_ACTION_NEEDED: pip list" # Check installed packages
+
+📝 MULTI-STEP WORKFLOWS:
+For tasks requiring multiple commands, output multiple SYSTEM_ACTION_NEEDED lines:
+
+EXAMPLE - Creating a file with content:
+"I'll create the file for you.
+SYSTEM_ACTION_NEEDED: test -d results || mkdir -p results
+SYSTEM_ACTION_NEEDED: echo \"content here\" > results/file.txt"
+
+EXAMPLE - Setup and verification:
+"SYSTEM_ACTION_NEEDED: cd /project/dir
+SYSTEM_ACTION_NEEDED: ls -la
+SYSTEM_ACTION_NEEDED: pwd"
+
+Each command executes sequentially. Commands requiring approval (mkdir, file writes) will prompt the user first.
+
+📁 FILE OPERATIONS - YOU CAN CREATE/MODIFY FILES:
+
+CREATE DIRECTORY:
+✓ "SYSTEM_ACTION_NEEDED: mkdir -p /path/to/new/directory"
+
+CREATE FILE WITH CONTENT:
+✓ 'SYSTEM_ACTION_NEEDED: echo "your content" > /path/to/file.txt'  # Use double quotes!
+
+APPEND TO FILE:
+✓ 'SYSTEM_ACTION_NEEDED: echo "more content" >> /path/to/file.txt'  # Use double quotes!
+
+CREATE EMPTY FILE:
+✓ "SYSTEM_ACTION_NEEDED: touch /path/to/file.txt"
+
+📝 SHELL QUOTING RULES - CRITICAL FOR FILE CONTENT:
+
+⚠️ When creating files with echo/printf, proper quoting prevents syntax errors:
+
+✅ CORRECT - Use DOUBLE QUOTES for content with apostrophes:
+'SYSTEM_ACTION_NEEDED: echo "Testing agent\'s work" > file.txt'  # Apostrophe safe
+
+✅ CORRECT - Use printf for special characters:
+'SYSTEM_ACTION_NEEDED: printf "%s\\n" "Content with apostrophes" > file.txt'
+
+❌ WRONG - Single quotes break on apostrophes:
+"SYSTEM_ACTION_NEEDED: echo 'agent's work' > file.txt"  # SYNTAX ERROR!
+
+⚠️ ESCAPING RULES:
+- Inside double quotes: escape $ ` \\ " with backslash
+- Simple text: use double quotes
+- Complex text with special chars: use printf
+
+EXAMPLES:
+✓ echo "Project's status: active" > status.txt
+✓ echo "Value: \\$100" > price.txt  # Escape $
+✓ printf '%s\\n' "Text with \\"nested\\" quotes" > file.txt
+
+🧠 INTELLIGENT COMMAND PATTERNS - THINK BEFORE EXECUTING:
+
+⚠️ CHECK STATE BEFORE MODIFYING:
+
+❌ BAD - Blindly create directory:
+"SYSTEM_ACTION_NEEDED: mkdir -p /path/to/dir
+SYSTEM_ACTION_NEEDED: echo \\"content\\" > /path/to/dir/file.txt"
+
+✅ GOOD - Check if directory exists first:
+"SYSTEM_ACTION_NEEDED: test -d results || mkdir -p results
+SYSTEM_ACTION_NEEDED: echo \\"content\\" > results/file.txt"
+
+✅ BETTER - Use idempotent operations intelligently:
+"SYSTEM_ACTION_NEEDED: mkdir -p results  # Safe: only creates if missing
+SYSTEM_ACTION_NEEDED: echo \\"content\\" > results/file.txt"
+
+⚠️ FILE OVERWRITES - Consider data preservation:
+
+❌ BAD - Blindly overwrite existing file:
+"SYSTEM_ACTION_NEEDED: echo \\"new\\" > existing_file.txt"  # Data loss!
+
+✅ GOOD - Check existence first:
+"SYSTEM_ACTION_NEEDED: test -f file.txt && echo \\"Appending\\" || echo \\"Creating\\"
+SYSTEM_ACTION_NEEDED: echo \\"content\\" >> file.txt"  # Append, don't overwrite
+
+🎯 SMART WORKFLOW PATTERNS:
+
+EXAMPLE - File creation with validation:
+"I'll create the report in the results directory.
+SYSTEM_ACTION_NEEDED: test -d results || mkdir -p results
+SYSTEM_ACTION_NEEDED: echo \\"Report: agent's findings\\" > results/report.md"
+
+EXAMPLE - Append to log without overwriting:
+"I'll add this entry to the log.
+SYSTEM_ACTION_NEEDED: echo \\"[2025-10-26] Task completed\\" >> logs/activity.log"
+
+EXAMPLE - Check before installing:
+"SYSTEM_ACTION_NEEDED: pip show requests || pip install requests"
+
+KEY PRINCIPLES:
+1. Check state before modifying (test -d, test -f, which, pip show)
+2. Use idempotent operations thoughtfully (mkdir -p is safe, rm -rf is not)
+3. Consider data preservation (append >> vs overwrite >)
+4. Avoid redundant operations (don't mkdir current directory)
+5. Use double quotes for text with apostrophes
+
+🚨 EXECUTE DON'T DESCRIBE:
+When the user asks you to "create a file", "open terminal", "write content":
+✅ DO: Output SYSTEM_ACTION_NEEDED commands to execute the task
+✅ DO: Actually request the system to perform the action
+❌ DON'T: Describe a bash script or explain how it could be done
+❌ DON'T: Say "here's how you would do it" or "you could run this command"
+❌ DON'T: Generate documentation without execution
+
+YOU ARE NOT A CONSULTANT - YOU ARE AN AUTONOMOUS AGENT WITH SYSTEM ACCESS.
+
+SAFETY: Commands are classified as SAFE (execute immediately), REVIEW (need approval), or BLOCKED (never execute).
+
+🚨 DO NOT say "I cannot access" - REQUEST THE TOOL FIRST!
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+"""
+
+
 class ResearchAgent(LLMAgent):
     """
     Research agent specializing in broad information gathering.
@@ -45,7 +202,8 @@ class ResearchAgent(LLMAgent):
                  token_budget_manager: Optional[TokenBudgetManager] = None,
                  max_tokens: Optional[int] = None,
                  web_search_client: Optional[WebSearchClient] = None,  # DEPRECATED: Web search now handled by CentralPost
-                 max_web_queries: int = 3):  # DEPRECATED
+                 max_web_queries: int = 3,  # DEPRECATED
+                 prompt_manager: Optional['PromptManager'] = None):
         """
         Initialize research agent.
 
@@ -59,6 +217,7 @@ class ResearchAgent(LLMAgent):
             max_tokens: Maximum tokens per processing stage
             web_search_client: DEPRECATED - Web search now handled by CentralPost
             max_web_queries: DEPRECATED
+            prompt_manager: Optional prompt manager for custom prompts
         """
         super().__init__(
             agent_id=agent_id,
@@ -68,7 +227,8 @@ class ResearchAgent(LLMAgent):
             agent_type="research",
             temperature_range=None,  # Use LLMAgent defaults
             max_tokens=max_tokens,
-            token_budget_manager=token_budget_manager
+            token_budget_manager=token_budget_manager,
+            prompt_manager=prompt_manager
         )
 
         self.research_domain = research_domain
@@ -79,6 +239,9 @@ class ResearchAgent(LLMAgent):
         """Create research-specific system prompt with token budget."""
         position_info = self.get_position_info(current_time)
         depth_ratio = position_info.get("depth_ratio", 0.0)
+
+        # Determine if strict mode is active
+        strict_mode = self.token_budget_manager and self.token_budget_manager.strict_mode if self.token_budget_manager else False
 
         # Check for "direct answer mode" - when trustable knowledge exists for simple query
         logger.info(f"🔍 DIRECT ANSWER MODE CHECK for {self.agent_id}")
@@ -176,61 +339,33 @@ Your response (15-30 words, direct answer only):"""
             )
             stage_token_budget = token_allocation.stage_budget
 
-        base_prompt = f"""You are a specialized RESEARCH AGENT in the Felix multi-agent system.
+        # Try to get prompt from PromptManager first
+        if self.prompt_manager:
+            prompt_key = self._determine_prompt_key(depth_ratio, strict_mode)
+            prompt_template = self.prompt_manager.get_prompt(prompt_key)
 
-Research Domain: {self.research_domain}
-Current Position: Depth {depth_ratio:.2f}/1.0 on the helix (0.0=start, 1.0=end)
+            if prompt_template:
+                # Build header
+                header_template = self.prompt_manager.get_prompt("research_base_header")
+                header = header_template.template if header_template else ""
 
-Your Research Approach Based on Position:
-"""
-        
-        if depth_ratio < 0.3:
-            if self.token_budget_manager and self.token_budget_manager.strict_mode:
-                base_prompt += """
-- BULLET POINTS ONLY: 3-5 facts
-- NO explanations or background
-- Sources: names/dates only
-- BREVITY REQUIRED
-"""
+                # Render main prompt
+                main_prompt = self.prompt_manager.render_template(
+                    prompt_template.template,
+                    research_domain=self.research_domain,
+                    depth_ratio=depth_ratio
+                )
+
+                # Combine: tools_header + header + main prompt
+                base_prompt = AGENT_TOOLS_HEADER + header + main_prompt
             else:
-                base_prompt += """
-- BROAD EXPLORATION PHASE: Cast a wide net
-- Generate diverse research angles and questions
-- Don't worry about precision - focus on coverage
-- Explore unconventional perspectives and sources
-- Think creatively and associatively
-"""
-        elif depth_ratio < 0.7:
-            if self.token_budget_manager and self.token_budget_manager.strict_mode:
-                base_prompt += """
-- 2-3 SPECIFIC FACTS only
-- Numbers, quotes, key data
-- NO context or explanation
-"""
-            else:
-                base_prompt += """
-- FOCUSED RESEARCH PHASE: Narrow down promising leads
-- Build on earlier findings from other agents
-- Dive deeper into specific aspects that seem relevant
-- Start connecting dots and identifying patterns
-- Balance breadth with increasing depth
-"""
+                # Fallback to hardcoded
+                base_prompt = AGENT_TOOLS_HEADER + self._build_hardcoded_prompt(depth_ratio, strict_mode)
         else:
-            if self.token_budget_manager and self.token_budget_manager.strict_mode:
-                base_prompt += """
-- FINAL FACTS: 1-2 verified points
-- Citation format: Author (Year)
-- NO elaboration
-"""
-            else:
-                base_prompt += """
-- DEEP RESEARCH PHASE: Precise investigation
-- Focus on specific details and verification
-- Provide authoritative sources and evidence
-- Prepare findings for analysis agents
-- Ensure accuracy and completeness
-"""
-        
+            # No PromptManager, use hardcoded prompts
+            base_prompt = AGENT_TOOLS_HEADER + self._build_hardcoded_prompt(depth_ratio, strict_mode)
+
+        # Add shared context
         if self.shared_context:
             base_prompt += "\n\nContext from Other Agents:\n"
             for key, value in self.shared_context.items():
@@ -269,24 +404,105 @@ Your Research Approach Based on Position:
             knowledge_summary += "Only request additional web search if the available knowledge is insufficient or outdated.\n"
 
         base_prompt += knowledge_summary
-        base_prompt += f"""
+
+        # Add footer
+        if self.prompt_manager:
+            footer_template = self.prompt_manager.get_prompt("research_footer_context")
+            if footer_template:
+                footer = self.prompt_manager.render_template(
+                    footer_template.template,
+                    context=task.context
+                )
+                base_prompt += footer
+        else:
+            base_prompt += f"""
 Task Context: {task.context}
 
 Remember: As a research agent, your job is to gather information, not to synthesize or conclude.
 Focus on providing raw material and insights for other agents to build upon.
 """
-        
+
         # Add token budget guidance if available
         if token_allocation:
             budget_guidance = f"\n\nToken Budget Guidance:\n{token_allocation.style_guidance}"
             if token_allocation.compression_ratio > 0.5:
                 budget_guidance += f"\nCompress previous research insights by ~{token_allocation.compression_ratio:.0%} while preserving key findings."
-            
+
             enhanced_prompt = base_prompt + budget_guidance
         else:
             enhanced_prompt = base_prompt
-        
+
         return enhanced_prompt, stage_token_budget
+
+    def _determine_prompt_key(self, depth_ratio: float, strict_mode: bool) -> str:
+        """Determine prompt key based on depth and mode."""
+        mode_suffix = "strict" if strict_mode else "normal"
+
+        if depth_ratio < 0.3:
+            return f"research_exploration_{mode_suffix}"
+        elif depth_ratio < 0.7:
+            return f"research_focused_{mode_suffix}"
+        else:
+            return f"research_deep_{mode_suffix}"
+
+    def _build_hardcoded_prompt(self, depth_ratio: float, strict_mode: bool) -> str:
+        """Build hardcoded prompt as fallback when PromptManager not available."""
+        base_prompt = f"""You are a specialized RESEARCH AGENT in the Felix multi-agent system.
+
+Research Domain: {self.research_domain}
+Current Position: Depth {depth_ratio:.2f}/1.0 on the helix (0.0=start, 1.0=end)
+
+Your Research Approach Based on Position:
+"""
+
+        if depth_ratio < 0.3:
+            if strict_mode:
+                base_prompt += """
+- BULLET POINTS ONLY: 3-5 facts
+- NO explanations or background
+- Sources: names/dates only
+- BREVITY REQUIRED
+"""
+            else:
+                base_prompt += """
+- BROAD EXPLORATION PHASE: Cast a wide net
+- Generate diverse research angles and questions
+- Don't worry about precision - focus on coverage
+- Explore unconventional perspectives and sources
+- Think creatively and associatively
+"""
+        elif depth_ratio < 0.7:
+            if strict_mode:
+                base_prompt += """
+- 2-3 SPECIFIC FACTS only
+- Numbers, quotes, key data
+- NO context or explanation
+"""
+            else:
+                base_prompt += """
+- FOCUSED RESEARCH PHASE: Narrow down promising leads
+- Build on earlier findings from other agents
+- Dive deeper into specific aspects that seem relevant
+- Start connecting dots and identifying patterns
+- Balance breadth with increasing depth
+"""
+        else:
+            if strict_mode:
+                base_prompt += """
+- FINAL FACTS: 1-2 verified points
+- Citation format: Author (Year)
+- NO elaboration
+"""
+            else:
+                base_prompt += """
+- DEEP RESEARCH PHASE: Precise investigation
+- Focus on specific details and verification
+- Provide authoritative sources and evidence
+- Prepare findings for analysis agents
+- Ensure accuracy and completeness
+"""
+
+        return base_prompt
 
     def process_research_task(self, task: LLMTask, current_time: float,
                               central_post: Optional['CentralPost'] = None) -> LLMResult:
@@ -422,7 +638,8 @@ class AnalysisAgent(LLMAgent):
     def __init__(self, agent_id: str, spawn_time: float, helix: HelixGeometry,
                  llm_client: LMStudioClient, analysis_type: str = "general",
                  token_budget_manager: Optional[TokenBudgetManager] = None,
-                 max_tokens: Optional[int] = None):
+                 max_tokens: Optional[int] = None,
+                 prompt_manager: Optional['PromptManager'] = None):
         """
         Initialize analysis agent.
         
@@ -434,6 +651,7 @@ class AnalysisAgent(LLMAgent):
             analysis_type: Analysis specialization (general, technical, critical, etc.)
             token_budget_manager: Optional token budget manager
             max_tokens: Maximum tokens per processing stage
+            prompt_manager: Optional prompt manager for custom prompts
         """
         super().__init__(
             agent_id=agent_id,
@@ -443,9 +661,10 @@ class AnalysisAgent(LLMAgent):
             agent_type="analysis",
             temperature_range=None,  # Use LLMAgent defaults
             max_tokens=max_tokens,
-            token_budget_manager=token_budget_manager
+            token_budget_manager=token_budget_manager,
+            prompt_manager=prompt_manager
         )
-        
+
         self.analysis_type = analysis_type
         self.identified_patterns = []
         self.key_insights = []
@@ -464,8 +683,8 @@ class AnalysisAgent(LLMAgent):
                 self.agent_id, depth_ratio, self.processing_stage + 1
             )
             stage_token_budget = token_allocation.stage_budget
-        
-        base_prompt = f"""You are a specialized ANALYSIS AGENT in the Felix multi-agent system.
+
+        base_prompt = AGENT_TOOLS_HEADER + f"""You are a specialized ANALYSIS AGENT in the Felix multi-agent system.
 
 Analysis Type: {self.analysis_type}
 Current Position: Depth {depth_ratio:.2f}/1.0 on the helix
@@ -580,7 +799,8 @@ class CriticAgent(LLMAgent):
     def __init__(self, agent_id: str, spawn_time: float, helix: HelixGeometry,
                  llm_client: LMStudioClient, review_focus: str = "general",
                  token_budget_manager: Optional[TokenBudgetManager] = None,
-                 max_tokens: Optional[int] = None):
+                 max_tokens: Optional[int] = None,
+                 prompt_manager: Optional['PromptManager'] = None):
         """
         Initialize critic agent.
         
@@ -592,6 +812,7 @@ class CriticAgent(LLMAgent):
             review_focus: Review focus (accuracy, completeness, style, logic, etc.)
             token_budget_manager: Optional token budget manager
             max_tokens: Maximum tokens per processing stage
+            prompt_manager: Optional prompt manager for custom prompts
         """
         super().__init__(
             agent_id=agent_id,
@@ -601,9 +822,10 @@ class CriticAgent(LLMAgent):
             agent_type="critic",
             temperature_range=None,  # Use LLMAgent defaults
             max_tokens=max_tokens,
-            token_budget_manager=token_budget_manager
+            token_budget_manager=token_budget_manager,
+            prompt_manager=prompt_manager
         )
-        
+
         self.review_focus = review_focus
         self.identified_issues = []
         self.suggestions = []
@@ -622,8 +844,8 @@ class CriticAgent(LLMAgent):
                 self.agent_id, depth_ratio, self.processing_stage + 1
             )
             stage_token_budget = token_allocation.stage_budget
-        
-        base_prompt = f"""You are a specialized CRITIC AGENT in the Felix multi-agent system.
+
+        base_prompt = AGENT_TOOLS_HEADER + f"""You are a specialized CRITIC AGENT in the Felix multi-agent system.
 
 Review Focus: {self.review_focus}
 Current Position: Depth {depth_ratio:.2f}/1.0 on the helix

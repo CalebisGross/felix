@@ -20,19 +20,23 @@ class DashboardFrame(ttk.Frame):
         self.system_running = False
 
         # Info label
-        info_frame = ttk.Frame(self)
-        info_frame.pack(pady=10)
-        ttk.Label(info_frame, text="Felix Framework Dashboard",
-                 font=("TkDefaultFont", 12, "bold")).pack()
-        ttk.Label(info_frame, text="Configure LM Studio connection in the Settings tab",
-                 foreground="gray").pack()
+        self.info_frame = ttk.Frame(self)
+        self.info_frame.pack(pady=10, fill=tk.X)
+        self.title_label = ttk.Label(self.info_frame, text="Felix Framework Dashboard",
+                 font=("TkDefaultFont", 12, "bold"))
+        self.title_label.pack()
+        self.info_label = ttk.Label(self.info_frame, text="Configure LM Studio connection in the Settings tab",
+                 foreground="gray")
+        self.info_label.pack()
 
         # Start/Stop buttons
-        self.start_button = ttk.Button(self, text="Start Felix", command=self.start_system)
-        self.start_button.pack(pady=10)
+        button_frame = ttk.Frame(self)
+        button_frame.pack(pady=10)
+        self.start_button = ttk.Button(button_frame, text="Start Felix", command=self.start_system)
+        self.start_button.pack(side=tk.LEFT, padx=5)
 
-        self.stop_button = ttk.Button(self, text="Stop Felix", command=self.stop_system, state=tk.DISABLED)
-        self.stop_button.pack(pady=10)
+        self.stop_button = ttk.Button(button_frame, text="Stop Felix", command=self.stop_system, state=tk.DISABLED)
+        self.stop_button.pack(side=tk.LEFT, padx=5)
 
         # Log display
         self.log_text = scrolledtext.ScrolledText(self, wrap=tk.WORD, height=20)
@@ -143,5 +147,28 @@ class DashboardFrame(ttk.Frame):
 
     def apply_theme(self):
         """Apply current theme to the dashboard widgets."""
-        if self.theme_manager:
-            self.theme_manager.apply_to_text_widget(self.log_text)
+        if not self.theme_manager:
+            return
+
+        theme = self.theme_manager.get_current_theme()
+
+        # Apply to log text widget (ScrolledText)
+        try:
+            # ScrolledText contains internal Text widget
+            for child in self.log_text.winfo_children():
+                if isinstance(child, tk.Text):
+                    self.theme_manager.apply_to_text_widget(child)
+        except Exception as e:
+            logger.warning(f"Could not theme log_text: {e}")
+
+        # Apply theme to info label (gray color)
+        try:
+            self.info_label.configure(foreground=theme["fg_tertiary"])
+        except Exception as e:
+            logger.warning(f"Could not theme info_label: {e}")
+
+        # Recursively apply theme to all children
+        try:
+            self.theme_manager.apply_to_all_children(self)
+        except Exception as e:
+            logger.warning(f"Could not recursively apply theme: {e}")
