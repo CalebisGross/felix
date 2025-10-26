@@ -68,13 +68,38 @@ def main():
 
     st.divider()
 
+    # Web Search Activity Metrics
+    st.subheader("🔍 Web Search Activity")
+    web_stats = db_reader.get_web_search_stats()
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.metric("Total Searches", web_stats.get("total_searches", 0),
+                 help="Total number of web searches performed")
+
+    with col2:
+        st.metric("Last 24h", web_stats.get("searches_24h", 0),
+                 help="Searches performed in the last 24 hours")
+
+    with col3:
+        st.metric("Unique Queries", web_stats.get("unique_queries", 0),
+                 help="Number of unique search queries")
+
+    with col4:
+        st.metric("Total Sources", web_stats.get("total_sources", 0),
+                 help="Total number of sources retrieved from searches")
+
+    st.divider()
+
     # Real-time Metrics
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "📊 Agent Activity",
         "📈 Performance Trends",
         "🔄 Recent Workflows",
         "💾 Database Status",
-        "📜 Workflow History"
+        "📜 Workflow History",
+        "🔍 Web Search"
     ])
 
     with tab1:
@@ -251,6 +276,12 @@ def main():
 
         history_viewer = WorkflowHistoryViewer(db_reader)
         history_viewer.render()
+
+    with tab6:
+        from streamlit_gui.components.web_search_monitor import WebSearchMonitor
+
+        search_monitor = WebSearchMonitor(db_reader)
+        search_monitor.render()
 
     # Auto-refresh option
     st.divider()

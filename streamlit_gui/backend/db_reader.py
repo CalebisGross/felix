@@ -6,6 +6,8 @@ from typing import Optional, List, Dict, Any
 from pathlib import Path
 import logging
 import os
+import json
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -205,8 +207,6 @@ class DatabaseReader:
         Returns:
             DataFrame with workflow history
         """
-        from datetime import datetime, timedelta
-
         # Build WHERE clause
         where_clauses = []
 
@@ -437,3 +437,122 @@ class DatabaseReader:
             }
 
         return df.iloc[0].to_dict()
+
+    def get_web_search_activity(self, limit: int = 50) -> pd.DataFrame:
+        """
+        Extract web search activity from knowledge entries.
+
+        Args:
+            limit: Maximum number of entries to analyze
+
+        Returns:
+            DataFrame with columns: agent_id, timestamp, query, sources, results_count
+        """
+        query = f"""
+            SELECT
+                source_agent,
+                created_at,
+                content_json
+            FROM knowledge_entries
+            WHERE domain = 'web_search'
+            ORDER BY created_at DESC
+            LIMIT {limit}
+        """
+
+        df = self._read_query("knowledge", query)
+        if df is None or df.empty:
+            return pd.DataFrame(columns=[
+                "agent_id", "timestamp", "query", "sources", "results_count"
+            ])
+
+        # Parse content_json to extract search data
+        search_data = []
+        for _, row in df.iterrows():
+            try:
+                content = json.loads(row['content_json'])
+
+                # Extract search queries
+                search_queries = content.get('search_queries', [])
+                information_sources = content.get('information_sources', [])
+                web_search_results = content.get('web_search_results', [])
+
+                # Handle case where search_queries might be empty
+                if search_queries:
+                    for query in search_queries:
+                        search_data.append({
+                            'agent_id': row['source_agent'],
+                            'timestamp': row['created_at'],
+                            'query': query,
+                            'sources': ', '.join(information_sources) if information_sources else '',
+                            'results_count': len(web_search_results)
+                        })
+                else:
+                    # No specific queries, create single entry
+                    search_data.append({
+                        'agent_id': row['source_agent'],
+                        'timestamp': row['created_at'],
+                        'query': '',
+                        'sources': ', '.join(information_sources) if information_sources else '',
+                        'results_count': len(web_search_results)
+                    })
+
+            except (json.JSONDecodeError, KeyError, TypeError) as e:
+                logger.debug(f"Could not parse web search content_json: {e}")
+                # Skip malformed entries
+                continue
+
+        if not search_data:
+            return pd.DataFrame(columns=[
+                "agent_id", "timestamp", "query", "sources", "results_count"
+            ])
+
+        return pd.DataFrame(search_data)
+
+    def get_web_search_stats(self) -> Dict[str, Any]:
+        """
+        Get web search usage statistics.
+
+        Returns:
+            Dictionary with: total_searches, unique_queries, avg_results_per_search,
+                            total_sources, searches_last_24h
+        """
+        df = self.get_web_search_activity(limit=1000)
+
+        if df.empty:
+            return {
+                'total_searches': 0,
+                'unique_queries': 0,
+                'avg_results_per_search': 0.0,
+                'total_sources': 0,
+                'searches_last_24h': 0
+            }
+
+        # Calculate statistics
+        total_searches = len(df)
+        unique_queries = df['query'].nunique() if not df['query'].empty else 0
+        avg_results = df['results_count'].mean() if 'results_count' in df.columns else 0.0
+
+        # Count total unique sources
+        all_sources = set()
+        for sources_str in df['sources']:
+            if sources_str:
+                sources_list = [s.strip() for s in sources_str.split(',')]
+                all_sources.update(sources_list)
+        total_sources = len(all_sources)
+
+        # Filter last 24 hours
+        try:
+            df['timestamp_dt'] = pd.to_datetime(df['timestamp'], unit='s', errors='coerce')
+            cutoff_time = datetime.now() - timedelta(hours=24)
+            searches_last_24h = len(df[df['timestamp_dt'] >= cutoff_time])
+        except Exception as e:
+            logger.debug(f"Could not filter by last 24h: {e}")
+            searches_last_24h = 0
+
+        return {
+            'total_searches': total_searches,
+            'unique_queries': unique_queries,
+            'avg_results_per_search': round(avg_results, 2),
+            'total_sources': total_sources,
+            'searches_last_24h': searches_last_24h
+        }

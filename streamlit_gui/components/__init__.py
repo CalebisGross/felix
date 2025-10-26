@@ -35,6 +35,8 @@ from .log_monitor import (
     load_dashboard_state
 )
 
+from .web_search_monitor import WebSearchMonitor
+
 __all__ = [
     # Metrics display
     'display_metric_card',
@@ -64,5 +66,8 @@ __all__ = [
     'monitor_system_resources',
     'create_alert_system',
     'save_dashboard_state',
-    'load_dashboard_state'
+    'load_dashboard_state',
+
+    # Web search monitor
+    'WebSearchMonitor'
 ]
