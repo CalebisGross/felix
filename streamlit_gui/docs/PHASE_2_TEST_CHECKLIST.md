@@ -1,34 +1,29 @@
-## Testing
+# Phase 2 & 3 Testing Checklist
 
-### Test Results
-The implementation was validated using `test_web_search_methods.py`:
-- Successfully queries web search entries from database
-- Correctly parses JSON content and extracts search data
-- Properly calculates all 5 statistical metrics
-- Handles empty database gracefully
+## Phase 2: Web Search Monitoring
+- [ ] `DatabaseReader.get_web_search_activity()` returns DataFrame with search data
+- [ ] Parses JSON from knowledge_entries WHERE domain='web_search'
+- [ ] `DatabaseReader.get_web_search_stats()` calculates all 5 metrics
+- [ ] Handles empty database gracefully (returns empty DataFrame/zero stats)
 
-### Sample Output
-```
-Testing Web Search Monitoring Methods
-============================================================
+## Phase 3: Advanced Features
 
-1. Testing get_web_search_activity()
-------------------------------------------------------------
-Returned DataFrame shape: (2, 5)
-Columns: ['agent_id', 'timestamp', 'query', 'sources', 'results_count']
+### Truth Assessment Display
+- [ ] Truth assessment component detects validation workflows via keywords
+- [ ] Color-coded badges display based on confidence thresholds
+- [ ] Badge shows: Validated (≥85%), Needs Review (70-84%), Failed (<70%)
+- [ ] Source extraction and reasoning display work
+- [ ] Integrated into Workflow History viewer detail view
 
-First few rows:
-                 agent_id     timestamp query sources  results_count
-0  centralpost_web_search  1.761465e+09                            0
-1  centralpost_web_search  1.761465e+09                            0
+### Web Search Configuration
+- [ ] Configuration page displays web search settings section
+- [ ] Shows: status, provider, max results/queries, blocked domains
+- [ ] Displays confidence threshold and SearxNG URL (when applicable)
+- [ ] Two-column metric layout with tooltips
 
-
-2. Testing get_web_search_stats()
-------------------------------------------------------------
-Statistics:
-  total_searches: 2
-  unique_queries: 1
-  avg_results_per_search: 0.0
-  total_sources: 0
-  searches_last_24h: 2
-```
+### Advanced Analytics
+- [ ] Dashboard Performance Trends tab loads enhanced analytics
+- [ ] Hypothesis Performance Tracker shows target vs actual bar chart
+- [ ] Agent Efficiency Matrix displays scatter plot
+- [ ] Summary metrics display (total agents, max/avg efficiency)
+- [ ] Charts handle missing data gracefully
