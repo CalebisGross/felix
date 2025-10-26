@@ -9,6 +9,7 @@ from .workflows import WorkflowsFrame
 from .memory import MemoryFrame
 from .agents import AgentsFrame
 from .settings import SettingsFrame
+from .approvals import ApprovalsFrame
 from .felix_system import FelixSystem, FelixConfig
 from .themes import ThemeManager
 
@@ -75,6 +76,10 @@ class MainApp(tk.Tk):
         # Agents tab
         self.agents_frame = AgentsFrame(self.notebook, self.thread_manager, main_app=self, theme_manager=self.theme_manager)
         self.notebook.add(self.agents_frame, text="Agents")
+
+        # Approvals tab
+        self.approvals_frame = ApprovalsFrame(self.notebook, self.thread_manager, main_app=self, theme_manager=self.theme_manager)
+        self.notebook.add(self.approvals_frame, text="Approvals")
 
         # Prompts tab
         from src.gui.prompts import PromptsTab

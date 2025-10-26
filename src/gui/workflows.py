@@ -15,6 +15,13 @@ class WorkflowsFrame(ttk.Frame):
         self.theme_manager = theme_manager
         self.last_workflow_result = None  # Store last workflow result for saving
 
+        # Approval polling for workflows
+        self.workflow_running = False
+        self.approval_polling_active = False
+        self.approval_poll_interval = 1000  # Poll every 1 second during workflow
+        self.last_approval_check = set()  # Track already-shown approval IDs
+        self.dialog_open = False  # Track if approval dialog is currently open
+
         # Task input (multi-line text widget)
         ttk.Label(self, text="Task:").pack(pady=(10, 0))
 
@@ -280,6 +287,14 @@ class WorkflowsFrame(ttk.Frame):
         # Record start time for tracking
         start_time = datetime.now()
 
+        # Mark workflow as running and start approval polling
+        self.workflow_running = True
+
+        # IMPORTANT: Start polling on main GUI thread using after()
+        logger.info("=== WORKFLOW STARTED: Scheduling approval polling on GUI thread ===")
+        self._write_output("🔍 Approval polling: Starting (will check for approvals every 1s)")
+        self.after(0, self._start_approval_polling)
+
         try:
             if parent_workflow_id:
                 self.after(0, lambda: self._write_output(f"Continuing from workflow #{parent_workflow_id}"))
@@ -423,6 +438,10 @@ class WorkflowsFrame(ttk.Frame):
             self.after(0, lambda: self._write_output(f"\nERROR: {error_msg}"))
             self.after(0, lambda: messagebox.showerror("Error", f"Failed to run workflow: {error_msg}"))
         finally:
+            # Stop approval polling and mark workflow as not running
+            self.workflow_running = False
+            self._stop_approval_polling()
+
             self.after(0, lambda: self.progress.stop())
             self.after(0, lambda: self.run_button.config(state=tk.NORMAL))
 
@@ -430,6 +449,152 @@ class WorkflowsFrame(ttk.Frame):
         """Update progress bar and status display."""
         # Update progress bar
         self.progress['value'] = progress_percentage
+
+    def _start_approval_polling(self):
+        """Start polling for pending approvals during workflow execution."""
+        try:
+            logger.info("=== APPROVAL POLLING: START REQUESTED ===")
+            logger.info(f"  Current state: active={self.approval_polling_active}, workflow_running={self.workflow_running}")
+
+            if not self.approval_polling_active:
+                self.approval_polling_active = True
+                self.last_approval_check.clear()  # Clear previous approval tracking
+                logger.info("✓ Approval polling activated, starting poll loop")
+                self._write_output("✓ Approval polling activated")
+                self._poll_for_approvals()
+            else:
+                logger.warning("⚠ Approval polling already active, skipping start")
+                self._write_output("⚠ Approval polling already active")
+        except Exception as e:
+            logger.error(f"❌ Error starting approval polling: {e}", exc_info=True)
+            self._write_output(f"❌ Error starting approval polling: {e}")
+
+    def _stop_approval_polling(self):
+        """Stop polling for pending approvals."""
+        self.approval_polling_active = False
+
+    def _poll_for_approvals(self):
+        """Poll for pending approvals and show dialog if found."""
+        logger.debug(f"POLL CHECK: active={self.approval_polling_active}, workflow_running={self.workflow_running}, dialog_open={self.dialog_open}")
+
+        if not self.approval_polling_active or not self.workflow_running:
+            logger.debug("POLL SKIPPED: Conditions not met")
+            return
+
+        try:
+            # Only poll if no dialog is currently open
+            if not self.dialog_open:
+                # Check for pending approvals
+                if self.main_app and self.main_app.felix_system:
+                    central_post = self.main_app.felix_system.central_post
+                    pending_approvals = central_post.get_pending_actions()
+
+                    logger.debug(f"POLL RESULT: Found {len(pending_approvals)} pending approvals")
+
+                    # Show only the FIRST pending approval (workflow pauses for each)
+                    if pending_approvals:
+                        first_approval = pending_approvals[0]
+                        approval_id = first_approval['approval_id']
+
+                        logger.info(f"📋 Approval detected: {approval_id}")
+                        logger.info(f"   Command: {first_approval.get('command', 'N/A')[:50]}...")
+
+                        # Only show if not already shown
+                        if approval_id not in self.last_approval_check:
+                            self.dialog_open = True  # Mark dialog as open BEFORE scheduling
+                            self.last_approval_check.add(approval_id)
+
+                            logger.info(f"✓ Opening approval dialog for: {approval_id}")
+                            # Write to workflow output so user sees it
+                            cmd_preview = first_approval.get('command', 'N/A')[:60]
+                            self._write_output(f"⏸️  Workflow paused - approval required for: {cmd_preview}")
+                            self._write_output(f"   Opening approval dialog...")
+                            # Show approval dialog on main thread
+                            self.after(0, lambda a=first_approval: self._show_approval_dialog(a))
+                        else:
+                            logger.debug(f"POLL SKIPPED: Approval {approval_id} already shown")
+            else:
+                logger.debug("POLL SKIPPED: Dialog already open")
+
+        except Exception as e:
+            logger.error(f"Error polling for approvals: {e}", exc_info=True)
+            self._write_output(f"❌ Error checking for approvals: {e}")
+
+        # Schedule next poll if still active (but not if dialog is open)
+        if self.approval_polling_active and self.workflow_running and not self.dialog_open:
+            logger.debug(f"POLL SCHEDULED: Next poll in {self.approval_poll_interval}ms")
+            self.after(self.approval_poll_interval, self._poll_for_approvals)
+        else:
+            logger.debug(f"POLL NOT SCHEDULED: active={self.approval_polling_active}, running={self.workflow_running}, dialog_open={self.dialog_open}")
+
+    def _show_approval_dialog(self, approval_request):
+        """Show approval dialog for pending approval request."""
+        from .approvals import ApprovalDialog
+
+        logger.info("=== SHOWING APPROVAL DIALOG ===")
+        logger.info(f"  Approval ID: {approval_request.get('approval_id')}")
+        logger.info(f"  Command: {approval_request.get('command')}")
+        self._write_output("✓ Approval dialog opened - waiting for decision...")
+
+        try:
+            # Create and show approval dialog
+            dialog = ApprovalDialog(
+                self,
+                approval_request,
+                self._on_approval_decision
+            )
+
+            # Center on parent window
+            dialog.transient(self.winfo_toplevel())
+            logger.info("✓ Dialog created, waiting for user decision...")
+            dialog.wait_window()  # Blocks until dialog is closed
+            logger.info("✓ Dialog closed")
+            self._write_output("✓ Approval dialog closed")
+
+        except Exception as e:
+            logger.error(f"Error showing approval dialog: {e}", exc_info=True)
+            self._write_output(f"❌ Error showing approval dialog: {e}")
+            messagebox.showerror(
+                "Error",
+                f"Failed to show approval dialog:\n{str(e)}"
+            )
+        finally:
+            # Always reset dialog_open flag when dialog closes
+            self.dialog_open = False
+            logger.info("Approval dialog cleanup complete, resuming polling")
+            self._write_output("▶️  Workflow resuming, checking for more approvals...")
+
+            # Resume polling immediately to check for next approval
+            if self.approval_polling_active and self.workflow_running:
+                self.after(100, self._poll_for_approvals)
+
+    def _on_approval_decision(self, approval_id: str, decision):
+        """Handle approval decision from dialog."""
+        try:
+            if not self.main_app or not self.main_app.felix_system:
+                raise Exception("Felix system not available")
+
+            central_post = self.main_app.felix_system.central_post
+
+            # Process decision
+            success = central_post.approve_system_action(
+                approval_id=approval_id,
+                decision=decision,
+                decided_by="user"
+            )
+
+            if success:
+                logger.info(f"Approval decision processed: {approval_id} -> {decision.value}")
+                self._write_output(f"\n✓ Approval processed: {decision.value}")
+            else:
+                raise Exception("Failed to process approval decision")
+
+        except Exception as e:
+            logger.error(f"Error processing approval decision: {e}", exc_info=True)
+            messagebox.showerror(
+                "Error",
+                f"Failed to process approval decision:\n{str(e)}"
+            )
 
     def apply_theme(self):
         """Apply current theme to the workflow widgets."""

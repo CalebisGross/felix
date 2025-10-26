@@ -22,6 +22,7 @@ import time
 import uuid
 import random
 import logging
+import threading
 from enum import Enum
 from typing import Dict, List, Optional, Any, Tuple, TYPE_CHECKING, Callable
 from dataclasses import dataclass, field
@@ -523,6 +524,7 @@ class CentralPost:
         self._last_search_time: float = 0.0  # Prevent search spam
         self._search_cooldown: float = web_search_cooldown
         self._current_task_description: Optional[str] = None  # Track current workflow task
+        self._current_workflow_id: Optional[str] = None  # Track current workflow ID for approval scoping
         self._search_count: int = 0  # Track number of searches for current task
 
         # System autonomy infrastructure
@@ -531,7 +533,17 @@ class CentralPost:
         self.command_history = CommandHistory()
         self._action_results: Dict[str, CommandResult] = {}  # action_id -> result cache
         self._action_id_counter = 0
-        logger.info("System autonomy enabled: SystemExecutor, TrustManager, CommandHistory initialized")
+
+        # Approval system for REVIEW-level commands
+        from src.execution.approval_manager import ApprovalManager
+        self.approval_manager = ApprovalManager()
+        self._action_approvals: Dict[str, str] = {}  # action_id -> approval_id mapping
+        self._approval_events: Dict[str, threading.Event] = {}  # approval_id -> Event for workflow pausing
+
+        # Command deduplication cache (per workflow session)
+        self._executed_commands: Dict[str, Dict[str, CommandResult]] = {}  # workflow_id -> {command_hash -> result}
+
+        logger.info("System autonomy enabled: SystemExecutor, TrustManager, CommandHistory, ApprovalManager initialized")
 
     @property
     def active_connections(self) -> int:
@@ -734,6 +746,27 @@ class CentralPost:
         """
         self._current_task_description = task_description
         self._search_count = 0  # Reset search counter for new task
+
+    def set_current_workflow(self, workflow_id: Optional[str]) -> None:
+        """
+        Set the current workflow ID for approval rule scoping.
+
+        Args:
+            workflow_id: ID of the current workflow (e.g., "workflow_001") or None to clear
+        """
+        self._current_workflow_id = workflow_id
+        logger.info(f"Current workflow ID set: {workflow_id}")
+
+    def clear_current_workflow(self) -> None:
+        """
+        Clear current workflow and clean up workflow-scoped approval rules.
+        Should be called when workflow completes.
+        """
+        if self._current_workflow_id:
+            # Clear approval rules for this workflow
+            self.approval_manager.clear_workflow_rules(self._current_workflow_id)
+            logger.info(f"Cleared workflow approval rules for: {self._current_workflow_id}")
+            self._current_workflow_id = None
 
     def process_next_message(self) -> Optional[Message]:
         """
@@ -1168,10 +1201,10 @@ class CentralPost:
             agent_id = message.sender_id
 
             # Extract command from SYSTEM_ACTION_NEEDED: pattern
-            # Only capture valid command characters (letters, numbers, spaces, hyphens, slashes, dots, underscores)
-            # Stop at backticks, parentheses, brackets, punctuation, or newline
-            pattern = r'SYSTEM_ACTION_NEEDED:\s*([a-zA-Z0-9_\-\./\s]+?)(?:\s*[`\)\]\.,;:]|\n|$)'
-            matches = re.findall(pattern, content, re.IGNORECASE)
+            # Capture entire command line including quotes, redirects, pipes, special chars
+            # Match until: next SYSTEM_ACTION_NEEDED, or new sentence (capital letter after period/newline), or end
+            pattern = r'SYSTEM_ACTION_NEEDED:\s*(.+?)(?=\n(?:SYSTEM_ACTION_NEEDED:|[A-Z])|$)'
+            matches = re.findall(pattern, content, re.IGNORECASE | re.DOTALL)
 
             if not matches:
                 logger.warning(f"Agent {agent_id} used SYSTEM_ACTION_NEEDED but no command found")
@@ -1205,10 +1238,29 @@ class CentralPost:
                     agent_id=agent_id,
                     command=command,
                     context=context,
-                    workflow_id=None
+                    workflow_id=self._current_workflow_id
                 )
 
                 logger.info(f"  Action ID: {action_id}")
+
+                # Wait for action to complete (blocks if approval needed)
+                logger.info(f"⏸️  Workflow paused - waiting for command completion...")
+                result = self.wait_for_approval(action_id, timeout=300.0)
+
+                if result:
+                    if result.success:
+                        logger.info(f"✓ System action completed successfully")
+                        logger.info(f"   Command: {command}")
+                        logger.info(f"   Output: {result.stdout[:200] if result.stdout else '(no output)'}")
+                    else:
+                        logger.warning(f"⚠️ System action failed or denied")
+                        logger.warning(f"   Command: {command}")
+                        logger.warning(f"   Error: {result.stderr[:200] if result.stderr else '(no error message)'}")
+                else:
+                    logger.error(f"❌ System action timed out or failed to complete")
+                    logger.error(f"   Command: {command}")
+
+                logger.info(f"▶️  Workflow resuming...")
                 logger.info("=" * 60)
 
         except Exception as e:
@@ -2767,7 +2819,7 @@ This is the emergent output of the entire helical system."""
     # ===========================================================================
 
     def request_system_action(self, agent_id: str, command: str,
-                             context: str = "", workflow_id: Optional[int] = None) -> str:
+                             context: str = "", workflow_id: Optional[str] = None) -> str:
         """
         Agent requests system action (command execution).
 
@@ -2865,13 +2917,93 @@ This is the emergent output of the entire helical system."""
             # Review commands need approval
             logger.info(f"⚠ Command requires APPROVAL")
 
-            approval_id = self.trust_manager.request_approval(
+            # 1. Check for command deduplication within workflow
+            if workflow_id:
+                command_hash = self.system_executor.compute_command_hash(command)
+
+                # Check if already executed in this workflow
+                if workflow_id in self._executed_commands:
+                    if command_hash in self._executed_commands[workflow_id]:
+                        cached_result = self._executed_commands[workflow_id][command_hash]
+                        logger.info(f"⚡ Command already executed in workflow (using cached result)")
+                        logger.info(f"   Previous execution: success={cached_result.success}, exit_code={cached_result.exit_code}")
+
+                        # Return cached result
+                        self._action_results[action_id] = cached_result
+
+                        # Broadcast cached result with deduplication notice
+                        self._broadcast_action_result(action_id, agent_id, command, cached_result)
+
+                        return action_id
+
+            # 2. Check for workflow-scoped auto-approval rules
+            auto_approve_rule = self.approval_manager.check_auto_approve(command, workflow_id)
+
+            if auto_approve_rule:
+                # Auto-approved by workflow rule
+                logger.info(f"⚡ Command auto-approved by workflow rule: {auto_approve_rule}")
+
+                result = self.system_executor.execute_command(
+                    command=command,
+                    context=context
+                )
+
+                # Store result in database
+                command_hash = self.system_executor.compute_command_hash(command)
+                agent_info = self.agent_registry.get_agent_info(agent_id)
+                agent_type = agent_info.get('metadata', {}).get('agent_type') if agent_info else None
+
+                self.command_history.record_execution(
+                    command=command,
+                    command_hash=command_hash,
+                    result=result,
+                    agent_id=agent_id,
+                    agent_type=agent_type,
+                    workflow_id=workflow_id,
+                    trust_level=trust_level,
+                    approved_by="auto_rule",
+                    context=context
+                )
+
+                # Cache in workflow deduplication
+                if workflow_id:
+                    if workflow_id not in self._executed_commands:
+                        self._executed_commands[workflow_id] = {}
+                    self._executed_commands[workflow_id][command_hash] = result
+
+                # Store result for retrieval
+                self._action_results[action_id] = result
+
+                # Broadcast result
+                self._broadcast_action_result(action_id, agent_id, command, result)
+
+                # Log output
+                logger.info(f"📤 Auto-approved command result:")
+                logger.info(f"   Success: {result.success}")
+                logger.info(f"   Exit code: {result.exit_code}")
+                if result.stdout:
+                    logger.info(f"   Output: {result.stdout[:500]}")
+
+                return action_id
+
+            # 3. Request user approval via ApprovalManager
+            approval_id = self.approval_manager.request_approval(
                 command=command,
                 agent_id=agent_id,
-                context=context
+                context=context,
+                trust_level=trust_level,
+                workflow_id=workflow_id
             )
 
+            # Track action -> approval mapping
+            self._action_approvals[action_id] = approval_id
+
+            # Create threading event for workflow to wait on
+            approval_event = threading.Event()
+            self._approval_events[approval_id] = approval_event
+
             logger.info(f"  Approval ID: {approval_id}")
+            logger.info(f"  Workflow ID: {workflow_id or 'None'}")
 
             # Broadcast approval needed message
             self._broadcast_approval_needed(action_id, approval_id, agent_id, command, context)
@@ -2889,6 +3021,215 @@ This is the emergent output of the entire helical system."""
             CommandResult if available, None otherwise
         """
         return self._action_results.get(action_id)
+
+    def wait_for_approval(self, action_id: str, timeout: float = 300.0) -> Optional[CommandResult]:
+        """
+        Wait for approval to be processed and return result.
+
+        This method blocks until the approval is processed (approved or denied)
+        or the timeout is reached. Used by workflows to pause execution while
+        waiting for user approval.
+
+        Args:
+            action_id: Action ID to wait for
+            timeout: Maximum seconds to wait (default 300 = 5 minutes)
+
+        Returns:
+            CommandResult if approval processed, None if timeout or not found
+        """
+        # Check if action already has result (SAFE commands, cached, auto-approved)
+        result = self._action_results.get(action_id)
+        if result is not None:
+            return result
+
+        # Get approval_id for this action
+        approval_id = self._action_approvals.get(action_id)
+        if not approval_id:
+            logger.warning(f"No approval_id found for action {action_id}")
+            return None
+
+        # Get the event for this approval
+        event = self._approval_events.get(approval_id)
+        if not event:
+            logger.warning(f"No approval event found for {approval_id}")
+            return None
+
+        logger.info(f"⏸️  Waiting for approval: {approval_id} (timeout: {timeout}s)")
+
+        # Wait for event to be signaled (blocks workflow thread)
+        if event.wait(timeout):
+            # Approval processed - get result
+            result = self._action_results.get(action_id)
+            if result:
+                logger.info(f"✓ Approval processed, action completed: success={result.success}")
+            else:
+                logger.warning(f"⚠️  Approval processed but no result found for {action_id}")
+            return result
+        else:
+            # Timeout
+            logger.error(f"❌ Approval timeout after {timeout}s for {approval_id}")
+            return None
+
+    def approve_system_action(self, approval_id: str, decision: 'ApprovalDecision',
+                             decided_by: str = "user") -> bool:
+        """
+        Approve a pending system action with specific decision type.
+
+        This method integrates with ApprovalManager to handle approval decisions
+        including "always approve" rules that apply for the current workflow session.
+
+        Args:
+            approval_id: Approval request ID
+            decision: Type of approval decision (ApprovalDecision enum)
+            decided_by: Who made the decision (default: "user")
+
+        Returns:
+            True if approved and executed successfully, False otherwise
+        """
+        from src.execution.approval_manager import ApprovalDecision
+
+        logger.info(f"=" * 60)
+        logger.info(f"Processing approval decision: {approval_id}")
+        logger.info(f"  Decision: {decision.value}")
+        logger.info(f"  Decided by: {decided_by}")
+
+        # Process decision in ApprovalManager
+        success = self.approval_manager.decide_approval(
+            approval_id=approval_id,
+            decision=decision,
+            decided_by=decided_by
+        )
+
+        if not success:
+            logger.error(f"Failed to process approval decision: {approval_id}")
+            return False
+
+        # Get approval request details
+        approval_request = self.approval_manager.get_approval_status(approval_id)
+
+        if not approval_request:
+            logger.error(f"Approval request not found: {approval_id}")
+            return False
+
+        # Handle denial
+        if decision == ApprovalDecision.DENY:
+            logger.info(f"✗ Command DENIED by user")
+
+            # Find corresponding action_id
+            action_id = None
+            for aid, apid in self._action_approvals.items():
+                if apid == approval_id:
+                    action_id = aid
+                    break
+
+            if action_id:
+                # Create denial result
+                denial_result = CommandResult(
+                    command=approval_request.command,
+                    exit_code=-1,
+                    stdout="",
+                    stderr="Command denied by user",
+                    duration=0.0,
+                    success=False,
+                    error_category=None,
+                    cwd=str(self.system_executor.default_cwd),
+                    venv_active=False
+                )
+
+                # Store denial result
+                self._action_results[action_id] = denial_result
+
+                # Broadcast denial
+                self._broadcast_action_denial(
+                    action_id=action_id,
+                    agent_id=approval_request.agent_id,
+                    command=approval_request.command,
+                    reason="Denied by user"
+                )
+
+            # Signal waiting workflow thread that approval is processed (denied)
+            if approval_id in self._approval_events:
+                self._approval_events[approval_id].set()
+                logger.info(f"▶️  Signaled workflow to resume (command denied)")
+                # Clean up event
+                del self._approval_events[approval_id]
+
+            return True
+
+        # Execute approved command
+        logger.info(f"✓ Executing approved command: {approval_request.command}")
+
+        result = self.system_executor.execute_command(
+            command=approval_request.command,
+            context=approval_request.context
+        )
+
+        # Store in database
+        command_hash = self.system_executor.compute_command_hash(approval_request.command)
+        agent_info = self.agent_registry.get_agent_info(approval_request.agent_id)
+        agent_type = agent_info.get('metadata', {}).get('agent_type') if agent_info else None
+
+        self.command_history.record_execution(
+            command=approval_request.command,
+            command_hash=command_hash,
+            result=result,
+            agent_id=approval_request.agent_id,
+            agent_type=agent_type,
+            workflow_id=approval_request.workflow_id,
+            trust_level=approval_request.trust_level,
+            approved_by=decided_by,
+            context=approval_request.context
+        )
+
+        # Cache in workflow deduplication
+        if approval_request.workflow_id:
+            if approval_request.workflow_id not in self._executed_commands:
+                self._executed_commands[approval_request.workflow_id] = {}
+            self._executed_commands[approval_request.workflow_id][command_hash] = result
+
+        # Find corresponding action_id
+        action_id = None
+        for aid, apid in self._action_approvals.items():
+            if apid == approval_id:
+                action_id = aid
+                break
+
+        if not action_id:
+            # Generate new action_id if mapping not found
+            self._action_id_counter += 1
+            action_id = f"action_{self._action_id_counter:04d}"
+            logger.warning(f"No action_id mapping found, generated new: {action_id}")
+
+        # Store result
+        self._action_results[action_id] = result
+
+        # Broadcast result
+        self._broadcast_action_result(
+            action_id=action_id,
+            agent_id=approval_request.agent_id,
+            command=approval_request.command,
+            result=result
+        )
+
+        # Log output
+        logger.info(f"📤 Approved command executed:")
+        logger.info(f"   Success: {result.success}")
+        logger.info(f"   Exit code: {result.exit_code}")
+        logger.info(f"   Duration: {result.duration:.2f}s")
+        if result.stdout:
+            logger.info(f"   Output: {result.stdout[:500]}")
+        if result.stderr:
+            logger.warning(f"   Errors: {result.stderr[:500]}")
+        logger.info(f"=" * 60)
+
+        # Signal waiting workflow thread that approval is processed
+        if approval_id in self._approval_events:
+            self._approval_events[approval_id].set()
+            logger.info(f"▶️  Signaled workflow to resume (approval processed)")
+            # Clean up event
+            del self._approval_events[approval_id]
+
+        return True
 
     def approve_action(self, approval_id: str, approver: str = "user") -> bool:
         """
@@ -2952,14 +3293,17 @@ This is the emergent output of the entire helical system."""
 
         return True
 
-    def get_pending_actions(self) -> List[Dict[str, Any]]:
+    def get_pending_actions(self, workflow_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Get list of pending action approvals.
+
+        Args:
+            workflow_id: Optional workflow ID to filter approvals
 
         Returns:
             List of pending approval dictionaries
         """
-        pending = self.trust_manager.get_pending_approvals()
+        pending = self.approval_manager.get_pending_approvals(workflow_id=workflow_id)
 
         return [{
             'approval_id': req.approval_id,
@@ -2969,7 +3313,8 @@ This is the emergent output of the entire helical system."""
             'trust_level': req.trust_level.value,
             'risk_assessment': req.risk_assessment,
             'requested_at': req.requested_at,
-            'expires_at': req.expires_at
+            'expires_at': req.expires_at,
+            'workflow_id': req.workflow_id
         } for req in pending]
 
     def _handle_system_action_request(self, message: Message) -> None:

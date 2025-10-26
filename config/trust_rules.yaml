@@ -13,7 +13,7 @@ safe:
   # File system info (read-only)
   - '^ls\s'
   - '^pwd$'
-  - '^echo\s'
+  - '^echo\s(?!.*>)'  # echo for display only (no redirects)
   - '^cat\s(?!.*\.ssh|.*\.aws|.*password|.*secret)'  # cat but not credentials
   - '^head\s'
   - '^tail\s'
@@ -71,6 +71,9 @@ safe:
 
 # REVIEW: Commands that modify state but are generally safe with approval
 review:
+  # File operations (write)
+  - '^echo\s.*>'  # Echo with redirect (file write/append)
+
   # Package management
   - '^pip\s+install\s'
   - '^pip\s+uninstall\s'
