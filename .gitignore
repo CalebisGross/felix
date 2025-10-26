@@ -30,6 +30,7 @@ wheels/
 *.db
 *.db-journal
 *.log
+*.backup
 
 # User-specific configuration
 felix_gui_config.json
