@@ -483,7 +483,7 @@ def main():
 
             # Create 3D visualization
             fig = create_helix_3d_visualization(helix_config)
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
 
             # Display helix characteristics
             col1, col2, col3, col4 = st.columns(4)

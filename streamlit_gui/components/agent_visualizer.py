@@ -365,7 +365,7 @@ def display_confidence_distribution(agents: List[Dict[str, Any]]):
         height=350
     )
 
-    st.plotly_chart(fig, width='stretch')
+    st.plotly_chart(fig, use_container_width=True)
 
     # Summary statistics
     col1, col2, col3, col4 = st.columns(4)

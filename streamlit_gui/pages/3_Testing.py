@@ -306,7 +306,7 @@ def main():
             # Workflow timeline
             st.subheader("Execution Timeline")
             timeline_fig = create_workflow_timeline(workflows)
-            st.plotly_chart(timeline_fig, width='stretch')
+            st.plotly_chart(timeline_fig, use_container_width=True)
 
             # Workflow details table
             st.subheader("Recent Workflows")
@@ -345,7 +345,7 @@ def main():
 
                         display_df['task'] = display_df['task'].apply(format_task)
 
-                    st.dataframe(display_df, width='stretch', hide_index=True)
+                    st.dataframe(display_df, use_container_width=True, hide_index=True)
 
         else:
             st.info("No workflow results available. Run workflows from the tkinter GUI to see results here.")
@@ -359,7 +359,7 @@ def main():
         if not knowledge_df.empty:
             # Confidence distribution
             conf_fig = create_confidence_distribution_chart(knowledge_df)
-            st.plotly_chart(conf_fig, width='stretch')
+            st.plotly_chart(conf_fig, use_container_width=True)
 
             # Performance over time
             st.subheader("Performance Trends")
@@ -409,7 +409,7 @@ def main():
                     height=400
                 )
 
-                st.plotly_chart(fig, width='stretch')
+                st.plotly_chart(fig, use_container_width=True)
 
             # Agent performance comparison
             st.subheader("Agent Performance Comparison")
@@ -434,12 +434,12 @@ def main():
                 )
 
                 fig.update_layout(height=400)
-                st.plotly_chart(fig, width='stretch')
+                st.plotly_chart(fig, use_container_width=True)
 
                 # Performance table
                 st.dataframe(
                     agent_metrics[['agent_id', 'output_count', 'avg_confidence']],
-                    width='stretch',
+                    use_container_width=True,
                     hide_index=True
                 )
 
@@ -516,7 +516,7 @@ def main():
                 if not recent_knowledge.empty:
                     st.dataframe(
                         recent_knowledge[['agent_id', 'domain', 'confidence', 'content_preview']],
-                        width='stretch',
+                        use_container_width=True,
                         hide_index=True
                     )
 
@@ -623,7 +623,7 @@ def main():
                     if include_charts:
                         # Include timeline chart
                         timeline_fig = create_workflow_timeline(workflows[:10])
-                        st.plotly_chart(timeline_fig, width='stretch')
+                        st.plotly_chart(timeline_fig, use_container_width=True)
 
             elif report_type == "Performance":
                 # Performance report
@@ -653,7 +653,7 @@ def main():
                             y='avg_confidence',
                             title='Agent Performance Distribution'
                         )
-                        st.plotly_chart(fig, width='stretch')
+                        st.plotly_chart(fig, use_container_width=True)
 
             elif report_type == "Confidence":
                 # Confidence analysis report
@@ -668,7 +668,7 @@ def main():
 
                     if include_charts:
                         conf_fig = create_confidence_distribution_chart(knowledge_df)
-                        st.plotly_chart(conf_fig, width='stretch')
+                        st.plotly_chart(conf_fig, use_container_width=True)
 
             else:
                 # Detailed report

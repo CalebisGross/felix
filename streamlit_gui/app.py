@@ -9,6 +9,15 @@ from pathlib import Path
 # Add the project root to the Python path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# Temporarily suppress Streamlit deprecation warnings
+# TODO: Remove when Streamlit fixes width parameter issue (tracked in TECH_DEBT.md)
+# Issue: Streamlit 1.50.0 shows deprecation for use_container_width but width='stretch' not fully implemented
+# Target removal: After Streamlit > 1.50.0 releases with proper width parameter support
+# Note: Terminal warnings cannot be suppressed without affecting performance, but UI is clean
+warnings.filterwarnings('ignore', category=DeprecationWarning, module='streamlit')
+warnings.filterwarnings('ignore', message='.*use_container_width.*')
+warnings.filterwarnings('ignore', message='.*Please replace.*use_container_width.*width.*')
+
 # Configure Streamlit page
 st.set_page_config(
     page_title="Felix Framework Monitor",

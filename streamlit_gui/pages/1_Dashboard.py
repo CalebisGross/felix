@@ -127,7 +127,7 @@ def main():
             )
             fig.update_layout(height=400)
             logger.info(f"DEBUG: About to call st.plotly_chart with fig type: {type(fig)}")
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
 
             # Agent details table
             st.subheader("Agent Details")
@@ -147,7 +147,7 @@ def main():
 
             st.dataframe(
                 display_df,
-                width='stretch',
+                use_container_width=True,
                 hide_index=True
             )
         else:
@@ -177,7 +177,7 @@ def main():
                 hovermode='x',
                 height=350
             )
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
 
             # Activity volume
             fig2 = go.Figure()
@@ -193,7 +193,7 @@ def main():
                 yaxis_title="Number of Entries",
                 height=350
             )
-            st.plotly_chart(fig2, width='stretch')
+            st.plotly_chart(fig2, use_container_width=True)
         else:
             st.info("No trend data available. Metrics will appear as system runs.")
 
@@ -241,7 +241,7 @@ def main():
                     title='Target vs Actual Performance by Hypothesis'
                 )
                 fig_hypothesis.update_layout(height=400)
-                st.plotly_chart(fig_hypothesis, width='stretch')
+                st.plotly_chart(fig_hypothesis, use_container_width=True)
             else:
                 st.info("Run hypothesis validation tests to see analytics")
         else:
@@ -273,7 +273,7 @@ def main():
                 color_continuous_scale='Viridis'
             )
             fig_efficiency.update_layout(height=400)
-            st.plotly_chart(fig_efficiency, width='stretch')
+            st.plotly_chart(fig_efficiency, use_container_width=True)
 
             # Show efficiency summary
             col1, col2, col3 = st.columns(3)
@@ -338,7 +338,7 @@ def main():
             })
 
         df_info = pd.DataFrame(db_info)
-        st.dataframe(df_info, width='stretch', hide_index=True)
+        st.dataframe(df_info, use_container_width=True, hide_index=True)
 
         # Domain distribution if available
         domain_df = db_reader.get_domain_distribution()
@@ -354,7 +354,7 @@ def main():
             )
             fig.update_traces(textposition='inside', textinfo='percent+label')
             fig.update_layout(height=350)
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
 
         # Connection info
         st.info(

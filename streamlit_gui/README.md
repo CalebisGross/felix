@@ -1,246 +1,170 @@
 # Streamlit GUI for Felix Framework
 
-A read-only monitoring and visualization interface for the Felix multi-agent AI framework. Provides real-time analytics, performance monitoring, and hypothesis validation while complementing the tkinter control GUI.
-
-**Status**: ✅ Production Ready
-
----
+Read-only monitoring and visualization interface for the Felix multi-agent AI framework. Provides real-time analytics, workflow history, and hypothesis validation benchmarking.
 
 ## Features
 
-### 🏠 Dashboard
-Real-time system monitoring with interactive visualizations:
-- Knowledge entries and agent activity tracking
-- Performance trends and confidence metrics
-- Agent performance overview charts
-- Workflow execution history
-
-### ⚙️ Configuration
-Settings viewer and export capabilities:
-- Helix geometry parameter visualization
-- Interactive 3D helix model
-- Export configurations to YAML/JSON
-- Configuration comparison tools
-
-### 🧪 Testing
-Comprehensive workflow analysis:
-- Workflow execution timeline
-- Success/failure pattern analysis
-- Performance metrics over time
-- Multiple report formats (Summary, Detailed, Performance, Confidence)
-
-### 📊 Benchmarking
-Hypothesis validation with dual-mode operation:
-- **Demo Mode**: Statistical simulation for quick demonstration
-- **Real Mode**: Tests actual Felix components (HelixGeometry, CentralPost, ContextCompressor)
-- **H1**: Helical Progression (20% improvement target)
-- **H2**: Hub-Spoke Efficiency (15% gain target)
-- **H3**: Memory Compression (25% improvement target)
-
----
+- **Dashboard**: Real-time monitoring with agent metrics, workflow history browser, and performance analytics
+- **Configuration**: View and export helix parameters with interactive 3D visualization
+- **Testing**: Analyze workflow execution history with detailed reports and search capabilities
+- **Benchmarking**: Validate H1/H2/H3 hypotheses using real Felix component tests
 
 ## Installation
 
-### Prerequisites
-- Python 3.8+
-- Felix Framework installed
-- Virtual environment activated
-
-### Install Dependencies
-
 ```bash
+# Activate virtual environment
+source .venv/bin/activate  # Linux/Mac
+# .venv\Scripts\activate on Windows
+
+# Install dependencies
 pip install -r requirements_streamlit.txt
 ```
 
-**Dependencies:**
-- `streamlit>=1.28.0`
-- `plotly>=5.17.0`
-- `pandas>=2.0.0`
-- `pyyaml>=6.0`
-
----
-
 ## Quick Start
 
-### Run Streamlit GUI Alone
-
 ```bash
-# From project root
-streamlit run streamlit_app.py
+# Run Streamlit GUI
+streamlit run streamlit_gui/app.py
 
-# Or using Python launcher
+# Or using launcher
 python run_streamlit_gui.py
-```
 
-The GUI will open in your browser at `http://localhost:8501`
-
-### Run Both GUIs Together
-
-**Windows:**
-```bash
+# Run both GUIs together (Windows)
 run_both_guis.bat
-```
 
-**Linux/Mac:**
-```bash
-chmod +x run_both_guis.sh
+# Run both GUIs together (Linux/Mac)
 ./run_both_guis.sh
 ```
 
-### Typical Workflow
+Opens at `http://localhost:8501`
 
-1. **Start tkinter GUI** → Initialize Felix system → Configure parameters
-2. **Start Streamlit GUI** → Monitor system → View real-time metrics
-3. **Run workflows in tkinter** → Monitor progress in Streamlit
-4. **Analyze results in Streamlit** → Export reports → Adjust settings
+## Pages
 
----
+### Dashboard
+- **System Metrics**: Knowledge entries, agent count, workflow success rate
+- **Workflow History**: Browse, search, and filter past executions with synthesis outputs
+- **Performance Trends**: Agent activity over time, confidence distribution charts
+- **Agent Performance**: Metrics by type and phase with efficiency analysis
 
-## Architecture Overview
+### Configuration
+- **Helix Geometry**: Interactive 3D visualization with parameter display
+- **System Settings**: Token budgets, temperature gradients, feature toggles
+- **Web Search Config**: Provider settings, blocked domains, confidence thresholds
+- **Export Options**: YAML/JSON configuration export
 
-### Dual-GUI Design
+### Testing
+- **Workflow Browser**: Search and filter execution history
+- **Detailed Views**: Task input, synthesis output, agent details, performance metrics
+- **Truth Assessment**: Validation badges for workflows using verification
+- **Report Generation**: Export summary, detailed, performance, and confidence reports
 
-Felix uses complementary interfaces for different purposes:
+### Benchmarking
+- **Hypothesis Testing**: Validate H1 (20%), H2 (15%), H3 (25%) improvement targets
+- **Real Mode**: Tests actual Felix components (HelixGeometry, CentralPost, ContextCompressor)
+- **Configuration**: Select hypotheses, set iterations, toggle real LLM usage
+- **Results Display**: Metrics table, box plots, JSON export
 
-| Aspect | tkinter GUI | Streamlit GUI |
-|--------|-------------|---------------|
-| **Role** | System Control | System Monitoring |
-| **Database** | Read/Write | Read-Only |
-| **Felix System** | Start/Stop | Monitor Only |
-| **Best For** | Real-time Control | Analytics & Visualization |
+## Key Components
 
-### Shared Resources
+### New Monitoring Features
+- **Web Search Monitor**: Track Research agent queries with DuckDuckGo/SearxNG integration
+- **Workflow History Viewer**: Advanced browser with search, filters, and detailed views
+- **Truth Assessment Display**: Automatic validation detection and confidence-based badges
 
-Both GUIs access the same databases:
-- `felix_knowledge.db` - Agent knowledge entries
-- `felix_memory.db` - Task memory patterns
-- `felix_task_memory.db` - Workflow execution history
+### Backend Services
+- **DatabaseReader**: Read-only SQLite access to Felix databases
+- **SystemMonitor**: Real-time Felix system state monitoring
+- **BenchmarkRunner**: Subprocess execution of `tests/run_hypothesis_validation.py`
+- **ConfigHandler**: YAML/JSON configuration management
 
-### Non-Interference Design
-
-The Streamlit GUI ensures zero interference through:
-- **Separate Directory**: `streamlit_gui/` isolated from `src/gui/`
-- **Read-Only Access**: SQLite read-only connections
-- **Import-Only Pattern**: Uses Felix classes without modification
-- **Independent Process**: Runs in separate Python process
-
----
+### Databases (Read-Only)
+- `felix_knowledge.db`: Agent knowledge entries and insights
+- `felix_memory.db`: Task memory patterns
+- `felix_task_memory.db`: GUI task storage
+- `felix_workflow_history.db`: Complete workflow execution records
 
 ## Directory Structure
 
 ```
 streamlit_gui/
-├── streamlit_app.py           # Entry point
-├── pages/                      # Streamlit multipage app
+├── app.py                    # Entry point (v3.0.0)
+├── pages/                    # Streamlit multipage app
 │   ├── 1_Dashboard.py
 │   ├── 2_Configuration.py
 │   ├── 3_Testing.py
 │   └── 4_Benchmarking.py
-├── backend/                    # Backend modules
-│   ├── system_monitor.py      # Felix system monitoring
-│   ├── db_reader.py           # Database read operations
-│   ├── config_handler.py      # Configuration management
-│   └── benchmark_runner.py    # Benchmark execution
-└── components/                 # Reusable UI components
-    ├── metrics_display.py
-    ├── agent_visualizer.py
-    └── results_analyzer.py
+├── backend/                  # Backend services
+│   ├── system_monitor.py
+│   ├── db_reader.py
+│   ├── config_handler.py
+│   ├── benchmark_runner.py
+│   └── real_benchmark_runner.py
+├── components/               # UI components
+│   ├── metrics_display.py
+│   ├── agent_visualizer.py
+│   ├── results_analyzer.py
+│   ├── web_search_monitor.py
+│   ├── workflow_history_viewer.py
+│   └── truth_assessment_display.py
+├── tests/                    # Component tests
+└── docs/                     # Detailed documentation
 ```
 
----
+## Usage Guide
 
-## Usage Tips
+### Workflow Monitoring
+1. Start tkinter GUI and initialize Felix system
+2. Run workflows to generate data
+3. Open Streamlit GUI to monitor in real-time
+4. View synthesis outputs in Workflow History tab
 
-### When to Use Each GUI
+### Running Benchmarks
+1. Navigate to Benchmarking page
+2. Select hypotheses to test (H1, H2, H3)
+3. Configure iterations (10-100)
+4. Toggle "Use Real LLM" if LM Studio is running
+5. Click "Run Benchmarks" and wait for results
 
-**Use tkinter GUI for:**
-- Starting/stopping Felix system
-- Spawning agents
-- Modifying configurations
-- Executing workflows
-
-**Use Streamlit GUI for:**
-- Monitoring real-time metrics
-- Analyzing historical data
-- Visualizing agent interactions
-- Running benchmarks
-- Generating reports
-
-### Benchmark Modes
-
-- **Demo Mode**: Fast (~10 seconds), uses statistical simulation, no Felix components required
-- **Real Mode**: Slower, tests actual Felix components, provides accurate validation
-
-Use Demo mode for quick demonstrations, Real mode for actual hypothesis validation.
-
-### Real Data vs Simulated Data
-
-- **Dashboard/Testing pages**: Always use real data from databases
-- **Benchmarking page**: Clearly labeled with data source (REAL or SIMULATED)
-- If no data available: Pages show helpful messages explaining how to generate data
-
----
+### Truth Assessment Workflows
+Workflows containing keywords like "validate", "verify", "truth", "assess" automatically display validation badges:
+- **✓ Validated** (green): Confidence ≥ 85%
+- **⚠ Needs Review** (yellow): Confidence 70-84%
+- **✗ Failed** (red): Confidence < 70%
 
 ## Troubleshooting
 
-### Port Already in Use
+### No Data Displayed
+- Run workflows from tkinter GUI first to generate data
+- Check Dashboard → Database Status for connection info
+- Refresh page (R in browser)
 
+### Port Already in Use
 ```bash
-# Use alternative port
-streamlit run streamlit_app.py --server.port 8502
+streamlit run streamlit_gui/app.py --server.port 8502
 ```
 
-### Database Not Found
-
-- Ensure Felix system has been run at least once to create databases
-- Check that you're running from the project root directory
-- Verify database files exist: `felix_knowledge.db`, `felix_memory.db`, `felix_task_memory.db`
-
-### No Data Displayed
-
-1. Start Felix system from tkinter GUI
-2. Run some workflows to generate data
-3. Refresh Streamlit GUI (press R in browser)
-4. Check "Database Status" tab on Dashboard for connection info
-
 ### Import Errors
-
 ```bash
-# Reinstall dependencies
 pip install -r requirements_streamlit.txt --force-reinstall
 ```
 
----
+### Benchmark Timeouts
+- Default timeout: 5 minutes per hypothesis
+- Reduce iterations or disable "Use Real LLM" for faster tests
 
 ## Documentation
 
-- **[Architecture](streamlit_gui_architecture.md)** - Detailed architecture with diagrams
-- **[Integration Summary](INTEGRATION_SUMMARY.md)** - Full feature and integration details
-- **[Main README](../README.md)** - Felix Framework overview
-
----
+- [Architecture Guide](docs/streamlit_gui_architecture.md) - System design and data flow
+- [Integration Summary](docs/INTEGRATION_SUMMARY.md) - Implementation phases and features
+- [Development Notes](docs/DEVELOPMENT_NOTES.md) - Technical details and decisions
 
 ## Performance
 
-- Dashboard refresh: < 500ms
-- Database queries: < 150ms
 - Page load: < 1 second
+- Database queries: < 150ms
+- Dashboard refresh: < 500ms
 - Memory usage: ~100-200 MB
-
----
-
-## Contributing
-
-When contributing to the Streamlit GUI:
-
-1. **Maintain Read-Only Pattern**: Never modify shared databases
-2. **Use Caching**: Leverage Streamlit's `@st.cache_resource` and `@st.cache_data`
-3. **Handle Errors Gracefully**: Provide fallbacks for missing data
-4. **Follow Structure**: Place pages in `pages/`, backend logic in `backend/`, components in `components/`
-5. **Test Isolation**: Ensure GUI works without Felix running
-
----
 
 ## License
 
-Part of the Felix Framework project. See main [LICENSE](../LICENSE) file.
+Part of the Felix Framework project. See main LICENSE file.
