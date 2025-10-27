@@ -292,6 +292,89 @@ class SystemActionsMigration001(Migration):
         return True
 
 
+class SystemActionsMigration002(Migration):
+    """Add status field for tracking active commands."""
+
+    version = 2
+    description = "Add status field to command_executions for Terminal Output Tab"
+
+    def up(self, conn: sqlite3.Connection):
+        """Add status field and indexes."""
+        logger.info("Adding status field to command_executions...")
+
+        # Add status column
+        conn.execute("""
+            ALTER TABLE command_executions
+            ADD COLUMN status TEXT DEFAULT 'completed'
+        """)
+
+        # Add index for fast active command queries
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_command_status
+            ON command_executions(status, timestamp DESC)
+        """)
+
+        # Add composite index for workflow filtering
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_workflow_timestamp
+            ON command_executions(workflow_id, timestamp DESC)
+        """)
+
+        # Backfill existing records based on success field
+        conn.execute("""
+            UPDATE command_executions
+            SET status = CASE
+                WHEN success = 1 THEN 'completed'
+                WHEN success = 0 THEN 'failed'
+                ELSE 'completed'
+            END
+            WHERE status = 'completed'
+        """)
+
+        logger.info("✓ Added status field with 2 indexes")
+        logger.info("✓ Backfilled existing records")
+
+    def down(self, conn: sqlite3.Connection):
+        """Remove status field (SQLite doesn't support DROP COLUMN easily)."""
+        logger.warning("Downgrade not fully supported - would require table recreation")
+        # In SQLite, dropping columns requires recreating the table
+        # For now, just drop the indexes
+        conn.execute("DROP INDEX IF EXISTS idx_command_status")
+        conn.execute("DROP INDEX IF EXISTS idx_workflow_timestamp")
+
+    def verify(self, conn: sqlite3.Connection) -> bool:
+        """Verify status field and indexes were added."""
+        # Check status column exists
+        cursor = conn.execute("PRAGMA table_info(command_executions)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if 'status' not in columns:
+            logger.error("status column not found in command_executions")
+            return False
+
+        # Check indexes exist
+        cursor = conn.execute("""
+            SELECT name FROM sqlite_master
+            WHERE type='index' AND name IN (
+                'idx_command_status',
+                'idx_workflow_timestamp'
+            )
+        """)
+        indexes = cursor.fetchall()
+        if len(indexes) != 2:
+            logger.error(f"Expected 2 new indexes, found {len(indexes)}")
+            return False
+
+        # Check backfill worked (count records with status)
+        cursor = conn.execute("""
+            SELECT COUNT(*) FROM command_executions
+            WHERE status IS NOT NULL
+        """)
+        count = cursor.fetchone()[0]
+        logger.info(f"✓ Found {count} records with status field")
+
+        return True
+
+
 def get_migrations() -> List[Migration]:
     """
     Get all system actions migrations in order.
@@ -300,5 +383,6 @@ def get_migrations() -> List[Migration]:
         List of Migration instances
     """
     return [
-        SystemActionsMigration001()
+        SystemActionsMigration001(),
+        SystemActionsMigration002()
     ]

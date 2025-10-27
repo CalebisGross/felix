@@ -6,7 +6,7 @@
 
 Felix is a Python multi-agent AI framework that leverages helical geometry for adaptive agent progression, enabling dynamic, scalable AI interactions. The framework models agent behaviors and communications along helical structures, allowing for continuous evolution and optimization of AI tasks through a hub-spoke communication model combined with helical progression.
 
-Key features include helical progression from exploration (top_radius=3.0) to synthesis (bottom_radius=0.5), dynamic agent spawning based on confidence thresholds (0.80), role-specialized agents (Research/Analysis/Critic), smart CentralPost synthesis (adaptive temp 0.2-0.4, tokens 1500-3000), agent awareness with phase-based coordination, efficient hub-spoke messaging (O(N) complexity), web search integration (DuckDuckGo/SearxNG) with caching, workflow history tracking, persistent memory with SQLite storage and abstractive compression (target_length=100, ~0.3 ratio), local LLM integration via LMStudioClient with incremental token streaming and token budgeting (base=2048, strict mode), markdown result formatting, dark mode GUI theme support, and linear pipelines with chunking (chunk=512).
+Key features include helical progression from exploration (top_radius=3.0) to synthesis (bottom_radius=0.5), dynamic agent spawning based on confidence thresholds (0.80), role-specialized agents (Research/Analysis/Critic), smart CentralPost synthesis (adaptive temp 0.2-0.4, tokens 1500-3000), agent awareness with phase-based coordination, efficient hub-spoke messaging (O(N) complexity), web search integration (DuckDuckGo/SearxNG) with caching, workflow history tracking, system autonomy with SYSTEM_ACTION_NEEDED pattern detection, three-tier trust system (SAFE/REVIEW/BLOCKED) with configurable trust rules, approval workflow with 5 decision types (Approve Once, Always Exact, Always Command, Always Path, Deny), workflow pausing via threading.Event synchronization, command history tracking in felix_system_actions.db with deduplication, approval history browser in GUI, persistent memory with SQLite storage and abstractive compression (target_length=100, ~0.3 ratio), local LLM integration via LMStudioClient with incremental token streaming and token budgeting (base=2048, strict mode), markdown result formatting, dark mode GUI theme support, and linear pipelines with chunking (chunk=512).
 
 Felix validates three key hypotheses: H1 (helical progression enhances agent adaptation by 20% workload distribution), H2 (hub-spoke communication optimizes resource allocation by 15% efficiency), and H3 (memory compression reduces latency by 25% attention focus). The framework supports up to 50 agents and is designed for applications like autonomous drone swarms, personalized AI assistants, and scalable chatbots.
 
@@ -28,6 +28,11 @@ For detailed structure, see [index.md](index.md).
 - **Linear Pipelines**: Sequential processing with configurable chunking
 - **Scalability**: Supports teams from 5 to 50 agents
 - **Hypothesis Validation**: Comprehensive benchmarking for H1-H3 gains
+- **System Autonomy**: Agents request command execution via SYSTEM_ACTION_NEEDED pattern detection
+- **Three-Tier Trust System**: Commands classified as SAFE (auto-execute), REVIEW (require approval), or BLOCKED (never execute)
+- **Approval Workflow**: Interactive approval dialogs with 5 decision types and workflow-scoped rules
+- **Command History**: Persistent tracking of all system actions with success/failure status
+- **Intelligent Command Generation**: Agents trained to check state before modifications, use proper shell quoting, and avoid redundant operations
 
 ## Quick Start
 
@@ -164,10 +169,16 @@ Run benchmarks from the exp/ directory to generate CSV metrics. Results demonstr
 
 A Tkinter GUI is available in `src/gui/` for interactive control of Felix components with dark mode support. Features include:
 
-- **Five Tabs**: Dashboard, Workflows (with web search), Memory, Agents, and Workflow History
+- **Seven Tabs**: Dashboard, Workflows (with web search and approval polling), Memory, Agents, Approvals (pending and history), Terminal (command execution monitoring), and Prompts
 - **Dark/Light Themes**: Toggle between themes with persistent preferences
+- **Terminal Tab**: Real-time command execution monitoring with:
+  - Active Commands panel showing currently executing commands with live output streaming
+  - Command History browser with filtering by status, search, and agent
+  - Detailed execution views with full stdout/stderr, timing, and environment info
 - **Workflow History Browser**: Search, filter, and view past workflow executions
 - **Markdown Export**: Save synthesis results as formatted markdown files
+- **Approval System**: Real-time approval dialogs during workflow execution with 5 decision types
+- **Command Tracking**: View pending approvals and browse approval history with decision outcomes
 - **Real-time Monitoring**: Track workflow execution and agent activity
 
 See [`src/gui/README.md`](src/gui/README.md) for details. Run with:
@@ -175,6 +186,39 @@ See [`src/gui/README.md`](src/gui/README.md) for details. Run with:
 ```bash
 python -m src.gui.main
 ```
+
+## System Autonomy
+
+Felix agents can request system command execution through the `SYSTEM_ACTION_NEEDED:` pattern. Commands are automatically classified using a three-tier trust system:
+
+- **SAFE**: Read-only operations (ls, pwd, date, pip list) execute immediately
+- **REVIEW**: State-modifying operations (mkdir, pip install, file writes) require user approval
+- **BLOCKED**: Dangerous operations (rm -rf, credential access) are never executed
+
+### Approval Workflow
+
+When agents request REVIEW-level commands:
+1. Workflow pauses via threading.Event synchronization
+2. Approval dialog appears with command details, risk assessment, and context
+3. User chooses from 5 decision types:
+   - **Approve Once**: Execute this specific command once
+   - **Always - Exact Match**: Auto-approve this exact command for current workflow
+   - **Always - Command Type**: Auto-approve all commands of this type (e.g., all mkdir)
+   - **Always - Path Pattern**: Auto-approve commands matching path pattern
+   - **Deny**: Reject and continue workflow without executing
+
+4. Decision recorded in approval history
+5. Workflow resumes with command result
+
+### Intelligent Command Generation
+
+Agents are trained to:
+- Check system state before modifications (test -d, test -f)
+- Use proper shell quoting (double quotes for apostrophes)
+- Avoid redundant operations (check before mkdir)
+- Consider data preservation (append vs overwrite)
+
+Configuration via `config/trust_rules.yaml`. Command history persisted in `felix_system_actions.db`.
 
 ## Documentation
 

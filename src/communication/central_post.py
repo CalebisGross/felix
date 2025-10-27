@@ -69,6 +69,9 @@ class MessageType(Enum):
     SYSTEM_ACTION_RESULT = "system_action_result"  # CentralPost broadcasts execution result
     SYSTEM_ACTION_APPROVAL_NEEDED = "system_action_approval_needed"  # Command needs approval
     SYSTEM_ACTION_DENIED = "system_action_denied"  # Command blocked or denied
+    SYSTEM_ACTION_START = "system_action_start"  # Command execution started (for Terminal tab)
+    SYSTEM_ACTION_OUTPUT = "system_action_output"  # Real-time command output line (for Terminal tab)
+    SYSTEM_ACTION_COMPLETE = "system_action_complete"  # Command execution completed (for Terminal tab)
 
 
 @dataclass
@@ -542,6 +545,9 @@ class CentralPost:
 
         # Command deduplication cache (per workflow session)
         self._executed_commands: Dict[str, Dict[str, CommandResult]] = {}  # workflow_id -> {command_hash -> result}
+
+        # Live command output buffer for Terminal tab streaming
+        self._live_command_outputs: Dict[int, List[tuple]] = {}  # execution_id -> [(output_line, stream_type), ...]
 
         logger.info("System autonomy enabled: SystemExecutor, TrustManager, CommandHistory, ApprovalManager initialized")
 
@@ -1201,10 +1207,11 @@ class CentralPost:
             agent_id = message.sender_id
 
             # Extract command from SYSTEM_ACTION_NEEDED: pattern
-            # Capture entire command line including quotes, redirects, pipes, special chars
-            # Match until: next SYSTEM_ACTION_NEEDED, or new sentence (capital letter after period/newline), or end
-            pattern = r'SYSTEM_ACTION_NEEDED:\s*(.+?)(?=\n(?:SYSTEM_ACTION_NEEDED:|[A-Z])|$)'
-            matches = re.findall(pattern, content, re.IGNORECASE | re.DOTALL)
+            # Capture only the first line after SYSTEM_ACTION_NEEDED: to avoid capturing
+            # agent reasoning, numbered lists, or prose that follows
+            # This prevents malformed commands like "mkdir /results\n\n7. Systemic Risk: ..."
+            pattern = r'SYSTEM_ACTION_NEEDED:\s*([^\n]+)'
+            matches = re.findall(pattern, content, re.IGNORECASE)
 
             if not matches:
                 logger.warning(f"Agent {agent_id} used SYSTEM_ACTION_NEEDED but no command found")
@@ -2870,23 +2877,17 @@ This is the emergent output of the entire helical system."""
             return action_id
 
         elif trust_level == TrustLevel.SAFE:
-            # Safe commands execute immediately
-            logger.info(f"✓ Executing SAFE command immediately")
+            # Safe commands execute immediately with streaming
+            logger.info(f"✓ Executing SAFE command immediately (streaming)")
 
-            result = self.system_executor.execute_command(
-                command=command,
-                context=context
-            )
-
-            # Store result in database
+            # Create execution placeholder to get execution_id
             command_hash = self.system_executor.compute_command_hash(command)
             agent_info = self.agent_registry.get_agent_info(agent_id)
             agent_type = agent_info.get('metadata', {}).get('agent_type') if agent_info else None
 
-            self.command_history.record_execution(
+            execution_id = self.command_history.create_execution_placeholder(
                 command=command,
                 command_hash=command_hash,
-                result=result,
                 agent_id=agent_id,
                 agent_type=agent_type,
                 workflow_id=workflow_id,
@@ -2895,10 +2896,30 @@ This is the emergent output of the entire helical system."""
                 context=context
             )
 
+            # Broadcast command start
+            self._broadcast_command_start(action_id, execution_id, command, agent_id, context)
+
+            # Define output callback for streaming
+            def output_callback(line: str, stream_type: str):
+                self._broadcast_command_output(action_id, execution_id, line, stream_type)
+
+            # Execute with streaming
+            result = self.system_executor.execute_command_streaming(
+                command=command,
+                context=context,
+                output_callback=output_callback
+            )
+
+            # Update database with final result
+            self.command_history.update_execution_result(execution_id, result)
+
+            # Broadcast command complete
+            self._broadcast_command_complete(action_id, execution_id, result)
+
             # Store result for retrieval
             self._action_results[action_id] = result
 
-            # Broadcast result
+            # Broadcast result (for agent awareness)
             self._broadcast_action_result(action_id, agent_id, command, result)
 
             # Log command output for visibility
@@ -2941,22 +2962,16 @@ This is the emergent output of the entire helical system."""
 
             if auto_approve_rule:
                 # Auto-approved by workflow rule
-                logger.info(f"⚡ Command auto-approved by workflow rule: {auto_approve_rule}")
+                logger.info(f"⚡ Command auto-approved by workflow rule: {auto_approve_rule} (streaming)")
 
-                result = self.system_executor.execute_command(
-                    command=command,
-                    context=context
-                )
-
-                # Store result in database
+                # Create execution placeholder
                 command_hash = self.system_executor.compute_command_hash(command)
                 agent_info = self.agent_registry.get_agent_info(agent_id)
                 agent_type = agent_info.get('metadata', {}).get('agent_type') if agent_info else None
 
-                self.command_history.record_execution(
+                execution_id = self.command_history.create_execution_placeholder(
                     command=command,
                     command_hash=command_hash,
-                    result=result,
                     agent_id=agent_id,
                     agent_type=agent_type,
                     workflow_id=workflow_id,
@@ -2964,6 +2979,26 @@ This is the emergent output of the entire helical system."""
                     approved_by="auto_rule",
                     context=context
                 )
+
+                # Broadcast command start
+                self._broadcast_command_start(action_id, execution_id, command, agent_id, context)
+
+                # Define output callback for streaming
+                def output_callback(line: str, stream_type: str):
+                    self._broadcast_command_output(action_id, execution_id, line, stream_type)
+
+                # Execute with streaming
+                result = self.system_executor.execute_command_streaming(
+                    command=command,
+                    context=context,
+                    output_callback=output_callback
+                )
+
+                # Update database with final result
+                self.command_history.update_execution_result(execution_id, result)
+
+                # Broadcast command complete
+                self._broadcast_command_complete(action_id, execution_id, result)
 
                 # Cache in workflow deduplication
                 if workflow_id:
@@ -2974,7 +3009,7 @@ This is the emergent output of the entire helical system."""
                 # Store result for retrieval
                 self._action_results[action_id] = result
 
-                # Broadcast result
+                # Broadcast result (for agent awareness)
                 self._broadcast_action_result(action_id, agent_id, command, result)
 
                 # Log output
@@ -3156,38 +3191,10 @@ This is the emergent output of the entire helical system."""
 
             return True
 
-        # Execute approved command
-        logger.info(f"✓ Executing approved command: {approval_request.command}")
+        # Execute approved command with streaming
+        logger.info(f"✓ Executing approved command: {approval_request.command} (streaming)")
 
-        result = self.system_executor.execute_command(
-            command=approval_request.command,
-            context=approval_request.context
-        )
-
-        # Store in database
-        command_hash = self.system_executor.compute_command_hash(approval_request.command)
-        agent_info = self.agent_registry.get_agent_info(approval_request.agent_id)
-        agent_type = agent_info.get('metadata', {}).get('agent_type') if agent_info else None
-
-        self.command_history.record_execution(
-            command=approval_request.command,
-            command_hash=command_hash,
-            result=result,
-            agent_id=approval_request.agent_id,
-            agent_type=agent_type,
-            workflow_id=approval_request.workflow_id,
-            trust_level=approval_request.trust_level,
-            approved_by=decided_by,
-            context=approval_request.context
-        )
-
-        # Cache in workflow deduplication
-        if approval_request.workflow_id:
-            if approval_request.workflow_id not in self._executed_commands:
-                self._executed_commands[approval_request.workflow_id] = {}
-            self._executed_commands[approval_request.workflow_id][command_hash] = result
-
-        # Find corresponding action_id
+        # Find corresponding action_id before execution
         action_id = None
         for aid, apid in self._action_approvals.items():
             if apid == approval_id:
@@ -3200,10 +3207,53 @@ This is the emergent output of the entire helical system."""
             action_id = f"action_{self._action_id_counter:04d}"
             logger.warning(f"No action_id mapping found, generated new: {action_id}")
 
+        # Create execution placeholder
+        command_hash = self.system_executor.compute_command_hash(approval_request.command)
+        agent_info = self.agent_registry.get_agent_info(approval_request.agent_id)
+        agent_type = agent_info.get('metadata', {}).get('agent_type') if agent_info else None
+
+        execution_id = self.command_history.create_execution_placeholder(
+            command=approval_request.command,
+            command_hash=command_hash,
+            agent_id=approval_request.agent_id,
+            agent_type=agent_type,
+            workflow_id=approval_request.workflow_id,
+            trust_level=approval_request.trust_level,
+            approved_by=decided_by,
+            context=approval_request.context
+        )
+
+        # Broadcast command start
+        self._broadcast_command_start(action_id, execution_id, approval_request.command,
+                                     approval_request.agent_id, approval_request.context)
+
+        # Define output callback for streaming
+        def output_callback(line: str, stream_type: str):
+            self._broadcast_command_output(action_id, execution_id, line, stream_type)
+
+        # Execute with streaming
+        result = self.system_executor.execute_command_streaming(
+            command=approval_request.command,
+            context=approval_request.context,
+            output_callback=output_callback
+        )
+
+        # Update database with final result
+        self.command_history.update_execution_result(execution_id, result)
+
+        # Broadcast command complete
+        self._broadcast_command_complete(action_id, execution_id, result)
+
+        # Cache in workflow deduplication
+        if approval_request.workflow_id:
+            if approval_request.workflow_id not in self._executed_commands:
+                self._executed_commands[approval_request.workflow_id] = {}
+            self._executed_commands[approval_request.workflow_id][command_hash] = result
+
         # Store result
         self._action_results[action_id] = result
 
-        # Broadcast result
+        # Broadcast result (for agent awareness)
         self._broadcast_action_result(
             action_id=action_id,
             agent_id=approval_request.agent_id,
@@ -3430,6 +3480,124 @@ This is the emergent output of the entire helical system."""
         )
 
         self.queue_message(denial_message)
+
+    def _broadcast_command_start(self, action_id: str, execution_id: int,
+                                 command: str, agent_id: str, context: str = "") -> None:
+        """
+        Broadcast that command execution has started.
+
+        Used by Terminal tab to display active commands in real-time.
+
+        Args:
+            action_id: Action ID
+            execution_id: Database execution ID from CommandHistory
+            command: Command being executed
+            agent_id: Requesting agent ID
+            context: Command context/reason
+        """
+        # Initialize live output buffer immediately so Terminal can poll it
+        # Even if command fails before producing output, buffer will exist
+        self._live_command_outputs[execution_id] = []
+
+        start_message = Message(
+            sender_id="central_post",
+            message_type=MessageType.SYSTEM_ACTION_START,
+            content={
+                'action_id': action_id,
+                'execution_id': execution_id,
+                'command': command,
+                'agent_id': agent_id,
+                'context': context,
+                'status': 'running'
+            },
+            timestamp=time.time()
+        )
+
+        self.queue_message(start_message)
+        logger.debug(f"📡 Broadcast: Command started - {action_id}")
+
+    def _broadcast_command_output(self, action_id: str, execution_id: int,
+                                  output_line: str, stream_type: str) -> None:
+        """
+        Broadcast real-time command output line.
+
+        Used by Terminal tab to stream stdout/stderr in real-time.
+
+        Args:
+            action_id: Action ID
+            execution_id: Database execution ID
+            output_line: Single line of output
+            stream_type: 'stdout' or 'stderr'
+        """
+        # Store in live output buffer for Terminal tab polling
+        if execution_id not in self._live_command_outputs:
+            self._live_command_outputs[execution_id] = []
+        self._live_command_outputs[execution_id].append((output_line, stream_type))
+
+        output_message = Message(
+            sender_id="central_post",
+            message_type=MessageType.SYSTEM_ACTION_OUTPUT,
+            content={
+                'action_id': action_id,
+                'execution_id': execution_id,
+                'output_line': output_line,
+                'stream_type': stream_type
+            },
+            timestamp=time.time()
+        )
+
+        self.queue_message(output_message)
+        # Don't log every line (too verbose)
+
+    def _broadcast_command_complete(self, action_id: str, execution_id: int,
+                                    result: CommandResult) -> None:
+        """
+        Broadcast that command execution has completed.
+
+        Used by Terminal tab to update command status from 'running' to 'completed'/'failed'.
+
+        Args:
+            action_id: Action ID
+            execution_id: Database execution ID
+            result: Final CommandResult
+        """
+        # Clear live output buffer for this command (keep for 5 seconds for Terminal tab to retrieve)
+        # Terminal tab will clear it from active_outputs after displaying
+        if execution_id in self._live_command_outputs:
+            # Schedule cleanup after delay to allow Terminal tab final poll
+            threading.Timer(5.0, lambda: self._live_command_outputs.pop(execution_id, None)).start()
+
+        complete_message = Message(
+            sender_id="central_post",
+            message_type=MessageType.SYSTEM_ACTION_COMPLETE,
+            content={
+                'action_id': action_id,
+                'execution_id': execution_id,
+                'success': result.success,
+                'exit_code': result.exit_code,
+                'duration': result.duration,
+                'status': 'completed' if result.success else 'failed',
+                'error_category': result.error_category.value if result.error_category else None
+            },
+            timestamp=time.time()
+        )
+
+        self.queue_message(complete_message)
+        logger.debug(f"📡 Broadcast: Command completed - {action_id} (success={result.success})")
+
+    def get_live_command_output(self, execution_id: int) -> List[tuple]:
+        """
+        Get accumulated live output for a command execution.
+
+        Used by Terminal tab to poll for real-time command output during execution.
+
+        Args:
+            execution_id: Database execution ID
+
+        Returns:
+            List of (output_line, stream_type) tuples, or empty list if none available
+        """
+        return self._live_command_outputs.get(execution_id, [])
 
 
 class AgentFactory:

@@ -86,17 +86,21 @@ Each command executes sequentially. Commands requiring approval (mkdir, file wri
 
 📁 FILE OPERATIONS - YOU CAN CREATE/MODIFY FILES:
 
+⚠️ **CRITICAL: ALWAYS USE RELATIVE PATHS, NEVER ABSOLUTE PATHS**
+   Use: results/file.txt ✅
+   NOT: /results/file.txt ❌ (requires root permissions, will fail!)
+
 CREATE DIRECTORY:
-✓ "SYSTEM_ACTION_NEEDED: mkdir -p /path/to/new/directory"
+✓ "SYSTEM_ACTION_NEEDED: mkdir -p results/data"
 
 CREATE FILE WITH CONTENT:
-✓ 'SYSTEM_ACTION_NEEDED: echo "your content" > /path/to/file.txt'  # Use double quotes!
+✓ 'SYSTEM_ACTION_NEEDED: echo "your content" > results/file.txt'  # Use double quotes!
 
 APPEND TO FILE:
-✓ 'SYSTEM_ACTION_NEEDED: echo "more content" >> /path/to/file.txt'  # Use double quotes!
+✓ 'SYSTEM_ACTION_NEEDED: echo "more content" >> results/log.txt'  # Use double quotes!
 
 CREATE EMPTY FILE:
-✓ "SYSTEM_ACTION_NEEDED: touch /path/to/file.txt"
+✓ "SYSTEM_ACTION_NEEDED: touch results/notes.txt"
 
 📝 SHELL QUOTING RULES - CRITICAL FOR FILE CONTENT:
 

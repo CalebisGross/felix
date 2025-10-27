@@ -55,7 +55,8 @@ class CommandHistory:
                         workflow_id: Optional[int] = None,
                         trust_level: Optional[TrustLevel] = None,
                         approved_by: Optional[str] = None,
-                        context: str = "") -> int:
+                        context: str = "",
+                        status: str = "completed") -> int:
         """
         Record a command execution in the database.
 
@@ -69,6 +70,7 @@ class CommandHistory:
             trust_level: Trust level of command
             approved_by: Who approved (if applicable)
             context: Context/reason for execution
+            status: Execution status ('pending', 'running', 'completed', 'failed')
 
         Returns:
             execution_id of inserted record
@@ -81,8 +83,8 @@ class CommandHistory:
                     executed, execution_timestamp, exit_code, duration,
                     stdout_preview, stderr_preview, output_size,
                     context, cwd, env_snapshot, venv_active,
-                    success, error_category, timestamp
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    success, error_category, timestamp, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 workflow_id,
                 agent_id,
@@ -105,15 +107,130 @@ class CommandHistory:
                 result.venv_active,
                 result.success,
                 result.error_category.value if result.error_category else None,
-                time.time()
+                time.time(),
+                status
             ))
 
             execution_id = cursor.lastrowid
             conn.commit()
 
-            logger.info(f"Recorded execution: {execution_id}")
+            logger.info(f"Recorded execution: {execution_id} (status={status})")
 
             return execution_id
+
+    def create_execution_placeholder(self,
+                                    command: str,
+                                    command_hash: str,
+                                    agent_id: str,
+                                    agent_type: Optional[str] = None,
+                                    workflow_id: Optional[int] = None,
+                                    trust_level: Optional[TrustLevel] = None,
+                                    approved_by: Optional[str] = None,
+                                    context: str = "") -> int:
+        """
+        Create a placeholder execution record with status='running'.
+
+        Used to get an execution_id before command starts, enabling real-time
+        status tracking in the Terminal tab.
+
+        Args:
+            command: Command to execute
+            command_hash: Hash of command
+            agent_id: Requesting agent ID
+            agent_type: Type of agent
+            workflow_id: Associated workflow ID
+            trust_level: Trust level of command
+            approved_by: Who approved (if applicable)
+            context: Command context
+
+        Returns:
+            execution_id of placeholder record
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute("""
+                INSERT INTO command_executions (
+                    workflow_id, agent_id, agent_type, command, command_hash,
+                    trust_level, approved_by, context, executed,
+                    execution_timestamp, timestamp, status,
+                    exit_code, duration, success
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                workflow_id,
+                agent_id,
+                agent_type,
+                command,
+                command_hash,
+                trust_level.value if trust_level else "unknown",
+                approved_by,
+                context,
+                False,  # Not yet executed
+                time.time(),
+                time.time(),
+                'running',
+                None,  # Will be updated
+                None,  # Will be updated
+                None   # Will be updated
+            ))
+
+            execution_id = cursor.lastrowid
+            conn.commit()
+
+            logger.info(f"Created execution placeholder: {execution_id}")
+
+            return execution_id
+
+    def update_execution_result(self,
+                               execution_id: int,
+                               result: CommandResult) -> bool:
+        """
+        Update an execution record with final result.
+
+        Used to complete a placeholder record after command finishes.
+
+        Args:
+            execution_id: Execution ID to update
+            result: Final CommandResult
+
+        Returns:
+            True if updated successfully, False otherwise
+        """
+        status = 'completed' if result.success else 'failed'
+
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                UPDATE command_executions
+                SET executed = ?,
+                    exit_code = ?,
+                    duration = ?,
+                    stdout_preview = ?,
+                    stderr_preview = ?,
+                    output_size = ?,
+                    cwd = ?,
+                    venv_active = ?,
+                    success = ?,
+                    error_category = ?,
+                    status = ?
+                WHERE execution_id = ?
+            """, (
+                True,
+                result.exit_code,
+                result.duration,
+                result.stdout[:1000] if result.stdout else "",
+                result.stderr[:1000] if result.stderr else "",
+                result.output_size,
+                result.cwd,
+                result.venv_active,
+                result.success,
+                result.error_category.value if result.error_category else None,
+                status,
+                execution_id
+            ))
+
+            conn.commit()
+
+            logger.info(f"Updated execution {execution_id}: {status}")
+
+            return True
 
     def get_command_stats(self, command: str) -> Dict[str, Any]:
         """
@@ -420,3 +537,153 @@ class CommandHistory:
                 patterns.append(pattern)
 
             return patterns
+
+    def get_active_commands(self) -> List[Dict[str, Any]]:
+        """
+        Get commands currently executing (status='running').
+
+        Returns:
+            List of active command dictionaries with execution details
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+
+            cursor = conn.execute("""
+                SELECT
+                    execution_id,
+                    workflow_id,
+                    agent_id,
+                    agent_type,
+                    command,
+                    status,
+                    execution_timestamp,
+                    duration,
+                    context,
+                    trust_level
+                FROM command_executions
+                WHERE status = 'running'
+                ORDER BY execution_timestamp DESC
+            """)
+
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_filtered_history(self,
+                            search_query: Optional[str] = None,
+                            status: Optional[str] = None,  # 'success', 'failed', 'all'
+                            agent_id: Optional[str] = None,
+                            workflow_id: Optional[int] = None,
+                            date_from: Optional[float] = None,
+                            date_to: Optional[float] = None,
+                            limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        Get command history with comprehensive filtering.
+
+        Args:
+            search_query: Search text (searches command, context, output)
+            status: Filter by status ('success', 'failed', 'all')
+            agent_id: Filter by specific agent
+            workflow_id: Filter by workflow
+            date_from: Start timestamp (Unix time)
+            date_to: End timestamp (Unix time)
+            limit: Maximum number of results
+
+        Returns:
+            List of command execution dictionaries
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+
+            # Build query dynamically based on filters
+            where_clauses = []
+            params = []
+
+            # Status filter
+            if status and status != 'all':
+                if status == 'success':
+                    where_clauses.append("success = 1")
+                elif status == 'failed':
+                    where_clauses.append("success = 0")
+
+            # Agent filter
+            if agent_id:
+                where_clauses.append("agent_id = ?")
+                params.append(agent_id)
+
+            # Workflow filter
+            if workflow_id is not None:
+                where_clauses.append("workflow_id = ?")
+                params.append(workflow_id)
+
+            # Date range filter
+            if date_from is not None:
+                where_clauses.append("timestamp >= ?")
+                params.append(date_from)
+
+            if date_to is not None:
+                where_clauses.append("timestamp <= ?")
+                params.append(date_to)
+
+            # Search query (use FTS if provided)
+            if search_query:
+                # Use FTS for full-text search
+                where_clauses.append("""
+                    execution_id IN (
+                        SELECT execution_id FROM command_fts
+                        WHERE command_fts MATCH ?
+                    )
+                """)
+                params.append(search_query)
+
+            # Build final query
+            where_clause = " AND ".join(where_clauses) if where_clauses else "1=1"
+
+            query = f"""
+                SELECT
+                    execution_id,
+                    workflow_id,
+                    agent_id,
+                    agent_type,
+                    command,
+                    status,
+                    trust_level,
+                    approved_by,
+                    execution_timestamp,
+                    exit_code,
+                    duration,
+                    success,
+                    error_category,
+                    context,
+                    stdout_preview,
+                    stderr_preview,
+                    timestamp
+                FROM command_executions
+                WHERE {where_clause}
+                ORDER BY timestamp DESC
+                LIMIT ?
+            """
+
+            params.append(limit)
+            cursor = conn.execute(query, params)
+
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_command_details(self, execution_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Get full details for a specific command execution.
+
+        Args:
+            execution_id: Execution ID to retrieve
+
+        Returns:
+            Dictionary with all execution details, or None if not found
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+
+            cursor = conn.execute("""
+                SELECT * FROM command_executions
+                WHERE execution_id = ?
+            """, (execution_id,))
+
+            row = cursor.fetchone()
+            return dict(row) if row else None

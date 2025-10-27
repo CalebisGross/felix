@@ -384,3 +384,209 @@ class SystemExecutor:
             SHA256 hash (first 16 characters)
         """
         return hashlib.sha256(command.encode()).hexdigest()[:16]
+
+    def execute_command_streaming(self,
+                                  command: str,
+                                  timeout: Optional[float] = None,
+                                  cwd: Optional[Path] = None,
+                                  env: Optional[Dict[str, str]] = None,
+                                  context: str = "",
+                                  output_callback = None) -> CommandResult:
+        """
+        Execute a system command with real-time output streaming.
+
+        Similar to execute_command() but provides line-by-line output via callback
+        for real-time display in GUI.
+
+        Args:
+            command: Command to execute
+            timeout: Command timeout in seconds (None = default)
+            cwd: Working directory (None = default)
+            env: Environment variables (None = inherit)
+            context: Context/reason for command execution
+            output_callback: Callback function(line: str, stream_type: str)
+                           where stream_type is 'stdout' or 'stderr'
+
+        Returns:
+            CommandResult with execution details
+
+        Raises:
+            ExecutionError: If execution fails critically
+        """
+        import threading
+        import queue as queue_module
+
+        timeout = timeout or self.default_timeout
+        cwd = cwd or self.default_cwd
+
+        logger.info(f"Executing command (streaming): {command}")
+        if context:
+            logger.info(f"  Context: {context}")
+        logger.info(f"  CWD: {cwd}")
+        logger.info(f"  Timeout: {timeout}s")
+
+        # Detect if venv is active
+        venv_active = self.is_venv_active()
+        if venv_active:
+            logger.info(f"  Virtual environment: ACTIVE")
+
+        start_time = time.time()
+
+        # Output collection (thread-safe)
+        stdout_lines = []
+        stderr_lines = []
+        stdout_lock = threading.Lock()
+        stderr_lock = threading.Lock()
+
+        def read_stream(stream, output_list, lock, stream_type):
+            """Read stream line by line and invoke callback."""
+            try:
+                for line in iter(stream.readline, ''):
+                    if not line:
+                        break
+
+                    # Store line
+                    with lock:
+                        output_list.append(line)
+
+                    # Invoke callback
+                    if output_callback:
+                        try:
+                            output_callback(line.rstrip('\n'), stream_type)
+                        except Exception as e:
+                            logger.warning(f"Output callback error: {e}")
+            except Exception as e:
+                logger.error(f"Stream reading error ({stream_type}): {e}")
+
+        try:
+            # Prepare environment
+            exec_env = os.environ.copy()
+            if env:
+                exec_env.update(env)
+
+            # Execute command
+            process = subprocess.Popen(
+                command,
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=str(cwd),
+                env=exec_env,
+                text=True,
+                bufsize=1,  # Line buffered
+                preexec_fn=os.setsid if os.name != 'nt' else None
+            )
+
+            # Start reader threads for stdout and stderr
+            stdout_thread = threading.Thread(
+                target=read_stream,
+                args=(process.stdout, stdout_lines, stdout_lock, 'stdout'),
+                daemon=True
+            )
+            stderr_thread = threading.Thread(
+                target=read_stream,
+                args=(process.stderr, stderr_lines, stderr_lock, 'stderr'),
+                daemon=True
+            )
+
+            stdout_thread.start()
+            stderr_thread.start()
+
+            # Wait for process completion with timeout
+            try:
+                exit_code = process.wait(timeout=timeout)
+
+                # Wait for reader threads to finish (with short timeout)
+                stdout_thread.join(timeout=1.0)
+                stderr_thread.join(timeout=1.0)
+
+            except subprocess.TimeoutExpired:
+                logger.warning(f"Command timed out after {timeout}s")
+
+                # Kill process group
+                if os.name != 'nt':
+                    os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+                else:
+                    process.terminate()
+
+                # Wait for cleanup
+                process.wait()
+                stdout_thread.join(timeout=1.0)
+                stderr_thread.join(timeout=1.0)
+
+                duration = time.time() - start_time
+
+                # Collect output
+                with stdout_lock:
+                    stdout = ''.join(stdout_lines)
+                with stderr_lock:
+                    stderr = ''.join(stderr_lines) or "Command timed out"
+
+                return CommandResult(
+                    command=command,
+                    exit_code=-1,
+                    stdout=stdout,
+                    stderr=stderr,
+                    duration=duration,
+                    success=False,
+                    error_category=ErrorCategory.TIMEOUT,
+                    cwd=str(cwd),
+                    venv_active=venv_active,
+                    output_size=len(stdout) + len(stderr)
+                )
+
+            duration = time.time() - start_time
+
+            # Collect final output
+            with stdout_lock:
+                stdout = ''.join(stdout_lines)
+            with stderr_lock:
+                stderr = ''.join(stderr_lines)
+
+            output_size = len(stdout) + len(stderr)
+
+            # Check output size
+            if output_size > self.max_output_size:
+                logger.warning(f"Output size ({output_size} bytes) exceeds limit ({self.max_output_size} bytes)")
+                stdout = stdout[:self.max_output_size // 2]
+                stderr = stderr[:self.max_output_size // 2]
+
+            # Determine success and categorize errors
+            success = exit_code == 0
+            error_category = None
+
+            if not success:
+                error_category = self._categorize_error(exit_code, stderr, stdout)
+                logger.warning(f"Command failed: exit_code={exit_code}, category={error_category.value}")
+            else:
+                logger.info(f"✓ Command succeeded in {duration:.2f}s")
+
+            return CommandResult(
+                command=command,
+                exit_code=exit_code,
+                stdout=stdout,
+                stderr=stderr,
+                duration=duration,
+                success=success,
+                error_category=error_category,
+                cwd=str(cwd),
+                venv_active=venv_active,
+                output_size=output_size
+            )
+
+        except Exception as e:
+            duration = time.time() - start_time
+            logger.error(f"Execution failed with exception: {e}")
+
+            return CommandResult(
+                command=command,
+                exit_code=-1,
+                stdout="",
+                stderr=str(e),
+                duration=duration,
+                success=False,
+                error_category=ErrorCategory.UNKNOWN,
+                cwd=str(cwd),
+                venv_active=venv_active,
+                output_size=0
+            )

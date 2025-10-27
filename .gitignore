@@ -47,7 +47,9 @@ felix_synthesis_*.md
 *.swp
 *.swo
 *~
+.claude/
 
 # OS
 .DS_Store
 Thumbs.db
+
