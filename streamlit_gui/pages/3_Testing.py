@@ -64,7 +64,8 @@ def analyze_workflow_results(workflows: List[Dict[str, Any]]) -> Dict[str, Any]:
             try:
                 duration = w['end_time'] - w['start_time']
                 durations.append(duration)
-            except:
+            except (TypeError, ValueError) as e:
+                # Skip workflows with invalid timestamp data
                 pass
 
     avg_duration = sum(durations) / len(durations) if durations else 0
@@ -179,7 +180,8 @@ def create_workflow_timeline(workflows: List[Dict[str, Any]]) -> go.Figure:
                 'Status': 'Success' if workflow.get('success', True) else 'Failed',
                 'Agents': workflow.get('agent_count', 0)
             })
-        except:
+        except (ValueError, TypeError) as e:
+            # Skip workflows with invalid timestamp data
             continue
 
     if not timeline_data:
@@ -209,7 +211,7 @@ def create_workflow_timeline(workflows: List[Dict[str, Any]]) -> go.Figure:
     return fig
 
 
-def main():
+def main() -> None:
     # Real data indicator badge - MUST be at the very top before anything else
     st.success("✅ **Real Data**: This page displays actual workflow execution data from Felix databases.")
 
@@ -356,7 +358,7 @@ def main():
                             try:
                                 ts = pd.to_datetime(timestamp, unit='s')
                                 st.markdown("**Timestamp:** " + ts.strftime('%Y-%m-%d %H:%M:%S'))
-                            except:
+                            except (ValueError, TypeError) as e:
                                 st.markdown("**Timestamp:** " + str(timestamp))
 
                     # Display synthesis if available
