@@ -314,7 +314,7 @@ def compare_configurations(config1: dict, config2: dict, path: str = "") -> list
     return differences
 
 
-def main():
+def main() -> None:
     # Real data indicator badge - MUST be at the very top before anything else
     st.success("✅ **Real Data**: This page displays actual Felix configuration files from your project.")
 

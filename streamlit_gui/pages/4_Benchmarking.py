@@ -108,7 +108,7 @@ def display_hypothesis_results(results: dict, hypothesis: str, target: float):
             st.plotly_chart(fig, use_container_width=True)
 
 
-def main():
+def main() -> None:
     st.title("📊 Felix Hypothesis Validation")
     st.markdown("""
     Run comprehensive hypothesis validation tests using the Felix test suite.

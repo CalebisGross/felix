@@ -20,6 +20,9 @@ from streamlit_gui.backend.db_reader import DatabaseReader
 from streamlit_gui.backend.real_benchmark_runner import RealBenchmarkRunner
 from streamlit_gui.components.helix_monitor import HelixMonitor, generate_sample_agents
 
+# Constants
+MAX_AGENTS = 133  # Maximum agent capacity for optimal Felix system performance
+
 st.set_page_config(
     page_title="Felix Dashboard",
     page_icon="🏠",
@@ -36,7 +39,7 @@ def get_db_reader():
     """Get cached DatabaseReader instance."""
     return DatabaseReader()
 
-def main():
+def main() -> None:
     st.title("🏠 Felix System Dashboard")
     st.markdown("Real-time monitoring of Felix Framework")
 
@@ -84,7 +87,7 @@ def main():
         # Active Agents
         agent_df = db_reader.get_agent_metrics()
         active_agents = len(agent_df) if not agent_df.empty else 0
-        capacity_pct = (active_agents / 133) * 100
+        capacity_pct = (active_agents / MAX_AGENTS) * 100
 
         # Try to get previous count for delta
         prev_count = st.session_state.get('prev_agent_count', active_agents)
@@ -93,9 +96,9 @@ def main():
 
         st.metric(
             "Active Agents",
-            f"{active_agents}/133",
+            f"{active_agents}/{MAX_AGENTS}",
             delta=f"{delta_agents:+d}" if delta_agents != 0 else None,
-            help=f"Currently active agents. System capacity: {capacity_pct:.1f}% utilized. Max 133 agents for optimal performance."
+            help=f"Currently active agents. System capacity: {capacity_pct:.1f}% utilized. Max {MAX_AGENTS} agents for optimal performance."
         )
 
     with col4:

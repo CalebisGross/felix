@@ -24,18 +24,18 @@ class DatabaseReader:
         """
         # Default to project root (one level up from streamlit_gui/backend)
         if db_dir is None:
-            import os
-            backend_dir = os.path.dirname(os.path.abspath(__file__))
-            streamlit_gui_dir = os.path.dirname(backend_dir)
-            db_dir = os.path.dirname(streamlit_gui_dir)
+            backend_dir = Path(__file__).parent
+            streamlit_gui_dir = backend_dir.parent
+            db_dir = str(streamlit_gui_dir.parent)
 
+        db_path = Path(db_dir)
         self.db_paths = {
-            "knowledge": os.path.join(db_dir, "felix_knowledge.db"),
-            "memory": os.path.join(db_dir, "felix_memory.db"),
-            "task_memory": os.path.join(db_dir, "felix_task_memory.db"),
-            "workflow_history": os.path.join(db_dir, "felix_workflow_history.db"),
-            "live_agents": os.path.join(db_dir, "felix_live_agents.db"),
-            "system_actions": os.path.join(db_dir, "felix_system_actions.db")
+            "knowledge": str(db_path / "felix_knowledge.db"),
+            "memory": str(db_path / "felix_memory.db"),
+            "task_memory": str(db_path / "felix_task_memory.db"),
+            "workflow_history": str(db_path / "felix_workflow_history.db"),
+            "live_agents": str(db_path / "felix_live_agents.db"),
+            "system_actions": str(db_path / "felix_system_actions.db")
         }
 
     def _read_query(self, db_name: str, query: str) -> Optional[pd.DataFrame]:

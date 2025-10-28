@@ -43,15 +43,16 @@ class SystemMonitor:
 
         # Set database directory (default to project root)
         if db_dir is None:
-            backend_dir = os.path.dirname(os.path.abspath(__file__))
-            streamlit_gui_dir = os.path.dirname(backend_dir)
-            db_dir = os.path.dirname(streamlit_gui_dir)
+            backend_dir = Path(__file__).parent
+            streamlit_gui_dir = backend_dir.parent
+            db_dir = str(streamlit_gui_dir.parent)
         self.db_dir = db_dir
 
         # Database paths
-        self.knowledge_db_path = os.path.join(self.db_dir, "felix_knowledge.db")
-        self.memory_db_path = os.path.join(self.db_dir, "felix_memory.db")
-        self.task_memory_db_path = os.path.join(self.db_dir, "felix_task_memory.db")
+        db_path = Path(self.db_dir)
+        self.knowledge_db_path = str(db_path / "felix_knowledge.db")
+        self.memory_db_path = str(db_path / "felix_memory.db")
+        self.task_memory_db_path = str(db_path / "felix_task_memory.db")
 
         # Connect to shared databases (read-only by default)
         self.knowledge_store = None
