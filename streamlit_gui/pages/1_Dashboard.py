@@ -46,64 +46,112 @@ def main():
     monitor = get_monitor()
     db_reader = get_db_reader()
 
-    # System Status Header
+    # System Health Dashboard
+    st.subheader("System Health Dashboard")
     col1, col2, col3, col4 = st.columns(4)
 
     metrics = monitor.get_system_metrics()
 
     with col1:
-        status = "🟢 Running" if metrics["felix_running"] else "🔴 Stopped"
-        st.metric("System Status", status, help="Felix system running status (checks LM Studio port 1234)")
+        # LM Studio Connection Health
+        is_connected = metrics["felix_running"]
+        connection_status = "🟢 Connected" if is_connected else "🔴 Disconnected"
+        st.metric(
+            "LM Studio Connection",
+            connection_status,
+            help="Connection status to LM Studio on port 1234. Green = ready to process workflows."
+        )
+        if not is_connected:
+            st.error("⚠️ Start LM Studio to enable Felix system")
 
     with col2:
-        st.metric("Knowledge Entries", metrics["knowledge_entries"],
-                 delta=f"+{metrics.get('new_entries', 0)}" if metrics.get('new_entries', 0) > 0 else None,
-                 help="Total entries in knowledge database from all agents")
+        # Database Health
+        db_stats = db_reader.get_database_stats()
+        total_dbs = len(db_stats)
+        healthy_dbs = sum(1 for db in db_stats.values() if db["exists"])
+
+        db_status = "🟢 Healthy" if healthy_dbs == total_dbs else "🔴 Error"
+        st.metric(
+            "Database Health",
+            db_status,
+            delta=f"{healthy_dbs}/{total_dbs} databases",
+            help="All Felix databases accessible and operational. 6 databases total: knowledge, memory, task_memory, workflow_history, live_agents, system_actions."
+        )
+        if healthy_dbs < total_dbs:
+            st.warning(f"⚠️ {total_dbs - healthy_dbs} database(s) missing")
 
     with col3:
-        st.metric("Task Patterns", metrics["task_patterns"],
-                 help="Number of task patterns identified in memory database")
+        # Active Agents
+        agent_df = db_reader.get_agent_metrics()
+        active_agents = len(agent_df) if not agent_df.empty else 0
+        capacity_pct = (active_agents / 133) * 100
+
+        # Try to get previous count for delta
+        prev_count = st.session_state.get('prev_agent_count', active_agents)
+        delta_agents = active_agents - prev_count
+        st.session_state['prev_agent_count'] = active_agents
+
+        st.metric(
+            "Active Agents",
+            f"{active_agents}/133",
+            delta=f"{delta_agents:+d}" if delta_agents != 0 else None,
+            help=f"Currently active agents. System capacity: {capacity_pct:.1f}% utilized. Max 133 agents for optimal performance."
+        )
 
     with col4:
-        confidence_pct = metrics['confidence_avg'] * 100 if metrics['confidence_avg'] > 0 else 0
-        st.metric("Avg Confidence", f"{confidence_pct:.1f}%",
-                 help="Average confidence score across all agent knowledge entries")
+        # Pending Approvals
+        from src.communication.central_post import CentralPost
+        try:
+            central_post = CentralPost()
+            pending_approvals = central_post.get_pending_actions()
+            pending_count = len(pending_approvals) if pending_approvals else 0
 
-    st.divider()
+            approval_status = f"⚠️ {pending_count}" if pending_count > 0 else "✅ 0"
+            st.metric(
+                "Pending Approvals",
+                approval_status,
+                help="System commands awaiting approval. Review in System Control tab to approve or deny."
+            )
+            if pending_count > 0:
+                st.warning(f"🔗 [{pending_count} approval(s) need attention →](/System_Control)")
+        except Exception as e:
+            logger.warning(f"Could not check pending approvals: {e}")
+            st.metric(
+                "Pending Approvals",
+                "N/A",
+                help="Could not retrieve approval status"
+            )
 
-    # Web Search Activity Metrics
-    st.subheader("🔍 Web Search Activity")
-    web_stats = db_reader.get_web_search_stats()
+    # Web Search Activity Metrics (collapsed - non-actionable details)
+    with st.expander("🔍 Web Search Activity Details"):
+        web_stats = db_reader.get_web_search_stats()
 
-    col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3, col4 = st.columns(4)
 
-    with col1:
-        st.metric("Total Searches", web_stats.get("total_searches", 0),
-                 help="Total number of web searches performed")
+        with col1:
+            st.metric("Total Searches", web_stats.get("total_searches", 0),
+                     help="Total number of web searches performed")
 
-    with col2:
-        st.metric("Last 24h", web_stats.get("searches_24h", 0),
-                 help="Searches performed in the last 24 hours")
+        with col2:
+            st.metric("Last 24h", web_stats.get("searches_24h", 0),
+                     help="Searches performed in the last 24 hours")
 
-    with col3:
-        st.metric("Unique Queries", web_stats.get("unique_queries", 0),
-                 help="Number of unique search queries")
+        with col3:
+            st.metric("Unique Queries", web_stats.get("unique_queries", 0),
+                     help="Number of unique search queries")
 
-    with col4:
-        st.metric("Total Sources", web_stats.get("total_sources", 0),
-                 help="Total number of sources retrieved from searches")
+        with col4:
+            st.metric("Total Sources", web_stats.get("total_sources", 0),
+                     help="Total number of sources retrieved from searches")
 
     st.divider()
 
     # Real-time Metrics
-    tab_helix, tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    tab_helix, tab1, tab2, tab3 = st.tabs([
         "🌀 Live Helix Monitor",
         "📊 Agent Activity",
-        "📈 Performance Trends",
-        "🔄 Recent Workflows",
-        "💾 Database Status",
-        "📜 Workflow History",
-        "🔍 Web Search"
+        "📈 Performance Trends & Web Search",
+        "💾 Database & History"
     ])
 
     with tab_helix:
@@ -120,10 +168,9 @@ def main():
             # Render control panel
             controls = helix_monitor.render_controls()
 
-            st.divider()
-
             # Animation control (only show in real-time mode)
             if controls['real_time']:
+                st.divider()
                 st.markdown("### Animation Control")
 
                 # Pause/Play button
@@ -149,9 +196,8 @@ def main():
                         st.session_state['animation_paused'] = False
                         st.rerun()
 
-                st.divider()
-
             # Workflow control
+            st.divider()
             st.markdown("### Workflow Control")
 
             if st.button("▶️ Start Workflow", key="start_workflow", type="primary"):
@@ -162,7 +208,6 @@ def main():
                 st.session_state['workflow_running'] = False
                 st.info("Workflow stopped")
 
-            # Agent statistics
             st.divider()
             st.markdown("### Agent Statistics")
 
@@ -253,7 +298,7 @@ def main():
 
         # Phase description
         st.divider()
-        st.markdown("### Helix Phases")
+        st.subheader("Helix Phases")
 
         phase_col1, phase_col2, phase_col3 = st.columns(3)
 
@@ -285,32 +330,137 @@ def main():
             """)
 
     with tab1:
-        st.subheader("Agent Activity Monitor")
+        st.subheader("Agent Performance Matrix")
+        st.markdown("Analyze agent performance across helix phases to identify bottlenecks and problem agents")
 
-        # Get agent data
+        # Get agent data with phase information
         agent_df = db_reader.get_agent_metrics()
 
         if not agent_df.empty:
-            # Agent performance scatter plot
-            fig = px.scatter(
-                agent_df,
-                x="output_count",
-                y="avg_confidence",
-                size="output_count",
-                color="avg_confidence",
-                hover_data=["agent_id"],
-                title="Agent Performance Overview",
-                labels={
-                    "output_count": "Number of Outputs",
-                    "avg_confidence": "Average Confidence"
-                },
-                color_continuous_scale="viridis"
-            )
-            fig.update_layout(height=400)
-            logger.info(f"DEBUG: About to call st.plotly_chart with fig type: {type(fig)}")
-            st.plotly_chart(fig, use_container_width=True)
+            # Get knowledge entries with domain/phase info
+            knowledge_df = db_reader.get_knowledge_entries(limit=1000)
+
+            if not knowledge_df.empty:
+                # Merge agent data with domain info to get phase
+                merged_df = pd.merge(
+                    knowledge_df[['agent_id', 'domain', 'confidence']],
+                    agent_df[['agent_id', 'avg_confidence']],
+                    on='agent_id',
+                    how='inner'
+                )
+
+                # Infer phase from domain
+                def infer_phase(domain):
+                    if not domain or pd.isna(domain):
+                        return "Unknown"
+                    domain_lower = str(domain).lower()
+                    if "research" in domain_lower or "exploration" in domain_lower or "web_search" in domain_lower:
+                        return "Exploration"
+                    elif "analysis" in domain_lower or "critic" in domain_lower:
+                        return "Analysis"
+                    elif "synthesis" in domain_lower or "final" in domain_lower:
+                        return "Synthesis"
+                    else:
+                        return "General"
+
+                merged_df['phase'] = merged_df['domain'].apply(infer_phase)
+
+                # Determine agent type from agent_id or domain
+                def infer_agent_type(row):
+                    agent_id = str(row['agent_id']).lower()
+                    domain = str(row['domain']).lower()
+                    if 'research' in agent_id or 'research' in domain:
+                        return "Research"
+                    elif 'analysis' in agent_id or 'analysis' in domain or 'analyst' in agent_id:
+                        return "Analysis"
+                    elif 'critic' in agent_id or 'critic' in domain:
+                        return "Critic"
+                    elif 'synthesis' in agent_id or 'synthesis' in domain:
+                        return "Synthesis"
+                    else:
+                        return "Generic"
+
+                merged_df['agent_type'] = merged_df.apply(infer_agent_type, axis=1)
+
+                # Create pivot table for heatmap
+                heatmap_data = merged_df.groupby(['agent_type', 'phase'])['confidence'].mean().reset_index()
+
+                if not heatmap_data.empty:
+                    # Create heatmap matrix
+                    pivot_data = heatmap_data.pivot(index='agent_type', columns='phase', values='confidence')
+
+                    # Ensure phase order
+                    phase_order = ['Exploration', 'Analysis', 'Synthesis', 'General', 'Unknown']
+                    available_phases = [p for p in phase_order if p in pivot_data.columns]
+                    pivot_data = pivot_data[available_phases]
+
+                    # Create heatmap
+                    fig = px.imshow(
+                        pivot_data,
+                        labels=dict(x="Helix Phase", y="Agent Type", color="Avg Confidence"),
+                        x=available_phases,
+                        y=pivot_data.index,
+                        color_continuous_scale=[[0, "red"], [0.5, "yellow"], [1, "green"]],
+                        title="Agent Performance by Phase (Heatmap)",
+                        aspect="auto",
+                        zmin=0,
+                        zmax=1
+                    )
+
+                    fig.update_layout(
+                        height=400,
+                        xaxis_title="Helix Phase",
+                        yaxis_title="Agent Type"
+                    )
+                    fig.update_traces(
+                        text=pivot_data.values,
+                        texttemplate='%{text:.2f}',
+                        textfont={"size": 12}
+                    )
+
+                    st.plotly_chart(fig, use_container_width=True)
+
+                    st.divider()
+                    st.subheader("Problem Agent Detection")
+
+                    low_confidence_threshold = 0.7
+                    problem_agents = agent_df[agent_df['avg_confidence'] < low_confidence_threshold]
+
+                    if not problem_agents.empty:
+                        st.warning(f"⚠️ **{len(problem_agents)} agent(s) with low confidence detected**")
+                        st.markdown("These agents may need investigation or parameter tuning:")
+
+                        # Format problem agents table
+                        problem_display = problem_agents[['agent_id', 'avg_confidence', 'output_count']].copy()
+                        problem_display['avg_confidence'] = problem_display['avg_confidence'].apply(
+                            lambda x: f"{x*100:.1f}%" if pd.notnull(x) else "N/A"
+                        )
+                        problem_display.columns = ['Agent ID', 'Avg Confidence', 'Outputs']
+
+                        st.dataframe(
+                            problem_display,
+                            use_container_width=True,
+                            hide_index=True
+                        )
+
+                        # Actionable recommendations
+                        st.markdown("""
+                        **Recommended Actions:**
+                        - Review agent prompts and temperature settings
+                        - Check if agents have sufficient context
+                        - Verify agent positioning on helix (may be in wrong phase)
+                        - Consider adjusting token budgets or search parameters
+                        """)
+                    else:
+                        st.success(f"✅ **All agents performing well** (confidence ≥ {low_confidence_threshold*100:.0f}%)")
+
+                else:
+                    st.info("Insufficient data for performance matrix. Run more workflows to generate metrics.")
+            else:
+                st.info("No knowledge entries found. Run workflows to generate agent data.")
 
             # Agent details table
+            st.divider()
             st.subheader("Agent Details")
 
             # Format the dataframe for display
@@ -379,57 +529,7 @@ def main():
             st.info("No trend data available. Metrics will appear as system runs.")
 
         st.divider()
-
-        # Advanced Analytics Section
-        st.subheader("Advanced Analytics")
-
-        # A. Hypothesis Performance Tracker
-        st.markdown("### Hypothesis Validation: Target vs Actual")
-
-        benchmark_runner = RealBenchmarkRunner()
-        benchmark_results = benchmark_runner.get_latest_results()
-
-        if benchmark_results and 'results' in benchmark_results:
-            # Extract hypothesis data
-            hypothesis_data = []
-            targets = {'H1': 20, 'H2': 15, 'H3': 25}
-
-            for hypothesis, target in targets.items():
-                if hypothesis in benchmark_results['results']:
-                    actual = benchmark_results['results'][hypothesis].get('improvement_pct', 0)
-                    hypothesis_data.append({
-                        'Hypothesis': hypothesis,
-                        'Type': 'Target',
-                        'Improvement (%)': target
-                    })
-                    hypothesis_data.append({
-                        'Hypothesis': hypothesis,
-                        'Type': 'Actual',
-                        'Improvement (%)': actual
-                    })
-
-            if hypothesis_data:
-                df_hypothesis = pd.DataFrame(hypothesis_data)
-
-                # Create grouped bar chart
-                fig_hypothesis = px.bar(
-                    df_hypothesis,
-                    x='Hypothesis',
-                    y='Improvement (%)',
-                    color='Type',
-                    barmode='group',
-                    color_discrete_map={'Target': '#3498db', 'Actual': '#2ecc71'},
-                    title='Target vs Actual Performance by Hypothesis'
-                )
-                fig_hypothesis.update_layout(height=400)
-                st.plotly_chart(fig_hypothesis, use_container_width=True)
-            else:
-                st.info("Run hypothesis validation tests to see analytics")
-        else:
-            st.info("Run hypothesis validation tests to see analytics")
-
-        # B. Agent Efficiency Matrix
-        st.markdown("### Agent Efficiency Matrix")
+        st.subheader("Agent Efficiency Matrix")
 
         agent_df = db_reader.get_agent_metrics()
 
@@ -469,40 +569,16 @@ def main():
         else:
             st.info("No agent activity recorded yet. Start Felix system to begin monitoring.")
 
+        st.divider()
+
+        # Web Search Monitor Section
+        st.markdown("### Web Search Activity")
+        from streamlit_gui.components.web_search_monitor import WebSearchMonitor
+
+        search_monitor = WebSearchMonitor(db_reader)
+        search_monitor.render()
+
     with tab3:
-        st.subheader("Recent Workflow Results")
-
-        workflows = monitor.get_workflow_results(limit=10)
-
-        if workflows:
-            for workflow in workflows:
-                # Format timestamp
-                try:
-                    timestamp = pd.to_datetime(workflow['timestamp'], unit='s')
-                    time_str = timestamp.strftime('%Y-%m-%d %H:%M:%S')
-                except:
-                    time_str = str(workflow['timestamp'])
-
-                task_preview = workflow['task'][:50] + "..." if len(workflow['task']) > 50 else workflow['task']
-
-                with st.expander(f"🔄 {task_preview} - {time_str}"):
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        agent_count = workflow.get('agent_count', 0)
-                        st.metric("Agents", agent_count if agent_count > 0 else "N/A")
-                    with col2:
-                        status = "✅ Success" if workflow.get('success', True) else "❌ Failed"
-                        st.metric("Status", status)
-                    with col3:
-                        has_synthesis = bool(workflow.get('final_synthesis'))
-                        st.metric("Synthesis", "Yes" if has_synthesis else "No")
-
-                    if workflow.get('final_synthesis'):
-                        st.text_area("Final Synthesis", workflow['final_synthesis'], height=100, disabled=True)
-        else:
-            st.info("No workflow results available. Run workflows from tkinter GUI to see results here.")
-
-    with tab4:
         st.subheader("Database Status")
 
         # Database sizes and info
@@ -524,6 +600,7 @@ def main():
         # Domain distribution if available
         domain_df = db_reader.get_domain_distribution()
         if not domain_df.empty:
+            st.divider()
             st.subheader("Knowledge Distribution by Domain")
 
             fig = px.pie(
@@ -538,23 +615,21 @@ def main():
             st.plotly_chart(fig, use_container_width=True)
 
         # Connection info
+        st.divider()
         st.info(
             "ℹ️ **Database Access Mode**: Read-Only\n\n"
             "The Streamlit GUI monitors shared databases without modifying them. "
             "All write operations are performed by the tkinter GUI and Felix system."
         )
 
-    with tab5:
+        st.divider()
+
+        # Workflow History Section
+        st.markdown("### Workflow History")
         from streamlit_gui.components.workflow_history_viewer import WorkflowHistoryViewer
 
         history_viewer = WorkflowHistoryViewer(db_reader)
         history_viewer.render()
-
-    with tab6:
-        from streamlit_gui.components.web_search_monitor import WebSearchMonitor
-
-        search_monitor = WebSearchMonitor(db_reader)
-        search_monitor.render()
 
     # Auto-refresh option
     st.divider()

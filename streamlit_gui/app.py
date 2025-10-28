@@ -37,70 +37,70 @@ st.set_page_config(
     }
 )
 
-# Custom CSS for professional theme - SIMPLIFIED FOR VISIBILITY
+# Custom CSS for dark professional theme - WCAG compliant
 st.markdown("""
     <style>
-        /* Light professional background - WCAG compliant */
+        /* Dark professional background */
         .stApp {
-            background: linear-gradient(135deg, #f5f7fa 0%, #e8ecf1 100%);
+            background: linear-gradient(135deg, #1a1d2e 0%, #16213e 100%);
         }
 
-        /* Main content area - crisp white */
+        /* Main content area - dark blue-gray */
         .main {
-            background: #ffffff;
-            border: 1px solid #d0d7de;
+            background: #2d3748;
+            border: 1px solid #4a5568;
             border-radius: 8px;
             padding: 20px;
             margin: 20px;
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
         }
 
-        /* Sidebar - light gray with dark text (WCAG AA compliant) */
+        /* Sidebar - dark theme */
         .stSidebar {
-            background: #f6f8fa !important;
-            border-right: 1px solid #d0d7de;
+            background: #1a202c !important;
+            border-right: 1px solid #4a5568;
         }
 
         .stSidebar [data-testid="stMarkdownContainer"] {
-            color: #24292f !important;
+            color: #e2e8f0 !important;
         }
 
         .stSidebar .stRadio label {
-            color: #24292f !important;
+            color: #e2e8f0 !important;
         }
 
-        /* Headers - WCAG AAA compliant (7:1 contrast ratio) */
+        /* Headers - light on dark (WCAG AA compliant) */
         h1, h2, h3 {
-            color: #0d1117 !important;
+            color: #f7fafc !important;
         }
 
-        /* Body text - WCAG AAA compliant */
+        /* Body text - light gray on dark */
         p, div, span, label {
-            color: #24292f !important;
+            color: #e2e8f0 !important;
         }
 
         .stMarkdown {
-            color: #24292f !important;
+            color: #e2e8f0 !important;
         }
 
-        /* Alert boxes - high contrast */
+        /* Alert boxes - dark theme with borders */
         div[data-testid="stAlert"] {
-            background-color: #ffffff !important;
-            border: 1px solid #d0d7de !important;
-            color: #24292f !important;
+            background-color: #2d3748 !important;
+            border: 1px solid #4a5568 !important;
+            color: #e2e8f0 !important;
         }
 
         div[data-testid="stAlert"] p {
-            color: #24292f !important;
+            color: #e2e8f0 !important;
         }
 
         div[data-testid="stAlert"] strong {
-            color: #0d1117 !important;
+            color: #f7fafc !important;
         }
 
-        /* Button styling - WCAG AA compliant */
+        /* Button styling - blue accent on dark */
         .stButton > button {
-            background: #0969da !important;
+            background: #3182ce !important;
             color: #ffffff !important;
             border: none;
             border-radius: 6px;
@@ -110,58 +110,70 @@ st.markdown("""
         }
 
         .stButton > button:hover {
-            background: #0550ae !important;
+            background: #2c5282 !important;
         }
 
-        /* Metric containers - high contrast */
+        /* Metric containers - dark with subtle borders */
         [data-testid="metric-container"] {
-            background: #f6f8fa;
-            border: 1px solid #d0d7de;
+            background: #1a202c;
+            border: 1px solid #4a5568;
             border-radius: 6px;
             padding: 12px;
         }
 
         [data-testid="metric-container"] [data-testid="stMetricLabel"] {
-            color: #57606a !important;
+            color: #a0aec0 !important;
             font-weight: 500;
         }
 
         [data-testid="metric-container"] [data-testid="stMetricValue"] {
-            color: #0969da !important;
+            color: #63b3ed !important;
             font-weight: 600;
         }
 
-        /* Expander styling - high contrast */
+        /* Expander styling - dark theme */
         .streamlit-expanderHeader {
-            background: #f6f8fa !important;
-            color: #0d1117 !important;
-            border: 1px solid #d0d7de;
+            background: #1a202c !important;
+            color: #f7fafc !important;
+            border: 1px solid #4a5568;
             font-weight: 500;
         }
 
         .streamlit-expanderHeader:hover {
-            background: #eaeef2 !important;
+            background: #2d3748 !important;
         }
 
-        /* Table styling - WCAG compliant */
+        /* Table styling - dark theme */
         .stDataFrame {
-            color: #24292f !important;
+            color: #e2e8f0 !important;
         }
 
         .stDataFrame thead tr th {
-            background: #f6f8fa !important;
-            color: #0d1117 !important;
+            background: #1a202c !important;
+            color: #f7fafc !important;
             font-weight: 600;
         }
 
-        /* Links - WCAG AA compliant */
+        /* Links - blue accent on dark */
         a {
-            color: #0969da !important;
+            color: #63b3ed !important;
         }
 
         a:hover {
-            color: #0550ae !important;
+            color: #4299e1 !important;
             text-decoration: underline;
+        }
+
+        /* Input fields - dark theme */
+        .stTextInput > div > div > input {
+            background-color: #2d3748 !important;
+            color: #e2e8f0 !important;
+            border: 1px solid #4a5568 !important;
+        }
+
+        .stSelectbox > div > div > div {
+            background-color: #2d3748 !important;
+            color: #e2e8f0 !important;
         }
     </style>
 """, unsafe_allow_html=True)
@@ -171,132 +183,131 @@ def main():
 
     # Header
     st.title("🌀 Felix Framework Monitor")
-    st.markdown("""
-    ### Real-time Monitoring & Visualization Interface
+    st.markdown("Real-time monitoring dashboard for Felix AI Framework | **Read-Only Interface**")
 
-    Welcome to the Felix Framework monitoring dashboard. This interface provides read-only access
-    to system metrics, agent activity, and performance analytics.
-    """)
+    st.divider()
 
-    # System check
-    col1, col2, col3 = st.columns(3)
+    # Live System Status
+    st.subheader("📊 System Status")
+
+    col1, col2, col3, col4 = st.columns(4)
 
     with col1:
-        st.info("""
-        📊 **Monitor Mode**
-
-        This GUI operates in read-only mode, monitoring shared databases without interfering
-        with the control interface.
-        """)
-
-    with col2:
-        st.success("""
-        🔄 **Real-time Updates**
-
-        View live metrics, agent activities, and system performance as they happen.
-        """)
-
-    with col3:
-        st.warning("""
-        🎛️ **Control Interface**
-
-        Use the tkinter GUI to start/stop Felix, spawn agents, and modify settings.
-        """)
-
-    st.divider()
-
-    # Quick Start Guide
-    with st.expander("🚀 Quick Start Guide", expanded=True):
-        st.markdown("""
-        ### Getting Started
-
-        1. **Start Felix System**: Launch the tkinter GUI and start the Felix system
-        2. **Navigate Pages**: Use the sidebar to access different monitoring views:
-           - 🏠 **Dashboard**: System overview and real-time metrics
-           - ⚙️ **Configuration**: View and export system configuration
-           - 🧪 **Testing**: Analyze workflow results and test outcomes
-           - 📊 **Benchmarking**: Performance benchmarks and hypothesis validation
-
-        ### Two-GUI Architecture
-
-        The Felix Framework uses a dual-GUI approach:
-
-        | tkinter GUI (Control) | Streamlit GUI (Monitor) |
-        |----------------------|------------------------|
-        | Start/Stop System | Visualize Metrics |
-        | Spawn Agents | Analyze Performance |
-        | Modify Settings | Run Benchmarks |
-        | Execute Workflows | Export Reports |
-
-        Both interfaces share the same databases, allowing seamless monitoring while maintaining
-        operational separation.
-        """)
-
-    # Database Status Check
-    st.divider()
-    st.subheader("📁 Database Status")
-
-    # Check for database files
-    db_files = {
-        "felix_knowledge.db": "Knowledge Store",
-        "felix_memory.db": "Task Memory",
-        "felix_task_memory.db": "Workflow Memory"
-    }
-
-    db_cols = st.columns(len(db_files))
-
-    for idx, (db_file, db_name) in enumerate(db_files.items()):
-        with db_cols[idx]:
-            if Path(db_file).exists():
-                size_mb = Path(db_file).stat().st_size / (1024 * 1024)
-                st.metric(
-                    label=db_name,
-                    value="Connected",
-                    delta=f"{size_mb:.2f} MB",
-                    delta_color="normal"
-                )
-            else:
-                st.metric(
-                    label=db_name,
-                    value="Not Found",
-                    delta="No database",
-                    delta_color="off"
-                )
-
-    # Navigation hint
-    st.divider()
-    st.info("""
-    👈 **Use the sidebar to navigate to different monitoring views**
-
-    Each page provides specialized tools for monitoring and analyzing different aspects
-    of the Felix Framework.
-    """)
-
-    # Footer
-    st.divider()
-    col1, col2 = st.columns([3, 1])
-
-    with col1:
-        st.caption("""
-        Felix Framework Monitor v3.0.0 | Read-Only Monitoring Interface
-
-        This interface complements the tkinter control GUI by providing advanced visualization
-        and analytics capabilities.
-        """)
-
-    with col2:
-        # Check system status
+        # Felix system status
         try:
             from backend.system_monitor import SystemMonitor
             monitor = SystemMonitor()
             is_running = monitor.check_felix_running()
 
             if is_running:
-                st.success("🟢 Felix System Running")
+                st.metric("Felix System", "🟢 Running", delta="Active")
             else:
-                st.error("🔴 Felix System Stopped")
+                st.metric("Felix System", "🔴 Stopped", delta="Inactive", delta_color="inverse")
         except:
-            st.warning("⚠️ Status Unknown")
+            st.metric("Felix System", "⚠️ Unknown", delta="Check Connection")
+
+    with col2:
+        # Database connection status
+        db_files = ["felix_knowledge.db", "felix_memory.db", "felix_task_memory.db",
+                    "felix_workflow_history.db", "felix_agent_performance.db", "felix_system_actions.db"]
+        connected = sum(1 for db in db_files if Path(db).exists())
+        total = len(db_files)
+
+        if connected == total:
+            st.metric("Databases", f"{connected}/{total}", delta="All Connected")
+        else:
+            st.metric("Databases", f"{connected}/{total}", delta=f"{total-connected} Missing", delta_color="inverse")
+
+    with col3:
+        # Active agents (from database if available)
+        try:
+            import sqlite3
+            if Path("felix_knowledge.db").exists():
+                conn = sqlite3.connect("felix_knowledge.db")
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(DISTINCT agent_id) FROM knowledge")
+                agent_count = cursor.fetchone()[0]
+                conn.close()
+                st.metric("Agents", agent_count, delta="Recorded")
+            else:
+                st.metric("Agents", "N/A", delta="No Data")
+        except:
+            st.metric("Agents", "N/A", delta="DB Error")
+
+    with col4:
+        # Pending approvals (from system actions DB)
+        try:
+            if Path("felix_system_actions.db").exists():
+                conn = sqlite3.connect("felix_system_actions.db")
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM command_executions WHERE executed = 0 AND approved_at IS NULL")
+                pending = cursor.fetchone()[0]
+                conn.close()
+
+                if pending > 0:
+                    st.metric("Pending Approvals", pending, delta="Needs Attention", delta_color="inverse")
+                else:
+                    st.metric("Pending Approvals", 0, delta="All Clear")
+            else:
+                st.metric("Pending Approvals", "N/A", delta="No Data")
+        except:
+            st.metric("Pending Approvals", "N/A", delta="DB Error")
+
+    st.divider()
+
+    # Quick navigation hint
+    st.info("👈 **Use the sidebar to navigate** | View Dashboard, Testing, Benchmarking, and more")
+
+    # Quick Start Guide (collapsed by default)
+    with st.expander("🚀 Quick Start Guide"):
+        st.markdown("""
+        ### Navigation
+
+        - **Dashboard**: System overview and real-time agent monitoring
+        - **Configuration**: View and export system settings
+        - **Testing**: Analyze workflow results
+        - **Benchmarking**: Validate hypothesis performance
+        - **System Monitor**: View command execution and approvals
+        - **Advanced Analytics**: Strategic insights and performance analytics
+
+        ### Control vs Monitor
+
+        **This interface is read-only**. Use the tkinter GUI for system control (start/stop, spawn agents, approve commands).
+        """)
+
+    # Database Details (collapsed)
+    with st.expander("📁 Database Details"):
+        db_info = {
+            "felix_knowledge.db": "Agent knowledge and outputs",
+            "felix_memory.db": "Task memory and patterns",
+            "felix_task_memory.db": "Workflow memory",
+            "felix_workflow_history.db": "Workflow execution history",
+            "felix_agent_performance.db": "Agent performance metrics",
+            "felix_system_actions.db": "System command execution logs"
+        }
+
+        for db_file, description in db_info.items():
+            col1, col2, col3 = st.columns([2, 1, 2])
+
+            with col1:
+                if Path(db_file).exists():
+                    st.markdown(f"🟢 **{db_file}**")
+                else:
+                    st.markdown(f"🔴 **{db_file}**")
+
+            with col2:
+                if Path(db_file).exists():
+                    size_mb = Path(db_file).stat().st_size / (1024 * 1024)
+                    st.markdown(f"`{size_mb:.2f} MB`")
+                else:
+                    st.markdown("`Not Found`")
+
+            with col3:
+                st.markdown(f"*{description}*")
+
+    # Footer
+    st.divider()
+    st.caption("Felix Framework Monitor v3.0.0 | Read-Only Monitoring Interface")
 
 if __name__ == "__main__":
     main()

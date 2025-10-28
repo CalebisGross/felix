@@ -34,7 +34,8 @@ class DatabaseReader:
             "memory": os.path.join(db_dir, "felix_memory.db"),
             "task_memory": os.path.join(db_dir, "felix_task_memory.db"),
             "workflow_history": os.path.join(db_dir, "felix_workflow_history.db"),
-            "live_agents": os.path.join(db_dir, "felix_live_agents.db")
+            "live_agents": os.path.join(db_dir, "felix_live_agents.db"),
+            "system_actions": os.path.join(db_dir, "felix_system_actions.db")
         }
 
     def _read_query(self, db_name: str, query: str) -> Optional[pd.DataFrame]:

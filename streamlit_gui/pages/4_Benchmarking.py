@@ -170,6 +170,8 @@ def main():
         - Measures latency reduction from context compression
         """)
 
+    st.divider()
+
     # Run Tests
     if st.button("🚀 Run Validation Tests", type="primary"):
         with st.spinner(f"Running {hypothesis} validation tests..."):
@@ -287,7 +289,6 @@ def main():
             h3_data['h3_results'] = results['h3_results']
         display_hypothesis_results(h3_data, "H3", 25.0)
 
-    # Export Results
     st.divider()
     st.subheader("Export Results")
 

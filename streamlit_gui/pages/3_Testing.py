@@ -219,21 +219,14 @@ def main():
     monitor = get_monitor()
     db_reader = get_db_reader()
 
-    # Create tabs
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "📊 Workflow Results",
-        "📈 Performance Analysis",
-        "🔍 Test Details",
-        "📝 Reports"
+    # Create simplified 2-tab layout
+    tab1, tab2 = st.tabs([
+        "📊 Testing",
+        "📈 Benchmarking & Reports"
     ])
 
     with tab1:
         st.subheader("Workflow Execution Results")
-
-        st.info("""
-        **What this shows**: Historical results from workflows executed through the tkinter GUI or command line.
-        Each workflow represents a complete task processed by Felix's multi-agent system.
-        """)
 
         # Get workflow data
         workflows = monitor.get_workflow_results(limit=50)
@@ -242,7 +235,7 @@ def main():
             # Analysis summary
             analysis = analyze_workflow_results(workflows)
 
-            # Display metrics with enhanced layout
+            # Display metrics - simplified, no documentation expanders
             st.markdown("### Key Metrics")
 
             col1, col2, col3, col4 = st.columns(4)
@@ -250,56 +243,31 @@ def main():
             with col1:
                 st.metric(
                     "Total Workflows",
-                    analysis['total_workflows'],
-                    help="Number of complete workflow executions recorded in database"
+                    analysis['total_workflows']
                 )
-                with st.expander("ℹ️ About Total Workflows"):
-                    st.markdown("""
-                    **Total Workflows** counts every complete task execution that has been
-                    processed by Felix's multi-agent system and stored in the database.
-                    """)
 
             with col2:
                 st.metric(
                     "Success Rate",
-                    f"{analysis['success_rate']:.1f}%",
-                    help="Percentage of workflows that completed successfully without errors"
+                    f"{analysis['success_rate']:.1f}%"
                 )
-                with st.expander("ℹ️ About Success Rate"):
-                    st.markdown("""
-                    **Success Rate** measures the percentage of workflows that completed
-                    without errors. High success rates (>90%) indicate stable system performance.
-                    """)
 
             with col3:
                 st.metric(
-                    "Avg Agents/Workflow",
-                    f"{analysis['avg_agents']:.1f}",
-                    help="Average number of agents spawned per workflow"
+                    "Avg Agents",
+                    f"{analysis['avg_agents']:.1f}"
                 )
-                with st.expander("ℹ️ About Avg Agents"):
-                    st.markdown("""
-                    **Avg Agents per Workflow** shows how many agents (Research, Analysis,
-                    Critic, etc.) were spawned on average. Typical range: 3-8 agents depending
-                    on task complexity.
-                    """)
 
             with col4:
                 duration_str = f"{analysis['avg_duration']:.1f}s" if analysis['avg_duration'] > 0 else "N/A"
                 st.metric(
                     "Avg Duration",
-                    duration_str,
-                    help="Average time from workflow start to completion"
+                    duration_str
                 )
-                with st.expander("ℹ️ About Avg Duration"):
-                    st.markdown("""
-                    **Avg Duration** measures the average execution time from workflow start
-                    to completion. Note: Only available if timestamp data is recorded.
-                    """)
 
-            # Common patterns
+            # Common patterns - minimal display
             if analysis['common_patterns']:
-                st.info(f"Common patterns: {', '.join(analysis['common_patterns'])}")
+                st.caption(f"Common patterns: {', '.join(analysis['common_patterns'])}")
 
             st.divider()
 
@@ -346,6 +314,81 @@ def main():
                         display_df['task'] = display_df['task'].apply(format_task)
 
                     st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+            # Test Details Section
+            st.divider()
+            st.subheader("Test Execution Details")
+
+            # Test case selector
+            workflow_tasks = [w['task'] for w in workflows] if workflows else []
+
+            if workflow_tasks:
+                selected_task = st.selectbox(
+                    "Select workflow to analyze",
+                    options=workflow_tasks[:20],  # Limit to recent 20
+                    format_func=lambda x: x[:60] + '...' if len(x) > 60 else x
+                )
+
+                # Find selected workflow
+                selected_workflow = next(
+                    (w for w in workflows if w['task'] == selected_task),
+                    None
+                )
+
+                if selected_workflow:
+                    st.markdown("### Workflow Details")
+
+                    # Display workflow information
+                    col1, col2 = st.columns(2)
+
+                    with col1:
+                        # Ensure UTF-8 safe display of task text
+                        task_text = selected_workflow.get('task', 'N/A')
+                        if isinstance(task_text, bytes):
+                            task_text = task_text.decode('utf-8', errors='replace')
+                        st.markdown(f"**Task:** {task_text}")
+                        st.markdown("**Status:** " + ('✅ Success' if selected_workflow.get('success') else '❌ Failed'))
+                        st.markdown("**Agent Count:** " + str(selected_workflow.get('agent_count', 0)))
+
+                    with col2:
+                        timestamp = selected_workflow.get('timestamp', '')
+                        if timestamp:
+                            try:
+                                ts = pd.to_datetime(timestamp, unit='s')
+                                st.markdown("**Timestamp:** " + ts.strftime('%Y-%m-%d %H:%M:%S'))
+                            except:
+                                st.markdown("**Timestamp:** " + str(timestamp))
+
+                    # Display synthesis if available
+                    if selected_workflow.get('final_synthesis'):
+                        st.subheader("Final Synthesis")
+                        synthesis_text = selected_workflow['final_synthesis']
+                        # Ensure UTF-8 safe display
+                        if isinstance(synthesis_text, bytes):
+                            synthesis_text = synthesis_text.decode('utf-8', errors='replace')
+                        st.text_area(
+                            "Synthesis Output",
+                            synthesis_text,
+                            height=200,
+                            disabled=True
+                        )
+
+                    # Pattern analysis
+                    if selected_workflow.get('pattern'):
+                        st.subheader("Pattern Analysis")
+                        st.json(selected_workflow.get('pattern'))
+
+                    st.divider()
+                    st.subheader("Related Knowledge Entries")
+
+                    # Query for related entries (simplified - in production would filter by workflow ID)
+                    recent_knowledge = db_reader.get_knowledge_entries(limit=10)
+                    if not recent_knowledge.empty:
+                        st.dataframe(
+                            recent_knowledge[['agent_id', 'domain', 'confidence', 'content_preview']],
+                            use_container_width=True,
+                            hide_index=True
+                        )
 
         else:
             st.info("No workflow results available. Run workflows from the tkinter GUI to see results here.")
@@ -446,166 +489,36 @@ def main():
         else:
             st.info("No performance data available yet.")
 
-    with tab3:
-        st.subheader("Test Execution Details")
-
-        # Test case selector
-        workflow_tasks = [w['task'] for w in workflows] if workflows else []
-
-        if workflow_tasks:
-            selected_task = st.selectbox(
-                "Select workflow to analyze",
-                options=workflow_tasks[:20],  # Limit to recent 20
-                format_func=lambda x: x[:60] + '...' if len(x) > 60 else x
-            )
-
-            # Find selected workflow
-            selected_workflow = next(
-                (w for w in workflows if w['task'] == selected_task),
-                None
-            )
-
-            if selected_workflow:
-                st.markdown("### Workflow Details")
-
-                # Display workflow information
-                col1, col2 = st.columns(2)
-
-                with col1:
-                    # Ensure UTF-8 safe display of task text
-                    task_text = selected_workflow.get('task', 'N/A')
-                    if isinstance(task_text, bytes):
-                        task_text = task_text.decode('utf-8', errors='replace')
-                    st.markdown(f"**Task:** {task_text}")
-                    st.markdown("**Status:** " + ('✅ Success' if selected_workflow.get('success') else '❌ Failed'))
-                    st.markdown("**Agent Count:** " + str(selected_workflow.get('agent_count', 0)))
-
-                with col2:
-                    timestamp = selected_workflow.get('timestamp', '')
-                    if timestamp:
-                        try:
-                            ts = pd.to_datetime(timestamp, unit='s')
-                            st.markdown("**Timestamp:** " + ts.strftime('%Y-%m-%d %H:%M:%S'))
-                        except:
-                            st.markdown("**Timestamp:** " + str(timestamp))
-
-                # Display synthesis if available
-                if selected_workflow.get('final_synthesis'):
-                    st.markdown("### Final Synthesis")
-                    synthesis_text = selected_workflow['final_synthesis']
-                    # Ensure UTF-8 safe display
-                    if isinstance(synthesis_text, bytes):
-                        synthesis_text = synthesis_text.decode('utf-8', errors='replace')
-                    st.text_area(
-                        "Synthesis Output",
-                        synthesis_text,
-                        height=200,
-                        disabled=True
-                    )
-
-                # Pattern analysis
-                if selected_workflow.get('pattern'):
-                    st.markdown("### Pattern Analysis")
-                    st.json(selected_workflow.get('pattern'))
-
-                # Related knowledge entries
-                st.markdown("### Related Knowledge Entries")
-
-                # Query for related entries (simplified - in production would filter by workflow ID)
-                recent_knowledge = db_reader.get_knowledge_entries(limit=10)
-                if not recent_knowledge.empty:
-                    st.dataframe(
-                        recent_knowledge[['agent_id', 'domain', 'confidence', 'content_preview']],
-                        use_container_width=True,
-                        hide_index=True
-                    )
-
-        else:
-            st.info("No workflows available for detailed analysis.")
-
-    with tab4:
-        st.subheader("Test Reports")
-
-        # Report Types Explained - prominently displayed at top
-        with st.expander("ℹ️ **Report Types Explained** - Click to learn more", expanded=True):
-            st.markdown("""
-            ### Report Types
-
-            Choose the type of report that best fits your needs:
-
-            - **Summary**: High-level overview with key metrics and trends. Best for quick status checks.
-            - **Detailed**: Complete breakdown of all workflow executions with timestamps. Use for thorough analysis.
-            - **Performance**: Focus on execution times, resource usage, and bottlenecks. Ideal for optimization.
-            - **Confidence**: Agent confidence scores and progression analysis. Useful for quality assessment.
-
-            ### Time Ranges
-
-            - **Last Hour**: Recent executions for immediate monitoring
-            - **Last 24 Hours**: Daily performance tracking
-            - **Last Week**: Weekly trends and patterns
-            - **All Time**: Complete historical analysis
-
-            ### Export Options
-
-            Reports can be exported as JSON, CSV, or HTML for further analysis or sharing.
-            """)
-
+        # Benchmarking Section
         st.divider()
+        st.subheader("Benchmarking & Reports")
 
-        # Report generation options with better layout
-        st.markdown("### Report Configuration")
-
-        col1, col2 = st.columns(2)
+        # Simplified report generation - single button with format dropdown
+        col1, col2 = st.columns([2, 1])
 
         with col1:
-            st.markdown("#### Content Settings")
-
             report_type = st.selectbox(
                 "Report Type",
-                options=["Summary", "Detailed", "Performance", "Confidence"],
-                help="Choose the level of detail and focus area for the report",
-                key="report_type_selector"
-            )
-
-            time_range = st.selectbox(
-                "Time Range",
-                options=["Last Hour", "Last 24 Hours", "Last Week", "All Time"],
-                help="Filter workflows by execution time",
-                key="time_range_selector"
+                options=["Summary", "Detailed", "Performance", "Confidence"]
             )
 
         with col2:
-            st.markdown("#### Display Options")
+            generate_report = st.button("Generate Report", use_container_width=True)
 
-            include_charts = st.checkbox(
-                "Include Charts",
-                value=True,
-                help="Add visualizations to the report (recommended for better insights)",
-                key="include_charts_checkbox"
-            )
-
-            include_raw_data = st.checkbox(
-                "Include Raw Data",
-                value=False,
-                help="Include raw database entries (increases report size significantly)",
-                key="include_raw_data_checkbox"
-            )
-
-        st.divider()
-
-        if st.button("Generate Report"):
+        if generate_report:
             st.markdown("### Test Execution Report")
 
             # Report metadata
             st.markdown(f"""
             **Report Type:** {report_type}
-            **Time Range:** {time_range}
             **Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             """)
 
             st.divider()
 
             # Generate report content based on type
+            workflows = monitor.get_workflow_results(limit=50)
+
             if report_type == "Summary":
                 # Summary report
                 st.markdown("#### Executive Summary")
@@ -620,10 +533,9 @@ def main():
                     - **Common Task Patterns:** {', '.join(analysis['common_patterns']) if analysis['common_patterns'] else 'None identified'}
                     """)
 
-                    if include_charts:
-                        # Include timeline chart
-                        timeline_fig = create_workflow_timeline(workflows[:10])
-                        st.plotly_chart(timeline_fig, use_container_width=True)
+                    # Include timeline chart
+                    timeline_fig = create_workflow_timeline(workflows[:10])
+                    st.plotly_chart(timeline_fig, use_container_width=True)
 
             elif report_type == "Performance":
                 # Performance report
@@ -645,15 +557,14 @@ def main():
                     - **Best Performing Agent:** {agent_metrics.iloc[0]['agent_id'] if not agent_metrics.empty else 'N/A'}
                     """)
 
-                    if include_charts:
-                        # Performance scatter plot
-                        fig = px.scatter(
-                            agent_metrics,
-                            x='output_count',
-                            y='avg_confidence',
-                            title='Agent Performance Distribution'
-                        )
-                        st.plotly_chart(fig, use_container_width=True)
+                    # Performance scatter plot
+                    fig = px.scatter(
+                        agent_metrics,
+                        x='output_count',
+                        y='avg_confidence',
+                        title='Agent Performance Distribution'
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
 
             elif report_type == "Confidence":
                 # Confidence analysis report
@@ -666,9 +577,8 @@ def main():
                     st.markdown("##### Confidence Statistics")
                     st.dataframe(confidence_stats, width='content')
 
-                    if include_charts:
-                        conf_fig = create_confidence_distribution_chart(knowledge_df)
-                        st.plotly_chart(conf_fig, use_container_width=True)
+                    conf_fig = create_confidence_distribution_chart(knowledge_df)
+                    st.plotly_chart(conf_fig, use_container_width=True)
 
             else:
                 # Detailed report
@@ -681,45 +591,46 @@ def main():
 
             # Export options
             st.divider()
-            st.markdown("### Export Options")
+            st.markdown("### Export Report")
 
             col1, col2, col3 = st.columns(3)
 
             with col1:
-                if st.button("📥 Export as JSON"):
-                    report_data = {
-                        'type': report_type,
-                        'time_range': time_range,
-                        'generated': datetime.now().isoformat(),
-                        'workflows': workflows[:20] if workflows else [],
-                        'analysis': analyze_workflow_results(workflows) if workflows else {}
-                    }
+                if st.button("Export as JSON", key="export_json"):
+                    if workflows:
+                        report_data = {
+                            'type': report_type,
+                            'generated': datetime.now().isoformat(),
+                            'workflows': workflows[:20],
+                            'analysis': analyze_workflow_results(workflows)
+                        }
 
-                    # Ensure UTF-8 encoding for JSON export
-                    st.download_button(
-                        "Download JSON Report",
-                        data=json.dumps(report_data, indent=2, default=str, ensure_ascii=False),
-                        file_name=f"felix_test_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                        mime="application/json;charset=utf-8"
-                    )
+                        # Ensure UTF-8 encoding for JSON export
+                        st.download_button(
+                            "Download JSON",
+                            data=json.dumps(report_data, indent=2, default=str, ensure_ascii=False),
+                            file_name=f"felix_test_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                            mime="application/json;charset=utf-8",
+                            key="download_json"
+                        )
 
             with col2:
-                if st.button("📥 Export as CSV"):
+                if st.button("Export as CSV", key="export_csv"):
                     if workflows:
                         df = pd.DataFrame(workflows)
                         # Ensure UTF-8 encoding for CSV export
                         csv = df.to_csv(index=False, encoding='utf-8-sig')
 
                         st.download_button(
-                            "Download CSV Report",
+                            "Download CSV",
                             data=csv,
                             file_name=f"felix_test_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                            mime="text/csv;charset=utf-8"
+                            mime="text/csv;charset=utf-8",
+                            key="download_csv"
                         )
 
             with col3:
-                if st.button("📥 Export as HTML"):
-                    st.info("HTML export coming soon")
+                st.button("Export as HTML (coming soon)", disabled=True)
 
     # Status indicator
     st.divider()

@@ -341,236 +341,209 @@ def main():
         st.warning("⚠️ No configuration files found. Using default Felix parameters.")
         config_sources = {"<defaults>": "Default Felix Configuration"}
 
-    # Create tabs
-    tab1, tab2, tab3 = st.tabs(["📋 View Config", "📊 Compare", "💾 Export"])
+    # SECTION 1: Current Configuration (Always visible)
+    st.subheader("📋 Current Configuration")
 
-    with tab1:
-        st.subheader("Current Configuration")
+    # Select config source
+    selected_source = st.selectbox(
+        "Configuration Source",
+        options=list(config_sources.keys()),
+        format_func=lambda x: config_sources[x],
+        key="config_source_selector"
+    )
 
-        # Select config source
-        selected_source = st.selectbox(
-            "Configuration Source",
-            options=list(config_sources.keys()),
-            format_func=lambda x: config_sources[x],
-            key="config_source_selector"
-        )
+    # Load configuration
+    config = load_config_file(selected_source)
 
-        # Load configuration
-        config = load_config_file(selected_source)
+    # Store in session state for reference
+    if 'current_config' not in st.session_state or st.session_state.get('last_source') != selected_source:
+        st.session_state['current_config'] = config
+        st.session_state['last_source'] = selected_source
 
-        # Store in session state for reference
-        if 'current_config' not in st.session_state or st.session_state.get('last_source') != selected_source:
-            st.session_state['current_config'] = config
-            st.session_state['last_source'] = selected_source
+    if config:
+        # Display configuration sections in organized layout
+        col1, col2 = st.columns(2)
 
-        if config:
-            # Display configuration sections in organized layout
-            col1, col2 = st.columns(2)
+        with col1:
+            # Helix Geometry
+            st.markdown("### 🌀 Helix Geometry")
+            helix_config = {
+                'top_radius': config.get('helix_top_radius', config.get('helix', {}).get('top_radius', 3.0)),
+                'bottom_radius': config.get('helix_bottom_radius', config.get('helix', {}).get('bottom_radius', 0.5)),
+                'height': config.get('helix_height', config.get('helix', {}).get('height', 8.0)),
+                'turns': config.get('helix_turns', config.get('helix', {}).get('turns', 2))
+            }
 
-            with col1:
-                # Helix Geometry
-                st.markdown("### 🌀 Helix Geometry")
-                helix_config = {
-                    'top_radius': config.get('helix_top_radius', config.get('helix', {}).get('top_radius', 3.0)),
-                    'bottom_radius': config.get('helix_bottom_radius', config.get('helix', {}).get('bottom_radius', 0.5)),
-                    'height': config.get('helix_height', config.get('helix', {}).get('height', 8.0)),
-                    'turns': config.get('helix_turns', config.get('helix', {}).get('turns', 2))
-                }
+            hcol1, hcol2 = st.columns(2)
+            with hcol1:
+                st.metric("Top Radius", f"{helix_config['top_radius']:.1f}", help="Wide exploration phase breadth")
+                st.metric("Height", f"{helix_config['height']:.1f}", help="Total progression depth")
+            with hcol2:
+                st.metric("Bottom Radius", f"{helix_config['bottom_radius']:.1f}", help="Narrow synthesis focus")
+                st.metric("Turns", int(helix_config['turns']), help="Spiral complexity")
 
-                hcol1, hcol2 = st.columns(2)
-                with hcol1:
-                    st.metric("Top Radius", f"{helix_config['top_radius']:.1f}", help="Wide exploration phase breadth")
-                    st.metric("Height", f"{helix_config['height']:.1f}", help="Total progression depth")
-                with hcol2:
-                    st.metric("Bottom Radius", f"{helix_config['bottom_radius']:.1f}", help="Narrow synthesis focus")
-                    st.metric("Turns", int(helix_config['turns']), help="Spiral complexity")
+            # Agent Configuration
+            st.markdown("### 🤖 Agent Configuration")
+            acol1, acol2 = st.columns(2)
+            with acol1:
+                max_agents = config.get('max_agents', 25)
+                st.metric("Max Agents", max_agents, help="Team size limit")
+                temp_top = config.get('temperature_top', config.get('temperature', {}).get('top', 1.0))
+                st.metric("Temp (Exploration)", f"{temp_top:.2f}", help="Temperature at helix top")
+            with acol2:
+                token_budget = config.get('base_token_budget', 2048)
+                st.metric("Base Token Budget", token_budget, help="Per-agent token allocation")
+                temp_bottom = config.get('temperature_bottom', config.get('temperature', {}).get('bottom', 0.2))
+                st.metric("Temp (Synthesis)", f"{temp_bottom:.2f}", help="Temperature at helix bottom")
 
-                # Agent Configuration
-                st.markdown("### 🤖 Agent Configuration")
-                acol1, acol2 = st.columns(2)
-                with acol1:
-                    max_agents = config.get('max_agents', 25)
-                    st.metric("Max Agents", max_agents, help="Team size limit")
-                    temp_top = config.get('temperature_top', config.get('temperature', {}).get('top', 1.0))
-                    st.metric("Temp (Exploration)", f"{temp_top:.2f}", help="Temperature at helix top")
-                with acol2:
-                    token_budget = config.get('base_token_budget', 2048)
-                    st.metric("Base Token Budget", token_budget, help="Per-agent token allocation")
-                    temp_bottom = config.get('temperature_bottom', config.get('temperature', {}).get('bottom', 0.2))
-                    st.metric("Temp (Synthesis)", f"{temp_bottom:.2f}", help="Temperature at helix bottom")
+            # Memory & Compression
+            st.markdown("### 💾 Memory & Compression")
+            mcol1, mcol2 = st.columns(2)
+            with mcol1:
+                comp_ratio = config.get('compression_ratio', 0.3)
+                st.metric("Compression Ratio", f"{comp_ratio:.1f}", help="Context compression ratio")
+                comp_enabled = config.get('enable_compression', True)
+                st.metric("Compression", "Enabled" if comp_enabled else "Disabled")
+            with mcol2:
+                comp_strategy = config.get('compression_strategy', 'abstractive')
+                st.metric("Strategy", comp_strategy.title(), help="Compression approach")
+                comp_target = config.get('compression_target_length', 100)
+                st.metric("Target Length", comp_target, help="Compressed context length")
 
-                # Memory & Compression
-                st.markdown("### 💾 Memory & Compression")
-                mcol1, mcol2 = st.columns(2)
-                with mcol1:
-                    comp_ratio = config.get('compression_ratio', 0.3)
-                    st.metric("Compression Ratio", f"{comp_ratio:.1f}", help="Context compression ratio")
-                    comp_enabled = config.get('enable_compression', True)
-                    st.metric("Compression", "Enabled" if comp_enabled else "Disabled")
-                with mcol2:
-                    comp_strategy = config.get('compression_strategy', 'abstractive')
-                    st.metric("Strategy", comp_strategy.title(), help="Compression approach")
-                    comp_target = config.get('compression_target_length', 100)
-                    st.metric("Target Length", comp_target, help="Compressed context length")
+        with col2:
+            # LM Studio Connection
+            st.markdown("### 🔌 LM Studio Connection")
+            lcol1, lcol2 = st.columns(2)
+            with lcol1:
+                lm_host = config.get('lm_host', '127.0.0.1')
+                st.metric("Host", lm_host)
+                model_name = config.get('model', 'default')
+                st.metric("Model", model_name)
+            with lcol2:
+                lm_port = config.get('lm_port', 1234)
+                st.metric("Port", lm_port)
+                streaming = config.get('enable_streaming', True)
+                st.metric("Streaming", "Enabled" if streaming else "Disabled")
 
-            with col2:
-                # LM Studio Connection
-                st.markdown("### 🔌 LM Studio Connection")
-                lcol1, lcol2 = st.columns(2)
-                with lcol1:
-                    lm_host = config.get('lm_host', '127.0.0.1')
-                    st.metric("Host", lm_host)
-                    model_name = config.get('model', 'default')
-                    st.metric("Model", model_name)
-                with lcol2:
-                    lm_port = config.get('lm_port', 1234)
-                    st.metric("Port", lm_port)
-                    streaming = config.get('enable_streaming', True)
-                    st.metric("Streaming", "Enabled" if streaming else "Disabled")
+            # Dynamic Spawning
+            st.markdown("### 🔄 Dynamic Spawning")
+            scol1, scol2 = st.columns(2)
+            with scol1:
+                conf_threshold = config.get('confidence_threshold', config.get('spawning', {}).get('confidence_threshold', 0.80))
+                st.metric("Confidence Threshold", f"{conf_threshold:.2f}", help="Trigger for dynamic spawning")
+                spawn_enabled = config.get('enable_dynamic_spawning', True)
+                st.metric("Dynamic Spawning", "Enabled" if spawn_enabled else "Disabled")
+            with scol2:
+                volatility = config.get('volatility_threshold', 0.15)
+                st.metric("Volatility Threshold", f"{volatility:.2f}", help="Confidence variance limit")
+                time_window = config.get('time_window_minutes', 5.0)
+                st.metric("Time Window", f"{time_window:.0f} min", help="Metric aggregation period")
 
-                # Dynamic Spawning
-                st.markdown("### 🔄 Dynamic Spawning")
-                scol1, scol2 = st.columns(2)
-                with scol1:
-                    conf_threshold = config.get('confidence_threshold', config.get('spawning', {}).get('confidence_threshold', 0.80))
-                    st.metric("Confidence Threshold", f"{conf_threshold:.2f}", help="Trigger for dynamic spawning")
-                    spawn_enabled = config.get('enable_dynamic_spawning', True)
-                    st.metric("Dynamic Spawning", "Enabled" if spawn_enabled else "Disabled")
-                with scol2:
-                    volatility = config.get('volatility_threshold', 0.15)
-                    st.metric("Volatility Threshold", f"{volatility:.2f}", help="Confidence variance limit")
-                    time_window = config.get('time_window_minutes', 5.0)
-                    st.metric("Time Window", f"{time_window:.0f} min", help="Metric aggregation period")
-
-                # Web Search Configuration
-                st.markdown("### 🔍 Web Search")
-                wcol1, wcol2 = st.columns(2)
-                with wcol1:
-                    web_enabled = config.get('web_search_enabled', True)
-                    st.metric("Web Search", "Enabled" if web_enabled else "Disabled")
-                    web_max_results = config.get('web_search_max_results', 5)
-                    st.metric("Max Results", web_max_results)
-                with wcol2:
-                    web_provider = config.get('web_search_provider', 'duckduckgo')
-                    st.metric("Provider", web_provider.title())
-                    web_confidence = config.get('web_search_confidence_threshold', 0.7)
-                    st.metric("Min Confidence", f"{web_confidence:.2f}")
-
-            # Web Search Configuration Details
-            st.divider()
-            st.markdown("### 🔍 Web Search Configuration Details")
-
-            wscol1, wscol2 = st.columns(2)
-
-            with wscol1:
-                # Status and max results
-                web_enabled = config.get('web_search_enabled', False)
-                st.metric(
-                    "Status",
-                    "Enabled" if web_enabled else "Disabled",
-                    help="Whether web search is active during workflows"
-                )
-
+            # Web Search Configuration
+            st.markdown("### 🔍 Web Search")
+            wcol1, wcol2 = st.columns(2)
+            with wcol1:
+                web_enabled = config.get('web_search_enabled', True)
+                st.metric("Web Search", "Enabled" if web_enabled else "Disabled")
                 web_max_results = config.get('web_search_max_results', 5)
-                st.metric(
-                    "Max Results per Query",
-                    web_max_results,
-                    help="Maximum search results to retrieve per query"
-                )
-
-                # Blocked domains
-                blocked_domains = config.get('web_search_blocked_domains', '')
-                if blocked_domains:
-                    domain_list = [d.strip() for d in blocked_domains.split('\n') if d.strip()]
-                    st.metric(
-                        "Blocked Domains",
-                        len(domain_list),
-                        help="Number of domains filtered from results"
-                    )
-                    with st.expander("View Blocked Domains"):
-                        for domain in domain_list:
-                            st.text(f"• {domain}")
-                else:
-                    st.metric("Blocked Domains", 0, help="No domains blocked")
-
-            with wscol2:
-                # Provider
+                st.metric("Max Results", web_max_results)
+            with wcol2:
                 web_provider = config.get('web_search_provider', 'duckduckgo')
+                st.metric("Provider", web_provider.title())
+                web_confidence = config.get('web_search_confidence_threshold', 0.7)
+                st.metric("Min Confidence", f"{web_confidence:.2f}")
+
+        # Web Search Configuration Details
+        st.divider()
+        st.subheader("🔍 Web Search Configuration Details")
+
+        wscol1, wscol2 = st.columns(2)
+
+        with wscol1:
+            # Status and max results
+            web_enabled = config.get('web_search_enabled', False)
+            st.metric(
+                "Status",
+                "Enabled" if web_enabled else "Disabled",
+                help="Whether web search is active during workflows"
+            )
+
+            web_max_results = config.get('web_search_max_results', 5)
+            st.metric(
+                "Max Results per Query",
+                web_max_results,
+                help="Maximum search results to retrieve per query"
+            )
+
+            # Blocked domains
+            blocked_domains = config.get('web_search_blocked_domains', '')
+            if blocked_domains:
+                domain_list = [d.strip() for d in blocked_domains.split('\n') if d.strip()]
                 st.metric(
-                    "Search Provider",
-                    web_provider.title(),
-                    help="Search engine backend"
+                    "Blocked Domains",
+                    len(domain_list),
+                    help="Number of domains filtered from results"
                 )
+                with st.expander("View Blocked Domains"):
+                    for domain in domain_list:
+                        st.text(f"• {domain}")
+            else:
+                st.metric("Blocked Domains", 0, help="No domains blocked")
 
-                # Max queries
-                web_max_queries = config.get('web_search_max_queries', 3)
+        with wscol2:
+            # Provider
+            web_provider = config.get('web_search_provider', 'duckduckgo')
+            st.metric(
+                "Search Provider",
+                web_provider.title(),
+                help="Search engine backend"
+            )
+
+            # Max queries
+            web_max_queries = config.get('web_search_max_queries', 3)
+            st.metric(
+                "Max Queries per Workflow",
+                web_max_queries,
+                help="Maximum number of search queries per task"
+            )
+
+            # Confidence threshold
+            web_conf_threshold = config.get('web_search_confidence_threshold', 0.7)
+            st.metric(
+                "Confidence Threshold",
+                f"{web_conf_threshold * 100:.0f}%",
+                help="Minimum confidence to trigger web search"
+            )
+
+        # SearxNG URL if applicable
+        if web_provider.lower() == 'searxng':
+            searxng_url = config.get('searxng_url', '')
+            if searxng_url:
                 st.metric(
-                    "Max Queries per Workflow",
-                    web_max_queries,
-                    help="Maximum number of search queries per task"
+                    "SearxNG Instance URL",
+                    searxng_url,
+                    help="Custom SearxNG server endpoint"
                 )
+            else:
+                st.warning("⚠️ SearxNG selected but no URL configured")
 
-                # Confidence threshold
-                web_conf_threshold = config.get('web_search_confidence_threshold', 0.7)
-                st.metric(
-                    "Confidence Threshold",
-                    f"{web_conf_threshold * 100:.0f}%",
-                    help="Minimum confidence to trigger web search"
-                )
+        # Full configuration in expandable section
+        with st.expander("📄 View Full Configuration"):
+            st.json(config)
 
-            # SearxNG URL if applicable
-            if web_provider.lower() == 'searxng':
-                searxng_url = config.get('searxng_url', '')
-                if searxng_url:
-                    st.metric(
-                        "SearxNG Instance URL",
-                        searxng_url,
-                        help="Custom SearxNG server endpoint"
-                    )
-                else:
-                    st.warning("⚠️ SearxNG selected but no URL configured")
+    else:
+        st.warning(f"Configuration file '{selected_source}' not found or could not be loaded.")
 
-            # Full configuration in expandable section
-            with st.expander("📄 View Full Configuration"):
-                st.json(config)
+    st.divider()
 
-            # Visualization of helix geometry
-            st.divider()
-            st.markdown("### 🎨 Helix Geometry Visualization")
-
-            # Create 3D visualization
-            fig = create_helix_3d_visualization(helix_config)
-            st.plotly_chart(fig, use_container_width=True)
-
-            # Display helix characteristics
-            col1, col2, col3, col4 = st.columns(4)
-
-            with col1:
-                st.metric("Turns", helix_config.get('turns', 2))
-            with col2:
-                st.metric("Height", f"{helix_config.get('height', 8.0)} units")
-            with col3:
-                ratio = helix_config.get('top_radius', 3.0) / helix_config.get('bottom_radius', 0.5)
-                st.metric("Taper Ratio", f"{ratio:.2f}:1")
-            with col4:
-                volume = np.pi * helix_config.get('height', 8.0) * (
-                    helix_config.get('top_radius', 3.0)**2 +
-                    helix_config.get('bottom_radius', 0.5)**2 +
-                    helix_config.get('top_radius', 3.0) * helix_config.get('bottom_radius', 0.5)
-                ) / 3
-                st.metric("Volume", f"{volume:.2f} cubic units")
-
-        else:
-            st.warning(f"Configuration file '{selected_source}' not found or could not be loaded.")
-
-    with tab2:
-        st.subheader("Configuration Comparison")
+    # SECTION 2: Configuration Comparison (Collapsible)
+    with st.expander("📊 Configuration Comparison", expanded=False):
         st.info("Compare two configuration files to identify differences.")
 
         col1, col2 = st.columns(2)
 
         with col1:
-            st.markdown("### Configuration A")
+            st.markdown("**Configuration A**")
             config_a_source = st.selectbox(
                 "Select first config",
                 options=list(config_sources.keys()),
@@ -585,7 +558,7 @@ def main():
                 st.error("Could not load Configuration A")
 
         with col2:
-            st.markdown("### Configuration B")
+            st.markdown("**Configuration B**")
             config_b_source = st.selectbox(
                 "Select second config",
                 options=list(config_sources.keys()),
@@ -646,7 +619,10 @@ def main():
             else:
                 st.success("✅ Configurations are identical")
 
-    with tab3:
+    st.divider()
+
+    # SECTION 3: Export Configuration (Collapsible)
+    with st.expander("💾 Export Configuration", expanded=False):
         st.subheader("Export Configuration")
 
         if config:
@@ -676,21 +652,24 @@ def main():
 
             with col3:
                 # Original format
-                if selected_source:
-                    with open(selected_source, 'r') as f:
-                        original_content = f.read()
+                if selected_source and selected_source != "<defaults>":
+                    try:
+                        with open(selected_source, 'r') as f:
+                            original_content = f.read()
 
-                    file_ext = Path(selected_source).suffix
-                    st.download_button(
-                        "📥 Download Original",
-                        data=original_content,
-                        file_name=f"felix_config_original{file_ext}",
-                        mime="text/plain"
-                    )
+                        file_ext = Path(selected_source).suffix
+                        st.download_button(
+                            "📥 Download Original",
+                            data=original_content,
+                            file_name=f"felix_config_original{file_ext}",
+                            mime="text/plain"
+                        )
+                    except Exception as e:
+                        st.warning(f"Could not load original file: {e}")
 
             # Custom export options
             st.divider()
-            st.markdown("### Custom Export Options")
+            st.subheader("Custom Export Options")
 
             # Select sections to export
             sections = list(config.keys())
@@ -732,7 +711,6 @@ def main():
         else:
             st.warning("No configuration loaded to export")
 
-    # Important note about read-only nature
     st.divider()
     st.warning(
         "⚠️ **Read-Only Mode**: Configuration viewing and export only. "
