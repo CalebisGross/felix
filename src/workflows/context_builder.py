@@ -99,7 +99,7 @@ class CollaborativeContextBuilder:
         recent_messages = self.central_post.get_recent_messages(
             limit=message_limit,
             since_time=None,  # Get all messages
-            message_types=[MessageType.STATUS_UPDATE],  # Agents post STATUS_UPDATE messages
+            message_types=[MessageType.STATUS_UPDATE, MessageType.SYSTEM_ACTION_RESULT],  # Include agent outputs AND system command results
             exclude_sender=agent_id  # Don't include own previous messages
         )
 
@@ -114,9 +114,35 @@ class CollaborativeContextBuilder:
         logger.info(f"  Building context history in chronological order...")
         for i, msg in enumerate(reversed(recent_messages), 1):  # Chronological order
             msg_content = msg.content
-            agent_response = msg_content.get("content", "")
-            agent_conf = msg_content.get("confidence", 0.0)
-            sender_type = msg_content.get("agent_type", "unknown")
+
+            # Handle different message types
+            if msg.message_type == MessageType.STATUS_UPDATE:
+                # Agent response
+                agent_response = msg_content.get("content", "")
+                agent_conf = msg_content.get("confidence", 0.0)
+                sender_type = msg_content.get("agent_type", "unknown")
+
+            elif msg.message_type == MessageType.SYSTEM_ACTION_RESULT:
+                # System command result
+                command = msg_content.get("command", "")
+                stdout = msg_content.get("stdout", "")
+                stderr = msg_content.get("stderr", "")
+                success = msg_content.get("success", False)
+                exit_code = msg_content.get("exit_code", -1)
+
+                # Format as readable context entry
+                agent_response = f"System Command Execution:\nCommand: {command}\nSuccess: {success}\nExit Code: {exit_code}"
+                if stdout:
+                    agent_response += f"\nOutput: {stdout}"
+                if stderr:
+                    agent_response += f"\nErrors: {stderr}"
+
+                agent_conf = 1.0  # High confidence for actual command results
+                sender_type = "system_action"
+
+            else:
+                # Unknown message type, skip
+                continue
 
             context_entry = {
                 "agent_id": msg.sender_id,
@@ -222,15 +248,26 @@ class CollaborativeContextBuilder:
             try:
                 import time as time_module
                 from src.memory.knowledge_store import KnowledgeQuery, ConfidenceLevel
+                from src.workflows.truth_assessment import detect_query_type, QueryType
 
-                # Filter by recency (last 1 hour) to avoid old/irrelevant entries
+                # Detect query type to determine appropriate freshness window
                 current_time = time_module.time()
-                one_hour_ago = current_time - 3600
+                query_type = detect_query_type(original_task)
+                freshness_limits = {
+                    QueryType.TIME: 300,           # 5 minutes for time queries
+                    QueryType.DATE: 3600,          # 1 hour for date queries
+                    QueryType.CURRENT_EVENT: 1800, # 30 minutes for current events
+                    QueryType.GENERAL_FACT: 86400, # 24 hours for general facts
+                    QueryType.ANALYSIS: 86400,     # 24 hours for analysis
+                }
+                max_age = freshness_limits.get(query_type, 3600)  # Default to 1 hour
+                time_window_start = current_time - max_age
 
                 logger.info(f"  📝 Query parameters:")
                 logger.info(f"     - Domains: web_search, workflow_task")
                 logger.info(f"     - Min confidence: MEDIUM")
-                logger.info(f"     - Time range: Last 1 hour (from {int(one_hour_ago)} to {int(current_time)})")
+                logger.info(f"     - Query type: {query_type.value} (freshness: {max_age}s / {max_age/60:.1f} min)")
+                logger.info(f"     - Time range: {int(time_window_start)} to {int(current_time)}")
                 logger.info(f"     - Limit: 5 entries")
 
                 # CRITICAL: Retrieve from BOTH web_search and workflow_task domains
@@ -241,7 +278,7 @@ class CollaborativeContextBuilder:
                     KnowledgeQuery(
                         domains=["web_search", "workflow_task"],  # Include web search results!
                         min_confidence=ConfidenceLevel.MEDIUM,
-                        time_range=(one_hour_ago, current_time),  # Only recent entries
+                        time_range=(time_window_start, current_time),  # Dynamic freshness based on query type
                         limit=5  # Increased to allow more web search results
                     )
                 )
@@ -255,7 +292,7 @@ class CollaborativeContextBuilder:
                     logger.warning("  ⚠️ This means either:")
                     logger.warning("     1. Web search hasn't run yet")
                     logger.warning("     2. Web search failed to store knowledge")
-                    logger.warning("     3. Knowledge is older than 1 hour")
+                    logger.warning(f"     3. Knowledge is older than freshness window ({max_age/60:.1f} min)")
                     logger.warning("  ⚠️ Agents will NOT have web search data!")
                 else:
                     # Sort web_search entries first (they're typically most relevant for current queries)

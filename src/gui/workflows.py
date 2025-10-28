@@ -15,6 +15,13 @@ class WorkflowsFrame(ttk.Frame):
         self.theme_manager = theme_manager
         self.last_workflow_result = None  # Store last workflow result for saving
 
+        # Approval polling for workflows
+        self.workflow_running = False
+        self.approval_polling_active = False
+        self.approval_poll_interval = 1000  # Poll every 1 second during workflow
+        self.last_approval_check = set()  # Track already-shown approval IDs
+        self.dialog_open = False  # Track if approval dialog is currently open
+
         # Task input (multi-line text widget)
         ttk.Label(self, text="Task:").pack(pady=(10, 0))
 
@@ -52,6 +59,25 @@ class WorkflowsFrame(ttk.Frame):
             font=("TkDefaultFont", 8)
         ).pack(side=tk.LEFT)
 
+        # Continue from previous workflow
+        continue_frame = ttk.Frame(self)
+        continue_frame.pack(pady=(0, 10), padx=10, fill=tk.X)
+
+        ttk.Label(continue_frame, text="Continue from:").pack(side=tk.LEFT, padx=(0, 5))
+        self.parent_workflow_var = tk.StringVar(value="New Workflow")
+        self.parent_workflow_dropdown = ttk.Combobox(
+            continue_frame,
+            textvariable=self.parent_workflow_var,
+            state="readonly",
+            width=50
+        )
+        self.parent_workflow_dropdown.pack(side=tk.LEFT, padx=(0, 5))
+        self.parent_workflow_dropdown.bind("<<ComboboxSelected>>", self._on_parent_workflow_selected)
+
+        # Refresh button for workflow list
+        self.refresh_workflows_button = ttk.Button(continue_frame, text="Refresh", command=self._refresh_workflow_list)
+        self.refresh_workflows_button.pack(side=tk.LEFT, padx=(0, 5))
+
         # Button frame for Run and Save buttons
         button_frame = ttk.Frame(self)
         button_frame.pack(pady=(0, 10))
@@ -71,12 +97,16 @@ class WorkflowsFrame(ttk.Frame):
         self.progress = ttk.Progressbar(self, mode='determinate', maximum=100)
         self.progress.pack(fill=tk.X, padx=10, pady=(0, 10))
 
-        # Output text
-        self.output_text = tk.Text(self, wrap=tk.WORD, height=20)
-        scrollbar = ttk.Scrollbar(self, command=self.output_text.yview)
-        self.output_text.config(yscrollcommand=scrollbar.set)
-        self.output_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        # Output text with scrollbar (properly contained in frame)
+        output_frame = ttk.Frame(self)
+        output_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+
+        self.output_text = tk.Text(output_frame, wrap=tk.WORD, height=20)
+        output_scrollbar = ttk.Scrollbar(output_frame, command=self.output_text.yview)
+        self.output_text.config(yscrollcommand=output_scrollbar.set)
+
+        self.output_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        output_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
         # Setup logging handler for this output text widget
         self.log_handler = None
@@ -108,10 +138,75 @@ class WorkflowsFrame(ttk.Frame):
     def _enable_features(self):
         """Enable workflow features when system is running."""
         self.run_button.config(state=tk.NORMAL)
+        self._refresh_workflow_list()
 
     def _disable_features(self):
         """Disable workflow features when system is not running."""
         self.run_button.config(state=tk.DISABLED)
+
+    def _refresh_workflow_list(self):
+        """Refresh the list of recent workflows for continuation."""
+        try:
+            from src.memory.workflow_history import WorkflowHistory
+
+            workflow_history = WorkflowHistory()
+            recent_workflows = workflow_history.get_workflow_outputs(
+                status_filter="completed",
+                limit=20,
+                offset=0
+            )
+
+            # Build dropdown options
+            workflow_options = ["New Workflow"]
+            self.workflow_id_map = {}  # Map display strings to workflow IDs
+
+            for wf in recent_workflows:
+                # Truncate task for display
+                task_preview = wf.task_input[:60] + "..." if len(wf.task_input) > 60 else wf.task_input
+                display_text = f"#{wf.workflow_id}: {task_preview} ({wf.confidence:.2f})"
+                workflow_options.append(display_text)
+                self.workflow_id_map[display_text] = wf.workflow_id
+
+            self.parent_workflow_dropdown['values'] = workflow_options
+
+        except Exception as e:
+            logging.error(f"Failed to refresh workflow list: {e}", exc_info=True)
+
+    def _on_parent_workflow_selected(self, event=None):
+        """Handle parent workflow selection."""
+        selected = self.parent_workflow_var.get()
+
+        if selected == "New Workflow":
+            return
+
+        try:
+            from src.memory.workflow_history import WorkflowHistory
+
+            workflow_id = self.workflow_id_map.get(selected)
+            if not workflow_id:
+                return
+
+            workflow_history = WorkflowHistory()
+            parent_wf = workflow_history.get_workflow_by_id(workflow_id)
+
+            if parent_wf:
+                # Show parent info in output
+                self._write_output("=" * 60)
+                self._write_output(f"CONTINUING FROM WORKFLOW #{workflow_id}")
+                self._write_output(f"Parent Task: {parent_wf.task_input}")
+                self._write_output(f"Parent Confidence: {parent_wf.confidence:.2f}")
+                self._write_output(f"Agents Used: {parent_wf.agents_count}")
+                self._write_output("")
+                self._write_output("Parent Synthesis:")
+                synthesis_preview = parent_wf.final_synthesis[:300] + "..." if len(parent_wf.final_synthesis) > 300 else parent_wf.final_synthesis
+                self._write_output(synthesis_preview)
+                self._write_output("=" * 60)
+                self._write_output("")
+                self._write_output("Enter your follow-up question in the task field above.")
+
+        except Exception as e:
+            logging.error(f"Failed to load parent workflow: {e}", exc_info=True)
+            messagebox.showerror("Error", f"Failed to load workflow: {str(e)}")
 
     def _write_output(self, message):
         """Write a message to the output text widget."""
@@ -172,11 +267,17 @@ class WorkflowsFrame(ttk.Frame):
         max_steps_value = self.max_steps_var.get()
         max_steps_override = None if max_steps_value == "Auto" else int(max_steps_value)
 
+        # Get parent workflow ID if continuing
+        parent_workflow_id = None
+        selected = self.parent_workflow_var.get()
+        if selected != "New Workflow" and hasattr(self, 'workflow_id_map'):
+            parent_workflow_id = self.workflow_id_map.get(selected)
+
         self.run_button.config(state=tk.DISABLED)
         self.progress.start()
-        self.thread_manager.start_thread(self._run_pipeline_thread, args=(task_input, max_steps_override))
+        self.thread_manager.start_thread(self._run_pipeline_thread, args=(task_input, max_steps_override, parent_workflow_id))
 
-    def _run_pipeline_thread(self, task_input, max_steps_override=None):
+    def _run_pipeline_thread(self, task_input, max_steps_override=None, parent_workflow_id=None):
         def progress_callback(status, progress_percentage):
             """Callback to update GUI progress from pipeline thread."""
             self.after(0, lambda: self._update_progress(status, progress_percentage))
@@ -186,8 +287,21 @@ class WorkflowsFrame(ttk.Frame):
         # Record start time for tracking
         start_time = datetime.now()
 
+        # Mark workflow as running and start approval polling
+        self.workflow_running = True
+
+        # IMPORTANT: Start polling on main GUI thread using after()
+        logger.info("=== WORKFLOW STARTED: Scheduling approval polling on GUI thread ===")
+        self._write_output("🔍 Approval polling: Starting (will check for approvals every 1s)")
+        self.after(0, self._start_approval_polling)
+
         try:
-            self.after(0, lambda: self._write_output(f"Starting workflow for task: {task_input}"))
+            if parent_workflow_id:
+                self.after(0, lambda: self._write_output(f"Continuing from workflow #{parent_workflow_id}"))
+                self.after(0, lambda: self._write_output(f"Follow-up question: {task_input}"))
+            else:
+                self.after(0, lambda: self._write_output(f"Starting workflow for task: {task_input}"))
+
             if max_steps_override is not None:
                 self.after(0, lambda: self._write_output(f"Max steps override: {max_steps_override}"))
             else:
@@ -200,7 +314,8 @@ class WorkflowsFrame(ttk.Frame):
                 result = self.main_app.felix_system.run_workflow(
                     task_input,
                     progress_callback=progress_callback,
-                    max_steps_override=max_steps_override
+                    max_steps_override=max_steps_override,
+                    parent_workflow_id=parent_workflow_id
                 )
             else:
                 # Felix system not running - cannot run workflow
@@ -279,9 +394,16 @@ class WorkflowsFrame(ttk.Frame):
                 # Automatically save workflow output to database
                 try:
                     workflow_history = WorkflowHistory()
-                    workflow_id = workflow_history.save_workflow_output(result)
+                    # Pass parent_workflow_id if this was a continuation
+                    parent_id = result.get("parent_workflow_id")
+                    workflow_id = workflow_history.save_workflow_output(result, parent_workflow_id=parent_id)
                     if workflow_id:
-                        self.after(0, lambda wid=workflow_id: self._write_output(f"Workflow saved to history (ID: {wid})"))
+                        if parent_id:
+                            self.after(0, lambda wid=workflow_id, pid=parent_id:
+                                      self._write_output(f"Workflow saved to history (ID: {wid}, continuing from #{pid})"))
+                        else:
+                            self.after(0, lambda wid=workflow_id:
+                                      self._write_output(f"Workflow saved to history (ID: {wid})"))
                         logger.info(f"Automatically saved workflow result to database (ID: {workflow_id})")
                     else:
                         self.after(0, lambda: self._write_output("Warning: Failed to save workflow to history"))
@@ -316,6 +438,10 @@ class WorkflowsFrame(ttk.Frame):
             self.after(0, lambda: self._write_output(f"\nERROR: {error_msg}"))
             self.after(0, lambda: messagebox.showerror("Error", f"Failed to run workflow: {error_msg}"))
         finally:
+            # Stop approval polling and mark workflow as not running
+            self.workflow_running = False
+            self._stop_approval_polling()
+
             self.after(0, lambda: self.progress.stop())
             self.after(0, lambda: self.run_button.config(state=tk.NORMAL))
 
@@ -324,8 +450,184 @@ class WorkflowsFrame(ttk.Frame):
         # Update progress bar
         self.progress['value'] = progress_percentage
 
+    def _start_approval_polling(self):
+        """Start polling for pending approvals during workflow execution."""
+        try:
+            logger.info("=== APPROVAL POLLING: START REQUESTED ===")
+            logger.info(f"  Current state: active={self.approval_polling_active}, workflow_running={self.workflow_running}")
+
+            if not self.approval_polling_active:
+                self.approval_polling_active = True
+                self.last_approval_check.clear()  # Clear previous approval tracking
+                logger.info("✓ Approval polling activated, starting poll loop")
+                self._write_output("✓ Approval polling activated")
+                self._poll_for_approvals()
+            else:
+                logger.warning("⚠ Approval polling already active, skipping start")
+                self._write_output("⚠ Approval polling already active")
+        except Exception as e:
+            logger.error(f"❌ Error starting approval polling: {e}", exc_info=True)
+            self._write_output(f"❌ Error starting approval polling: {e}")
+
+    def _stop_approval_polling(self):
+        """Stop polling for pending approvals."""
+        self.approval_polling_active = False
+
+    def _poll_for_approvals(self):
+        """Poll for pending approvals and show dialog if found."""
+        logger.debug(f"POLL CHECK: active={self.approval_polling_active}, workflow_running={self.workflow_running}, dialog_open={self.dialog_open}")
+
+        if not self.approval_polling_active or not self.workflow_running:
+            logger.debug("POLL SKIPPED: Conditions not met")
+            return
+
+        try:
+            # Only poll if no dialog is currently open
+            if not self.dialog_open:
+                # Check for pending approvals
+                if self.main_app and self.main_app.felix_system:
+                    central_post = self.main_app.felix_system.central_post
+                    pending_approvals = central_post.get_pending_actions()
+
+                    logger.debug(f"POLL RESULT: Found {len(pending_approvals)} pending approvals")
+
+                    # Show only the FIRST pending approval (workflow pauses for each)
+                    if pending_approvals:
+                        first_approval = pending_approvals[0]
+                        approval_id = first_approval['approval_id']
+
+                        logger.info(f"📋 Approval detected: {approval_id}")
+                        logger.info(f"   Command: {first_approval.get('command', 'N/A')[:50]}...")
+
+                        # Only show if not already shown
+                        if approval_id not in self.last_approval_check:
+                            self.dialog_open = True  # Mark dialog as open BEFORE scheduling
+                            self.last_approval_check.add(approval_id)
+
+                            logger.info(f"✓ Opening approval dialog for: {approval_id}")
+                            # Write to workflow output so user sees it
+                            cmd_preview = first_approval.get('command', 'N/A')[:60]
+                            self._write_output(f"⏸️  Workflow paused - approval required for: {cmd_preview}")
+                            self._write_output(f"   Opening approval dialog...")
+                            # Show approval dialog on main thread
+                            self.after(0, lambda a=first_approval: self._show_approval_dialog(a))
+                        else:
+                            logger.debug(f"POLL SKIPPED: Approval {approval_id} already shown")
+            else:
+                logger.debug("POLL SKIPPED: Dialog already open")
+
+        except Exception as e:
+            logger.error(f"Error polling for approvals: {e}", exc_info=True)
+            self._write_output(f"❌ Error checking for approvals: {e}")
+
+        # Schedule next poll if still active (but not if dialog is open)
+        if self.approval_polling_active and self.workflow_running and not self.dialog_open:
+            logger.debug(f"POLL SCHEDULED: Next poll in {self.approval_poll_interval}ms")
+            self.after(self.approval_poll_interval, self._poll_for_approvals)
+        else:
+            logger.debug(f"POLL NOT SCHEDULED: active={self.approval_polling_active}, running={self.workflow_running}, dialog_open={self.dialog_open}")
+
+    def _show_approval_dialog(self, approval_request):
+        """Show approval dialog for pending approval request."""
+        from .approvals import ApprovalDialog
+
+        logger.info("=== SHOWING APPROVAL DIALOG ===")
+        logger.info(f"  Approval ID: {approval_request.get('approval_id')}")
+        logger.info(f"  Command: {approval_request.get('command')}")
+        self._write_output("✓ Approval dialog opened - waiting for decision...")
+
+        try:
+            # Create and show approval dialog
+            dialog = ApprovalDialog(
+                self,
+                approval_request,
+                self._on_approval_decision
+            )
+
+            # Center on parent window
+            dialog.transient(self.winfo_toplevel())
+            logger.info("✓ Dialog created, waiting for user decision...")
+            dialog.wait_window()  # Blocks until dialog is closed
+            logger.info("✓ Dialog closed")
+            self._write_output("✓ Approval dialog closed")
+
+        except Exception as e:
+            logger.error(f"Error showing approval dialog: {e}", exc_info=True)
+            self._write_output(f"❌ Error showing approval dialog: {e}")
+            messagebox.showerror(
+                "Error",
+                f"Failed to show approval dialog:\n{str(e)}"
+            )
+        finally:
+            # Always reset dialog_open flag when dialog closes
+            self.dialog_open = False
+            logger.info("Approval dialog cleanup complete, resuming polling")
+            self._write_output("▶️  Workflow resuming, checking for more approvals...")
+
+            # Resume polling immediately to check for next approval
+            if self.approval_polling_active and self.workflow_running:
+                self.after(100, self._poll_for_approvals)
+
+    def _on_approval_decision(self, approval_id: str, decision):
+        """Handle approval decision from dialog."""
+        try:
+            if not self.main_app or not self.main_app.felix_system:
+                raise Exception("Felix system not available")
+
+            central_post = self.main_app.felix_system.central_post
+
+            # Process decision
+            success = central_post.approve_system_action(
+                approval_id=approval_id,
+                decision=decision,
+                decided_by="user"
+            )
+
+            if success:
+                logger.info(f"Approval decision processed: {approval_id} -> {decision.value}")
+                self._write_output(f"\n✓ Approval processed: {decision.value}")
+            else:
+                raise Exception("Failed to process approval decision")
+
+        except Exception as e:
+            logger.error(f"Error processing approval decision: {e}", exc_info=True)
+            messagebox.showerror(
+                "Error",
+                f"Failed to process approval decision:\n{str(e)}"
+            )
+
     def apply_theme(self):
         """Apply current theme to the workflow widgets."""
-        if self.theme_manager:
+        if not self.theme_manager:
+            return
+
+        theme = self.theme_manager.get_current_theme()
+
+        # Apply to task entry text widget
+        try:
             self.theme_manager.apply_to_text_widget(self.task_entry)
+        except Exception as e:
+            logger.warning(f"Could not theme task_entry: {e}")
+
+        # Apply to output text widget
+        try:
             self.theme_manager.apply_to_text_widget(self.output_text)
+        except Exception as e:
+            logger.warning(f"Could not theme output_text: {e}")
+
+        # Apply theme to comboboxes
+        try:
+            style = ttk.Style()
+            style.configure("TCombobox",
+                          fieldbackground=theme["text_bg"],
+                          foreground=theme["text_fg"],
+                          selectbackground=theme["text_select_bg"],
+                          selectforeground=theme["text_select_fg"])
+        except Exception as e:
+            logger.warning(f"Could not theme combobox: {e}")
+
+        # Recursively apply theme to all children
+        try:
+            self.theme_manager.apply_to_all_children(self)
+        except Exception as e:
+            logger.warning(f"Could not recursively apply theme: {e}")

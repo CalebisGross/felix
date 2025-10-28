@@ -30,6 +30,7 @@ wheels/
 *.db
 *.db-journal
 *.log
+*.backup
 
 # User-specific configuration
 felix_gui_config.json
@@ -46,6 +47,7 @@ felix_synthesis_*.md
 *.swp
 *.swo
 *~
+.claude/
 
 # AI assistants/congigurations
 .claude/settings.local.json
@@ -53,3 +55,4 @@ felix_synthesis_*.md
 # OS
 .DS_Store
 Thumbs.db
+

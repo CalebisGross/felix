@@ -72,7 +72,10 @@ class WorkflowHistory:
                     max_tokens INTEGER DEFAULT 0,
                     processing_time REAL DEFAULT 0.0,
                     temperature REAL DEFAULT 0.0,
-                    metadata TEXT
+                    metadata TEXT,
+                    parent_workflow_id INTEGER,
+                    conversation_thread_id TEXT,
+                    FOREIGN KEY (parent_workflow_id) REFERENCES workflow_outputs(workflow_id)
                 )
             """)
 
@@ -89,6 +92,24 @@ class WorkflowHistory:
             """)
 
             conn.commit()
+
+            # Migrate existing database if needed (adds columns if missing)
+            self._migrate_schema(cursor)
+            conn.commit()
+
+            # Create indexes for conversation threading (after migration ensures columns exist)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_conversation_thread
+                ON workflow_outputs(conversation_thread_id)
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_parent_workflow
+                ON workflow_outputs(parent_workflow_id)
+            """)
+
+            conn.commit()
+
             conn.close()
             logger.info(f"Workflow history database initialized at {self.db_path}")
 
@@ -96,12 +117,45 @@ class WorkflowHistory:
             logger.error(f"Failed to initialize workflow history database: {e}")
             raise
 
-    def save_workflow_output(self, result: Dict[str, Any]) -> Optional[int]:
+    def _migrate_schema(self, cursor):
+        """
+        Migrate existing database schema to add conversation threading columns.
+
+        Args:
+            cursor: SQLite cursor
+        """
+        try:
+            # Check if parent_workflow_id column exists
+            cursor.execute("PRAGMA table_info(workflow_outputs)")
+            columns = [col[1] for col in cursor.fetchall()]
+
+            if 'parent_workflow_id' not in columns:
+                logger.info("Migrating database: adding parent_workflow_id column")
+                cursor.execute("""
+                    ALTER TABLE workflow_outputs
+                    ADD COLUMN parent_workflow_id INTEGER
+                """)
+
+            if 'conversation_thread_id' not in columns:
+                logger.info("Migrating database: adding conversation_thread_id column")
+                cursor.execute("""
+                    ALTER TABLE workflow_outputs
+                    ADD COLUMN conversation_thread_id TEXT
+                """)
+
+        except sqlite3.Error as e:
+            logger.warning(f"Schema migration warning: {e}")
+
+    def save_workflow_output(self, result: Dict[str, Any],
+                            parent_workflow_id: Optional[int] = None,
+                            conversation_thread_id: Optional[str] = None) -> Optional[int]:
         """
         Save a workflow output to the database.
 
         Args:
             result: Workflow result dictionary from run_felix_workflow
+            parent_workflow_id: Optional ID of parent workflow for conversation threading
+            conversation_thread_id: Optional thread ID for grouping related workflows
 
         Returns:
             workflow_id of saved entry, or None if failed
@@ -138,24 +192,44 @@ class WorkflowHistory:
             # Store entire result as metadata for comprehensive history
             metadata_json = json.dumps(result)
 
+            # Generate thread ID if parent provided but no thread ID
+            if parent_workflow_id and not conversation_thread_id:
+                # Inherit thread ID from parent or create new one
+                cursor.execute("""
+                    SELECT conversation_thread_id FROM workflow_outputs
+                    WHERE workflow_id = ?
+                """, (parent_workflow_id,))
+                parent_row = cursor.fetchone()
+                if parent_row and parent_row[0]:
+                    conversation_thread_id = parent_row[0]
+                else:
+                    # Parent has no thread, create new one using parent's ID
+                    import uuid
+                    conversation_thread_id = str(uuid.uuid4())
+
             # Insert into database
             cursor.execute("""
                 INSERT INTO workflow_outputs
                 (task_input, status, created_at, completed_at, final_synthesis,
                  confidence, agents_count, tokens_used, max_tokens,
-                 processing_time, temperature, metadata)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 processing_time, temperature, metadata,
+                 parent_workflow_id, conversation_thread_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 task_input, status, created_at, completed_at, final_synthesis,
                 confidence, agents_count, tokens_used, max_tokens,
-                processing_time, temperature, metadata_json
+                processing_time, temperature, metadata_json,
+                parent_workflow_id, conversation_thread_id
             ))
 
             workflow_id = cursor.lastrowid
             conn.commit()
             conn.close()
 
-            logger.info(f"Saved workflow output with ID: {workflow_id}")
+            if parent_workflow_id:
+                logger.info(f"Saved workflow output with ID: {workflow_id} (continuing from workflow {parent_workflow_id})")
+            else:
+                logger.info(f"Saved workflow output with ID: {workflow_id}")
             return workflow_id
 
         except sqlite3.Error as e:
@@ -335,6 +409,143 @@ class WorkflowHistory:
         except sqlite3.Error as e:
             logger.error(f"Failed to search workflows: {e}", exc_info=True)
             return []
+
+    def get_conversation_thread(self, workflow_id: int) -> List[WorkflowOutput]:
+        """
+        Get all workflows in a conversation thread.
+
+        Args:
+            workflow_id: ID of any workflow in the thread
+
+        Returns:
+            List of WorkflowOutput objects in chronological order
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            # First, get the thread ID and parent ID for this workflow
+            cursor.execute("""
+                SELECT conversation_thread_id, parent_workflow_id FROM workflow_outputs
+                WHERE workflow_id = ?
+            """, (workflow_id,))
+            row = cursor.fetchone()
+
+            if not row:
+                # Workflow not found
+                conn.close()
+                return []
+
+            thread_id, parent_id = row[0], row[1]
+
+            # Always use parent/child traversal to ensure we get complete thread
+            # even if thread_id assignment was incomplete
+
+            # Find root of conversation by walking up parent_id chain
+            root_id = workflow_id
+            current_parent = parent_id
+            visited = set([workflow_id])
+
+            while current_parent and current_parent not in visited:
+                visited.add(current_parent)
+                cursor.execute("""
+                    SELECT parent_workflow_id FROM workflow_outputs
+                    WHERE workflow_id = ?
+                """, (current_parent,))
+                next_row = cursor.fetchone()
+                root_id = current_parent
+                if next_row and next_row[0]:
+                    current_parent = next_row[0]
+                else:
+                    break
+
+            # Now collect all descendants from root
+            workflow_ids = [root_id]
+            to_process = [root_id]
+
+            while to_process:
+                current_id = to_process.pop(0)
+                cursor.execute("""
+                    SELECT workflow_id FROM workflow_outputs
+                    WHERE parent_workflow_id = ?
+                """, (current_id,))
+                children = cursor.fetchall()
+                for child in children:
+                    child_id = child[0]
+                    if child_id not in workflow_ids:
+                        workflow_ids.append(child_id)
+                        to_process.append(child_id)
+
+            # Fetch all workflows in conversation
+            placeholders = ','.join('?' * len(workflow_ids))
+            cursor.execute(f"""
+                SELECT workflow_id, task_input, status, created_at, completed_at,
+                       final_synthesis, confidence, agents_count, tokens_used,
+                       max_tokens, processing_time, temperature, metadata
+                FROM workflow_outputs
+                WHERE workflow_id IN ({placeholders})
+                ORDER BY created_at ASC
+            """, workflow_ids)
+
+            rows = cursor.fetchall()
+            conn.close()
+
+            # Convert to WorkflowOutput objects
+            outputs = []
+            for row in rows:
+                metadata = json.loads(row[12]) if row[12] else {}
+                output = WorkflowOutput(
+                    workflow_id=row[0],
+                    task_input=row[1],
+                    status=row[2],
+                    created_at=row[3],
+                    completed_at=row[4],
+                    final_synthesis=row[5] or "",
+                    confidence=row[6],
+                    agents_count=row[7],
+                    tokens_used=row[8],
+                    max_tokens=row[9],
+                    processing_time=row[10],
+                    temperature=row[11],
+                    metadata=metadata
+                )
+                outputs.append(output)
+
+            return outputs
+
+        except sqlite3.Error as e:
+            logger.error(f"Failed to get conversation thread: {e}", exc_info=True)
+            return []
+
+    def get_parent_workflow(self, workflow_id: int) -> Optional[WorkflowOutput]:
+        """
+        Get the parent workflow for a given workflow.
+
+        Args:
+            workflow_id: ID of the child workflow
+
+        Returns:
+            Parent WorkflowOutput or None if no parent
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                SELECT parent_workflow_id FROM workflow_outputs
+                WHERE workflow_id = ?
+            """, (workflow_id,))
+            row = cursor.fetchone()
+            conn.close()
+
+            if not row or not row[0]:
+                return None
+
+            return self.get_workflow_by_id(row[0])
+
+        except sqlite3.Error as e:
+            logger.error(f"Failed to get parent workflow: {e}", exc_info=True)
+            return None
 
     def delete_workflow(self, workflow_id: int) -> bool:
         """
