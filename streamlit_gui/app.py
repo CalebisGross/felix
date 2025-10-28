@@ -37,51 +37,131 @@ st.set_page_config(
     }
 )
 
-# Custom CSS for better styling
+# Custom CSS for professional theme - SIMPLIFIED FOR VISIBILITY
 st.markdown("""
     <style>
+        /* Light professional background - WCAG compliant */
         .stApp {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #f5f7fa 0%, #e8ecf1 100%);
         }
+
+        /* Main content area - crisp white */
         .main {
-            background-color: rgba(255, 255, 255, 0.95);
-            border-radius: 10px;
+            background: #ffffff;
+            border: 1px solid #d0d7de;
+            border-radius: 8px;
             padding: 20px;
             margin: 20px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
         }
+
+        /* Sidebar - light gray with dark text (WCAG AA compliant) */
         .stSidebar {
-            background-color: rgba(40, 44, 52, 0.95) !important;
+            background: #f6f8fa !important;
+            border-right: 1px solid #d0d7de;
         }
+
         .stSidebar [data-testid="stMarkdownContainer"] {
-            color: #ffffff !important;
+            color: #24292f !important;
         }
+
         .stSidebar .stRadio label {
-            color: #ffffff !important;
+            color: #24292f !important;
         }
-        .metric-card {
-            background: white;
-            padding: 15px;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            margin: 10px 0;
+
+        /* Headers - WCAG AAA compliant (7:1 contrast ratio) */
+        h1, h2, h3 {
+            color: #0d1117 !important;
         }
-        h1 {
-            color: #2c3e50;
+
+        /* Body text - WCAG AAA compliant */
+        p, div, span, label {
+            color: #24292f !important;
         }
-        .stAlert {
-            background-color: #f8f9fa;
-            border-left: 4px solid #4CAF50;
+
+        .stMarkdown {
+            color: #24292f !important;
         }
-        /* Improve info/warning/success box contrast */
+
+        /* Alert boxes - high contrast */
         div[data-testid="stAlert"] {
-            background-color: rgba(255, 255, 255, 0.95) !important;
+            background-color: #ffffff !important;
+            border: 1px solid #d0d7de !important;
+            color: #24292f !important;
         }
+
         div[data-testid="stAlert"] p {
-            color: #1a1a1a !important;
+            color: #24292f !important;
+        }
+
+        div[data-testid="stAlert"] strong {
+            color: #0d1117 !important;
+        }
+
+        /* Button styling - WCAG AA compliant */
+        .stButton > button {
+            background: #0969da !important;
+            color: #ffffff !important;
+            border: none;
+            border-radius: 6px;
+            padding: 8px 16px;
+            font-weight: 500;
+            transition: background 0.2s;
+        }
+
+        .stButton > button:hover {
+            background: #0550ae !important;
+        }
+
+        /* Metric containers - high contrast */
+        [data-testid="metric-container"] {
+            background: #f6f8fa;
+            border: 1px solid #d0d7de;
+            border-radius: 6px;
+            padding: 12px;
+        }
+
+        [data-testid="metric-container"] [data-testid="stMetricLabel"] {
+            color: #57606a !important;
             font-weight: 500;
         }
-        div[data-testid="stAlert"] strong {
-            color: #000000 !important;
+
+        [data-testid="metric-container"] [data-testid="stMetricValue"] {
+            color: #0969da !important;
+            font-weight: 600;
+        }
+
+        /* Expander styling - high contrast */
+        .streamlit-expanderHeader {
+            background: #f6f8fa !important;
+            color: #0d1117 !important;
+            border: 1px solid #d0d7de;
+            font-weight: 500;
+        }
+
+        .streamlit-expanderHeader:hover {
+            background: #eaeef2 !important;
+        }
+
+        /* Table styling - WCAG compliant */
+        .stDataFrame {
+            color: #24292f !important;
+        }
+
+        .stDataFrame thead tr th {
+            background: #f6f8fa !important;
+            color: #0d1117 !important;
+            font-weight: 600;
+        }
+
+        /* Links - WCAG AA compliant */
+        a {
+            color: #0969da !important;
+        }
+
+        a:hover {
+            color: #0550ae !important;
+            text-decoration: underline;
         }
     </style>
 """, unsafe_allow_html=True)

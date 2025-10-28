@@ -114,16 +114,26 @@ def create_helix_3d_visualization(helix_config: dict) -> go.Figure:
     bottom_radius = helix_config.get('bottom_radius', 0.5)
     height = helix_config.get('height', 8.0)
 
-    # Generate helix points
-    t = np.linspace(0, 2*np.pi*turns, 200)
-    z = np.linspace(0, height, 200)
+    # Generate helix points using correct Felix geometry
+    # t ∈ [0,1] where t=0 is top/wide (exploration), t=1 is bottom/narrow (synthesis)
+    t_values = np.linspace(0, 1, 200)
 
-    # Calculate radius at each height (linear interpolation)
-    r = top_radius - (top_radius - bottom_radius) * (z / height)
+    # Calculate positions along helix
+    # z = height * (1 - t), so agents start at z=height (top) and descend to z=0 (bottom)
+    z = height * (1.0 - t_values)
+
+    # Calculate radius at each position using exponential tapering
+    # R(z) = R_bottom * (R_top/R_bottom)^(z/height)
+    radius_ratio = top_radius / bottom_radius
+    height_fraction = z / height
+    r = bottom_radius * np.power(radius_ratio, height_fraction)
+
+    # Calculate angle: θ(t) = 2πnt
+    angles = t_values * turns * 2.0 * np.pi
 
     # Generate x, y coordinates
-    x = r * np.cos(t)
-    y = r * np.sin(t)
+    x = r * np.cos(angles)
+    y = r * np.sin(angles)
 
     # Create the helix trace
     helix_trace = go.Scatter3d(
@@ -131,35 +141,63 @@ def create_helix_3d_visualization(helix_config: dict) -> go.Figure:
         mode='lines',
         name='Helix Path',
         line=dict(
-            color=z,
+            color=t_values,  # Color by progression (0=top/exploration, 1=bottom/synthesis)
             colorscale='Viridis',
             width=8,
             cmin=0,
-            cmax=height,
+            cmax=1,
             colorbar=dict(
-                title="Depth",
+                title="Progression<br>(0=Top/Exploration<br>1=Bottom/Synthesis)",
                 x=1.02,
                 y=0.5,
-                thickness=15
+                thickness=15,
+                len=0.7
             )
         )
     )
 
-    # Add reference points for phases
+    # Add CentralPost hub visualization (vertical line at center)
+    hub_trace = go.Scatter3d(
+        x=[0, 0],
+        y=[0, 0],
+        z=[0, height],
+        mode='lines',
+        name='CentralPost Hub',
+        line=dict(
+            color='red',
+            width=12,
+            dash='solid'
+        ),
+        showlegend=True
+    )
+
+    # Add reference points for phases (with correct z positions)
     phase_points = []
-    phase_labels = [
-        ("Exploration", 0, top_radius),
-        ("Analysis", height * 0.33, top_radius * 0.7 + bottom_radius * 0.3),
-        ("Synthesis", height * 0.66, top_radius * 0.3 + bottom_radius * 0.7),
-        ("Conclusion", height, bottom_radius)
+    spoke_lines = []
+
+    # Phase definitions: (label, t_value, color)
+    # t=0 is top (z=height), t=1 is bottom (z=0)
+    phase_definitions = [
+        ("Exploration Start", 0.0, "green"),
+        ("Analysis Phase", 0.4, "blue"),
+        ("Synthesis Phase", 0.7, "orange"),
+        ("Conclusion", 1.0, "red")
     ]
 
-    for label, z_pos, radius in phase_labels:
-        # Position on helix at this height
-        angle = (z_pos / height) * 2 * np.pi * turns
+    for label, t_val, color in phase_definitions:
+        # Calculate position on helix at this t value
+        z_pos = height * (1.0 - t_val)
+
+        # Calculate radius using exponential tapering
+        height_frac = z_pos / height
+        radius = bottom_radius * pow(radius_ratio, height_frac)
+
+        # Calculate angle
+        angle = t_val * turns * 2.0 * np.pi
         x_pos = radius * np.cos(angle)
         y_pos = radius * np.sin(angle)
 
+        # Add phase marker
         phase_points.append(
             go.Scatter3d(
                 x=[x_pos],
@@ -167,34 +205,53 @@ def create_helix_3d_visualization(helix_config: dict) -> go.Figure:
                 z=[z_pos],
                 mode='markers+text',
                 name=label,
-                marker=dict(size=12, symbol='diamond'),
+                marker=dict(size=10, color=color, symbol='diamond'),
                 text=[label],
-                textposition="top center"
+                textposition="top center",
+                textfont=dict(size=10),
+                showlegend=False
             )
         )
 
-    # Create figure
-    fig = go.Figure(data=[helix_trace] + phase_points)
+        # Add spoke line from center to agent position (hub-spoke communication)
+        spoke_lines.append(
+            go.Scatter3d(
+                x=[0, x_pos],
+                y=[0, y_pos],
+                z=[z_pos, z_pos],
+                mode='lines',
+                line=dict(
+                    color=color,
+                    width=2,
+                    dash='dot'
+                ),
+                showlegend=False,
+                hoverinfo='skip'
+            )
+        )
+
+    # Create figure with all traces
+    fig = go.Figure(data=[helix_trace, hub_trace] + phase_points + spoke_lines)
 
     # Update layout
     fig.update_layout(
         title=dict(
-            text="Helix Geometry Visualization",
+            text="Felix Helix Geometry: Hub-Spoke Architecture<br><sub>Agents descend from wide exploration (top) to narrow synthesis (bottom)</sub>",
             x=0.5,
             xanchor='center'
         ),
         scene=dict(
             xaxis_title="X",
             yaxis_title="Y",
-            zaxis_title="Depth (Progression)",
+            zaxis_title="Height (Agents descend from top→bottom)",
             camera=dict(
-                eye=dict(x=1.5, y=1.5, z=0.7),
-                center=dict(x=0, y=0, z=0)
+                eye=dict(x=1.5, y=1.5, z=1.2),  # Better viewing angle
+                center=dict(x=0, y=0, z=0.4)
             ),
             aspectmode='manual',
             aspectratio=dict(x=1, y=1, z=2)
         ),
-        height=600,
+        height=700,
         showlegend=True,
         legend=dict(
             x=0.02,

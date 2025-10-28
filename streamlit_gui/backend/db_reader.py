@@ -33,7 +33,8 @@ class DatabaseReader:
             "knowledge": os.path.join(db_dir, "felix_knowledge.db"),
             "memory": os.path.join(db_dir, "felix_memory.db"),
             "task_memory": os.path.join(db_dir, "felix_task_memory.db"),
-            "workflow_history": os.path.join(db_dir, "felix_workflow_history.db")
+            "workflow_history": os.path.join(db_dir, "felix_workflow_history.db"),
+            "live_agents": os.path.join(db_dir, "felix_live_agents.db")
         }
 
     def _read_query(self, db_name: str, query: str) -> Optional[pd.DataFrame]:
@@ -556,3 +557,61 @@ class DatabaseReader:
             'total_sources': total_sources,
             'searches_last_24h': searches_last_24h
         }
+
+    def get_live_agents(self, max_age_seconds: float = 5.0) -> List[Dict[str, Any]]:
+        """
+        Get currently active agents from live tracking database.
+
+        Args:
+            max_age_seconds: Maximum age of agent data to include (default: 5 seconds)
+
+        Returns:
+            List of agent dictionaries with position and status data
+        """
+        import time
+
+        db_path = self.db_paths.get("live_agents")
+
+        # Check if database exists
+        if not db_path or not Path(db_path).exists():
+            logger.debug(f"Live agents database not found: {db_path}")
+            return []
+
+        try:
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+
+            cutoff_time = time.time() - max_age_seconds
+
+            cursor.execute("""
+                SELECT agent_id, agent_type, phase, progress,
+                       x_position, y_position, z_position,
+                       confidence, last_update, status
+                FROM live_agents
+                WHERE last_update > ?
+                  AND status = 'active'
+                ORDER BY last_update DESC
+            """, (cutoff_time,))
+
+            agents = []
+            for row in cursor.fetchall():
+                agents.append({
+                    'id': row[0],
+                    'type': row[1],
+                    'phase': row[2],
+                    'progress': row[3],
+                    'x': row[4],
+                    'y': row[5],
+                    'z': row[6],
+                    'confidence': row[7],
+                    'last_update': row[8],
+                    'status': row[9]
+                })
+
+            conn.close()
+            logger.debug(f"Retrieved {len(agents)} live agents from database")
+            return agents
+
+        except Exception as e:
+            logger.error(f"Error retrieving live agents: {e}")
+            return []

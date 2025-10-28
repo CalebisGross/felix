@@ -5,6 +5,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 import pandas as pd
@@ -17,6 +18,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 from streamlit_gui.backend.system_monitor import SystemMonitor
 from streamlit_gui.backend.db_reader import DatabaseReader
 from streamlit_gui.backend.real_benchmark_runner import RealBenchmarkRunner
+from streamlit_gui.components.helix_monitor import HelixMonitor, generate_sample_agents
 
 st.set_page_config(
     page_title="Felix Dashboard",
@@ -94,7 +96,8 @@ def main():
     st.divider()
 
     # Real-time Metrics
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    tab_helix, tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "🌀 Live Helix Monitor",
         "📊 Agent Activity",
         "📈 Performance Trends",
         "🔄 Recent Workflows",
@@ -102,6 +105,184 @@ def main():
         "📜 Workflow History",
         "🔍 Web Search"
     ])
+
+    with tab_helix:
+        st.subheader("🌀 Real-Time Helix Visualization")
+        st.markdown("Monitor agents traversing the helical path in real-time")
+
+        # Create two columns - main viz and controls
+        col_viz, col_controls = st.columns([3, 1])
+
+        with col_controls:
+            # Initialize helix monitor
+            helix_monitor = HelixMonitor()
+
+            # Render control panel
+            controls = helix_monitor.render_controls()
+
+            st.divider()
+
+            # Animation control (only show in real-time mode)
+            if controls['real_time']:
+                st.markdown("### Animation Control")
+
+                # Pause/Play button
+                is_paused = st.session_state.get('animation_paused', False)
+                button_col1, button_col2 = st.columns(2)
+
+                with button_col1:
+                    if is_paused:
+                        if st.button("▶️ Play", key="play_animation", type="primary", use_container_width=True):
+                            st.session_state['animation_paused'] = False
+                            st.session_state['last_update'] = time.time()  # Reset timer
+                            st.rerun()
+                    else:
+                        if st.button("⏸️ Pause", key="pause_animation", use_container_width=True):
+                            st.session_state['animation_paused'] = True
+                            st.rerun()
+
+                with button_col2:
+                    if st.button("🔄 Reset", key="reset_animation", use_container_width=True):
+                        # Reset all agents to top
+                        st.session_state['helix_agents'] = generate_sample_agents(10)
+                        st.session_state['last_update'] = time.time()
+                        st.session_state['animation_paused'] = False
+                        st.rerun()
+
+                st.divider()
+
+            # Workflow control
+            st.markdown("### Workflow Control")
+
+            if st.button("▶️ Start Workflow", key="start_workflow", type="primary"):
+                st.session_state['workflow_running'] = True
+                st.success("Workflow started!")
+
+            if st.button("⏹️ Stop Workflow", key="stop_workflow"):
+                st.session_state['workflow_running'] = False
+                st.info("Workflow stopped")
+
+            # Agent statistics
+            st.divider()
+            st.markdown("### Agent Statistics")
+
+            # Get live agent data
+            agent_df = db_reader.get_agent_metrics()
+            if not agent_df.empty:
+                st.metric("Active Agents", len(agent_df))
+                avg_conf = agent_df['avg_confidence'].mean()
+                st.metric("Avg Confidence", f"{avg_conf:.1%}")
+                total_outputs = agent_df['output_count'].sum()
+                st.metric("Total Outputs", total_outputs)
+            else:
+                st.metric("Active Agents", 0)
+                st.metric("Avg Confidence", "N/A")
+                st.metric("Total Outputs", 0)
+
+        with col_viz:
+            # Create placeholder for animation
+            viz_placeholder = st.empty()
+
+            # Real-time mode
+            if controls['real_time']:
+                # Get REAL agents from live database
+                live_agents = db_reader.get_live_agents(max_age_seconds=5.0)
+
+                if live_agents:
+                    # Use real agent data from running workflow!
+                    agent_positions = [
+                        {
+                            'id': agent['id'],
+                            'type': agent['type'],
+                            'progress': agent['progress'],
+                            'confidence': agent['confidence']
+                        }
+                        for agent in live_agents
+                    ]
+
+                    # Create and display visualization with REAL agents
+                    fig = helix_monitor.create_visualization(agent_positions)
+                    viz_placeholder.plotly_chart(fig, use_container_width=True, key="helix_viz_live")
+
+                    # Show status for live data
+                    info_col, status_col, refresh_col = st.columns([2, 1, 1])
+                    with info_col:
+                        st.success(f"🔴 **LIVE**: {len(agent_positions)} real agents from running workflow")
+                    with status_col:
+                        avg_progress = sum(a['progress'] for a in agent_positions) / len(agent_positions)
+                        st.metric("Avg Progress", f"{avg_progress:.0%}")
+                    with refresh_col:
+                        # Manual refresh button for live updates
+                        if st.button("🔄 Refresh", key="refresh_live", use_container_width=True):
+                            st.rerun()
+
+                else:
+                    # No live workflow - show static message
+                    st.info("⚪ **WAITING**: No active workflow detected. Start a workflow in the tkinter GUI to see live agents.")
+
+                    # Show empty helix
+                    fig = helix_monitor.create_visualization([])
+                    viz_placeholder.plotly_chart(fig, use_container_width=True, key="helix_viz_empty")
+
+                    # Refresh button to check for workflows
+                    if st.button("🔄 Check for Workflow", key="check_workflow", use_container_width=True):
+                        st.rerun()
+            else:
+                # Static mode - show with sample or real data
+                agent_positions = []
+
+                # Try to get real agent data for static view
+                if not agent_df.empty:
+                    for _, agent in agent_df.iterrows():
+                        agent_pos = {
+                            'id': agent['agent_id'],
+                            'type': 'generic',
+                            'progress': 0.0,  # Start at top of helix
+                            'confidence': agent['avg_confidence']
+                        }
+                        agent_positions.append(agent_pos)
+
+                # Use sample data if no real agents
+                if not agent_positions:
+                    st.info("No live agent data. Showing sample visualization.")
+                    agent_positions = generate_sample_agents(5)
+
+                # Create static visualization
+                fig = helix_monitor.create_visualization(agent_positions)
+                viz_placeholder.plotly_chart(fig, use_container_width=True)
+
+        # Phase description
+        st.divider()
+        st.markdown("### Helix Phases")
+
+        phase_col1, phase_col2, phase_col3 = st.columns(3)
+
+        with phase_col1:
+            st.markdown("""
+            **🔍 Exploration Phase (Top)**
+            - Wide radius (3.0)
+            - High temperature (1.0)
+            - Broad discovery
+            - Research agents spawn
+            """)
+
+        with phase_col2:
+            st.markdown("""
+            **📊 Analysis Phase (Middle)**
+            - Converging radius
+            - Medium temperature
+            - Pattern identification
+            - Analysis agents active
+            """)
+
+        with phase_col3:
+            st.markdown("""
+            **🎯 Synthesis Phase (Bottom)**
+            - Narrow radius (0.5)
+            - Low temperature (0.2)
+            - Focused output
+            - Final convergence
+            """)
 
     with tab1:
         st.subheader("Agent Activity Monitor")
@@ -383,7 +564,6 @@ def main():
     with col2:
         if auto_refresh:
             st.write("Dashboard will refresh every 5 seconds")
-            import time
             time.sleep(5)
             st.rerun()
 
