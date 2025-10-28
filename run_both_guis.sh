@@ -92,7 +92,7 @@ else
 fi
 
 # Start Streamlit using launcher script
-python run_streamlit_gui.py &
+python streamlit_gui/run_streamlit_gui.py &
 STREAMLIT_PID=$!
 
 # Wait for Streamlit to start

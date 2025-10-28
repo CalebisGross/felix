@@ -9,8 +9,15 @@ import subprocess
 import sys
 import time
 import webbrowser
+import logging
 from pathlib import Path
 import socket
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(levelname)s: %(message)s'
+)
 
 
 def check_port_available(port: int) -> bool:
@@ -36,8 +43,8 @@ def check_requirements():
         import streamlit
         return True
     except ImportError:
-        print("ERROR: Streamlit is not installed!")
-        print("Please run: pip install -r requirements_streamlit.txt")
+        logging.error("Streamlit is not installed!")
+        logging.info("Please run: pip install -r requirements_streamlit.txt")
         return False
 
 
@@ -55,21 +62,25 @@ def launch_streamlit():
     # Find available port
     try:
         port = find_available_port()
-        print(f"Using port: {port}")
+        logging.info(f"Using port: {port}")
     except RuntimeError as e:
-        print(f"ERROR: {e}")
+        logging.error(str(e))
         sys.exit(1)
 
     # Launch Streamlit
-    print("Launching Streamlit GUI...")
+    logging.info("Launching Streamlit GUI...")
     print("-" * 50)
+
+    # Get the directory where this script is located
+    script_dir = Path(__file__).parent
+    app_path = script_dir / "app.py"
 
     cmd = [
         sys.executable,
         "-m",
         "streamlit",
         "run",
-        "streamlit_gui/app.py",
+        str(app_path),
         "--server.port",
         str(port),
         "--server.headless",
@@ -86,15 +97,15 @@ def launch_streamlit():
         # Check if process is still running
         if process.poll() is None:
             url = f"http://localhost:{port}"
-            print(f"\n✓ Streamlit GUI is running at: {url}")
-            print("\nOpening browser...")
+            logging.info(f"✓ Streamlit GUI is running at: {url}")
+            logging.info("Opening browser...")
 
             # Try to open browser
             try:
                 webbrowser.open(url)
-            except:
-                print("Could not open browser automatically.")
-                print(f"Please open manually: {url}")
+            except Exception as e:
+                logging.warning("Could not open browser automatically.")
+                logging.info(f"Please open manually: {url}")
 
             print("\n" + "=" * 50)
             print("Instructions:")
@@ -110,19 +121,19 @@ def launch_streamlit():
             process.wait()
 
         else:
-            print("ERROR: Streamlit failed to start")
+            logging.error("Streamlit failed to start")
             sys.exit(1)
 
     except KeyboardInterrupt:
-        print("\n\nShutting down Streamlit GUI...")
+        logging.info("\n\nShutting down Streamlit GUI...")
         process.terminate()
         time.sleep(1)
         if process.poll() is None:
             process.kill()
-        print("✓ Streamlit GUI stopped")
+        logging.info("✓ Streamlit GUI stopped")
 
     except Exception as e:
-        print(f"ERROR: Failed to launch Streamlit: {e}")
+        logging.error(f"Failed to launch Streamlit: {e}")
         sys.exit(1)
 
 
