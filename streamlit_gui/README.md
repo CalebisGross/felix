@@ -27,12 +27,9 @@ pip install -r requirements_streamlit.txt
 streamlit run streamlit_gui/app.py
 
 # Or using launcher
-python run_streamlit_gui.py
+python streamlit_gui/run_streamlit_gui.py
 
-# Run both GUIs together (Windows)
-run_both_guis.bat
-
-# Run both GUIs together (Linux/Mac)
+# Run both GUIs together (Linux/Mac/Windows)
 ./run_both_guis.sh
 ```
 
@@ -64,6 +61,18 @@ Opens at `http://localhost:8501`
 - **Configuration**: Select hypotheses, set iterations, toggle real LLM usage
 - **Results Display**: Metrics table, box plots, JSON export
 
+### System Monitor
+- **Real-Time Metrics**: Live system resource monitoring and agent activity
+- **Process Tracking**: Monitor active Felix processes and their resource usage
+- **Performance Dashboard**: CPU, memory, and network usage visualization
+- **Alert System**: Configurable thresholds for system health monitoring
+
+### Advanced Analytics
+- **Deep Insights**: Advanced statistical analysis of workflow patterns
+- **Predictive Analytics**: Forecast system performance and resource needs
+- **Correlation Analysis**: Identify relationships between agents, tasks, and outcomes
+- **Custom Reports**: Generate detailed analytical reports with visualizations
+
 ## Key Components
 
 ### New Monitoring Features
@@ -88,11 +97,14 @@ Opens at `http://localhost:8501`
 ```
 streamlit_gui/
 ├── app.py                    # Entry point (v3.0.0)
+├── run_streamlit_gui.py      # Cross-platform launcher
 ├── pages/                    # Streamlit multipage app
 │   ├── 1_Dashboard.py
 │   ├── 2_Configuration.py
 │   ├── 3_Testing.py
-│   └── 4_Benchmarking.py
+│   ├── 4_Benchmarking.py
+│   ├── 5_System_Monitor.py
+│   └── 6_Advanced_Analytics.py
 ├── backend/                  # Backend services
 │   ├── system_monitor.py
 │   ├── db_reader.py
