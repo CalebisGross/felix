@@ -11,6 +11,8 @@ from .agents import AgentsFrame
 from .settings import SettingsFrame
 from .approvals import ApprovalsFrame
 from .terminal import TerminalFrame
+from .learning import LearningFrame
+from .knowledge_brain import KnowledgeBrainFrame
 from .felix_system import FelixSystem, FelixConfig
 from .themes import ThemeManager
 
@@ -91,6 +93,14 @@ class MainApp(tk.Tk):
         self.prompts_frame = PromptsTab(self.notebook, theme_manager=self.theme_manager)
         self.notebook.add(self.prompts_frame, text="Prompts")
 
+        # Learning tab
+        self.learning_frame = LearningFrame(self.notebook, self.thread_manager, main_app=self, theme_manager=self.theme_manager)
+        self.notebook.add(self.learning_frame, text="Learning")
+
+        # Knowledge Brain tab
+        self.knowledge_brain_frame = KnowledgeBrainFrame(self.notebook, self.thread_manager, main_app=self, theme_manager=self.theme_manager)
+        self.notebook.add(self.knowledge_brain_frame, text="Knowledge Brain")
+
         # Settings tab
         self.settings_frame = SettingsFrame(self.notebook, self.thread_manager, main_app=self, theme_manager=self.theme_manager)
         self.notebook.add(self.settings_frame, text="Settings")
@@ -124,6 +134,10 @@ class MainApp(tk.Tk):
             self.terminal_frame.apply_theme()
         if hasattr(self.prompts_frame, 'apply_theme'):
             self.prompts_frame.apply_theme()
+        if hasattr(self.learning_frame, 'apply_theme'):
+            self.learning_frame.apply_theme()
+        if hasattr(self.knowledge_brain_frame, 'apply_theme'):
+            self.knowledge_brain_frame.apply_theme()
         if hasattr(self.settings_frame, 'apply_theme'):
             self.settings_frame.apply_theme()
 
@@ -150,6 +164,20 @@ class MainApp(tk.Tk):
         # Split by newlines and filter empty lines
         domains = [d.strip() for d in domains_str.split('\n') if d.strip()]
         return domains if domains else ['wikipedia.org', 'reddit.com']
+
+    def _parse_watch_directories(self, dirs_input) -> List[str]:
+        """Parse watch directories from config (can be string or list)."""
+        # If it's already a list, return it
+        if isinstance(dirs_input, list):
+            return dirs_input
+
+        # If it's a string, split by newlines
+        if isinstance(dirs_input, str):
+            dirs = [d.strip() for d in dirs_input.split('\n') if d.strip()]
+            return dirs if dirs else ['./knowledge_sources']
+
+        # Default fallback
+        return ['./knowledge_sources']
 
     def start_system(self):
         """Start the Felix system with full integration."""
@@ -205,7 +233,18 @@ class MainApp(tk.Tk):
                 workflow_max_steps_medium=int(self.app_config.get('workflow_max_steps_medium', 10)),
                 workflow_max_steps_complex=int(self.app_config.get('workflow_max_steps_complex', 20)),
                 workflow_simple_threshold=float(self.app_config.get('workflow_simple_threshold', 0.75)),
-                workflow_medium_threshold=float(self.app_config.get('workflow_medium_threshold', 0.50))
+                workflow_medium_threshold=float(self.app_config.get('workflow_medium_threshold', 0.50)),
+                # Knowledge Brain configuration
+                enable_knowledge_brain=self.app_config.get('enable_knowledge_brain', False),
+                knowledge_watch_dirs=self._parse_watch_directories(self.app_config.get('knowledge_watch_dirs')),
+                knowledge_embedding_mode=self.app_config.get('knowledge_embedding_mode', 'auto'),
+                knowledge_auto_augment=self.app_config.get('knowledge_auto_augment', True),
+                knowledge_daemon_enabled=self.app_config.get('knowledge_daemon_enabled', True),
+                knowledge_refinement_interval=int(self.app_config.get('knowledge_refinement_interval', 3600)),
+                knowledge_processing_threads=int(self.app_config.get('knowledge_processing_threads', 2)),
+                knowledge_max_memory_mb=int(self.app_config.get('knowledge_max_memory_mb', 512)),
+                knowledge_chunk_size=int(self.app_config.get('knowledge_chunk_size', 1000)),
+                knowledge_chunk_overlap=int(self.app_config.get('knowledge_chunk_overlap', 200))
             )
 
             # Initialize unified Felix system
@@ -291,6 +330,24 @@ class MainApp(tk.Tk):
         except Exception as e:
             logger.error(f"Error stopping system: {e}", exc_info=True)
             self.after(0, lambda: messagebox.showerror("Error", f"Failed to stop system: {e}"))
+
+    def start_knowledge_daemon(self):
+        """Start the knowledge daemon if Felix system is running."""
+        if not self.felix_system or not self.system_running:
+            logger.error("Cannot start knowledge daemon: Felix system not running")
+            return False
+
+        if not self.felix_system.knowledge_daemon:
+            logger.error("Knowledge daemon not initialized")
+            return False
+
+        try:
+            self.felix_system.knowledge_daemon.start()
+            logger.info("Knowledge daemon started via GUI")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to start knowledge daemon: {e}")
+            return False
 
 if __name__ == "__main__":
     app = MainApp()

@@ -19,6 +19,9 @@ from typing import Dict, Any, Optional, Callable
 # Import collaborative context builder for agent collaboration
 from .context_builder import CollaborativeContextBuilder
 
+# Import learning systems for pattern recommendations and optimization
+from src.learning import RecommendationEngine
+
 # Import context compression for managing growing collaborative context
 from src.memory.context_compression import (
     ContextCompressor,
@@ -184,6 +187,22 @@ def run_felix_workflow(felix_system, task_input: str,
         )
         logger.info("Initialized CollaborativeContextBuilder with compression for agent collaboration")
 
+        # Initialize RecommendationEngine for learning-based optimization
+        recommendation_engine = None
+        if felix_system.task_memory and felix_system.config.enable_learning:
+            try:
+                recommendation_engine = RecommendationEngine(
+                    task_memory=felix_system.task_memory,
+                    enable_auto_apply=felix_system.config.learning_auto_apply
+                )
+                logger.info("✓ RecommendationEngine initialized - learning enabled")
+            except Exception as e:
+                logger.warning(f"Could not initialize RecommendationEngine: {e}")
+                recommendation_engine = None
+        else:
+            if not felix_system.config.enable_learning:
+                logger.info("Learning disabled in config - skipping RecommendationEngine")
+
         if progress_callback:
             progress_callback("Initializing Felix workflow...", 0.0)
 
@@ -298,6 +317,50 @@ def run_felix_workflow(felix_system, task_input: str,
         logger.info(f"Workflow will progress through up to {total_steps} time steps")
         if adaptive_mode and not complexity_assessed:
             logger.info(f"Adaptive mode: will assess complexity after {sample_period} steps")
+
+        # Get pre-workflow recommendations from learning systems
+        unified_recommendation = None
+        recommendation_id = None
+        learned_thresholds = {}
+        if recommendation_engine:
+            logger.info("=" * 60)
+            logger.info("🧠 LEARNING SYSTEM - Pre-Workflow Recommendations")
+            try:
+                unified_recommendation = recommendation_engine.get_pre_workflow_recommendations(
+                    task_description=task_input,
+                    task_type="workflow_task",
+                    task_complexity=task_complexity.lower()
+                )
+
+                if unified_recommendation:
+                    logger.info(f"  {unified_recommendation.recommendation_summary}")
+
+                    # Store recommendation ID for outcome tracking
+                    if unified_recommendation.workflow_recommendation:
+                        recommendation_id = unified_recommendation.workflow_recommendation.recommendation_id
+                        # Store recommendation for later outcome recording
+                        recommendation_engine.pattern_learner.store_recommendation(
+                            unified_recommendation.workflow_recommendation
+                        )
+
+                    # Extract learned thresholds for use during workflow
+                    learned_thresholds = unified_recommendation.suggested_thresholds
+                    logger.info(f"  Learned thresholds: {', '.join([f'{k}={v:.2f}' for k,v in learned_thresholds.items()])}")
+
+                    # Apply high-confidence recommendations if enabled
+                    if unified_recommendation.should_auto_apply:
+                        applied = recommendation_engine.apply_high_confidence_recommendations(
+                            unified_rec=unified_recommendation,
+                            agent_factory=agent_factory,
+                            config=felix_system.config
+                        )
+                        if applied.get('auto_applied'):
+                            logger.info(f"  ✓ Auto-applied: {', '.join(applied.get('changes', []))}")
+                else:
+                    logger.info("  No learned patterns available - using standard configuration")
+            except Exception as e:
+                logger.warning(f"  ⚠ Failed to get recommendations: {e}")
+            logger.info("=" * 60)
 
         # Spawn initial research agent with fixed spawn_time=0.0
         logger.info("Creating initial research agent...")
@@ -907,6 +970,71 @@ def run_felix_workflow(felix_system, task_input: str,
             except Exception as task_memory_error:
                 # Don't fail workflow if task memory recording fails
                 logger.warning(f"Could not record task execution in task memory: {task_memory_error}")
+
+        # Record workflow outcome for learning systems
+        if recommendation_engine:
+            try:
+                logger.info("=" * 60)
+                logger.info("🧠 LEARNING SYSTEM - Recording Workflow Outcome")
+
+                # Calculate workflow duration
+                workflow_duration = time.time() - workflow_start_time
+
+                # Determine workflow success
+                workflow_success = (
+                    results.get("status") == "completed" and
+                    results.get("centralpost_synthesis") is not None
+                )
+
+                # Get final confidence from synthesis
+                final_confidence = 0.0
+                if results.get("centralpost_synthesis"):
+                    final_confidence = results["centralpost_synthesis"].get("confidence", 0.0)
+                elif results.get("llm_responses"):
+                    # Fallback to average agent confidence
+                    confidences = [r.get("confidence", 0.0) for r in results["llm_responses"]]
+                    final_confidence = sum(confidences) / len(confidences) if confidences else 0.0
+
+                # Build agents_used list with confidence predictions
+                agents_used_info = []
+                if 'active_agents' in locals():
+                    for agent in active_agents:
+                        agent_info = {
+                            'type': agent.agent_type,
+                            'predicted_confidence': agent.confidence if hasattr(agent, 'confidence') else 0.0
+                        }
+                        agents_used_info.append(agent_info)
+
+                # Get thresholds that were used (learned or standard)
+                thresholds_used = learned_thresholds if learned_thresholds else {
+                    'confidence_threshold': 0.8,
+                    'team_expansion_threshold': 0.7,
+                    'volatility_threshold': 0.15,
+                    'web_search_threshold': 0.7
+                }
+
+                # Record outcome
+                recommendation_engine.record_workflow_outcome(
+                    workflow_id=workflow_id,
+                    task_type="workflow_task",
+                    task_complexity=task_complexity.lower(),
+                    agents_used=agents_used_info,
+                    workflow_success=workflow_success,
+                    workflow_duration=workflow_duration,
+                    final_confidence=final_confidence,
+                    thresholds_used=thresholds_used,
+                    recommendation_id=recommendation_id
+                )
+
+                logger.info(f"  ✓ Recorded: success={workflow_success}, "
+                           f"confidence={final_confidence:.2f}, "
+                           f"duration={workflow_duration:.1f}s, "
+                           f"agents={len(agents_used_info)}")
+                logger.info("=" * 60)
+
+            except Exception as learning_error:
+                # Don't fail workflow if learning recording fails
+                logger.warning(f"Could not record learning outcome: {learning_error}")
 
         return results
 

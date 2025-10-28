@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Felix is a Python multi-agent AI framework that uses helical geometry for adaptive agent progression. It models agent behaviors along helical structures (spiral paths) to enable dynamic, scalable AI interactions with continuous evolution and optimization.
+Felix is a Python multi-agent AI framework that uses helical geometry for adaptive agent progression. It models agent behaviors along helical structures (spiral paths) to enable dynamic, scalable AI interactions with continuous evolution and optimization. The framework includes an autonomous knowledge brain system that enables continuous learning from documents through agentic comprehension, knowledge graph construction, and semantic retrieval with meta-learning.
 
 The framework implements three core hypotheses:
 - **H1**: Helical progression enhances agent adaptation (20% workload distribution improvement)
@@ -25,6 +25,9 @@ pip install openai httpx numpy scipy ddgs beautifulsoup4 lxml
 
 # Optional: Install additional GUI dependencies if needed
 pip install tkinter  # Usually included with Python
+
+# Optional: Install Knowledge Brain dependencies
+pip install PyPDF2 watchdog  # PDF reading and file system monitoring
 ```
 
 ### Running the Framework
@@ -42,6 +45,9 @@ python -m src.gui
 python test_felix.py
 python test_felix_advanced.py
 python test_agents_integration.py
+
+# Test Knowledge Brain system (6 comprehensive tests)
+python test_knowledge_brain_system.py
 ```
 
 ### LM Studio Setup (Optional for real LLM integration)
@@ -99,7 +105,17 @@ Agents move down the helix from exploration to synthesis, with their behavior (t
    - `ContextBuilder`: Collaborative context management for agents
    - `TruthAssessment`: Framework for validating workflow outputs
 
-7. **Utilities** ([src/utils/](src/utils/))
+7. **Knowledge Brain System** ([src/knowledge/](src/knowledge/))
+   - `DocumentReader`: Multi-format document reading (PDF, TXT, MD, Python, JS, Java, C++) with semantic chunking
+   - `EmbeddingProvider`: 3-tier embedding system with automatic fallback (LM Studio 768-dim → TF-IDF → FTS5 BM25)
+   - `KnowledgeComprehensionEngine`: Agentic document understanding using Research, Analysis, and Critic agents
+   - `KnowledgeGraphBuilder`: Relationship discovery via explicit mentions, embedding similarity (0.75), co-occurrence (5-chunk)
+   - `KnowledgeDaemon`: Autonomous processor with 3 concurrent modes (batch, hourly refinement, file watching)
+   - `KnowledgeRetriever`: Semantic search with meta-learning boost tracking historical usefulness
+   - `WorkflowIntegration`: Bridge connecting knowledge brain to Felix workflows
+   - **Zero External Dependencies**: Intelligent fallback ensures operation without cloud APIs
+
+8. **Utilities** ([src/utils/](src/utils/))
    - `MarkdownFormatter`: Professional markdown formatting for synthesis results
    - Functions for detailed reports with agent metrics and performance summaries
 
@@ -130,12 +146,28 @@ llm:
   token_budget:
     base_budget: 2048        # Per-agent tokens
     strict_mode: true        # Enforce limits for local LLMs
+
+knowledge_brain:
+  enable_knowledge_brain: false        # Enable autonomous knowledge brain
+  knowledge_watch_dirs: ["./knowledge_sources"]  # Directories to monitor
+  knowledge_embedding_mode: "auto"     # auto/lm_studio/tfidf/fts5
+  knowledge_auto_augment: true         # Auto-inject relevant knowledge
+  knowledge_daemon_enabled: true       # Enable background daemon
+  knowledge_refinement_interval: 1     # Hours between refinement cycles
+  knowledge_processing_threads: 2      # Concurrent processing threads
+  knowledge_max_memory_mb: 512         # Maximum memory for processing
+  knowledge_chunk_size: 1000           # Characters per chunk
+  knowledge_chunk_overlap: 200         # Character overlap between chunks
 ```
 
 ## Database Schema
 
 ### felix_knowledge.db
-- `knowledge` table: Stores agent insights with domains, confidence scores, and abstractive summaries
+- `knowledge_entries` table: Stores agent insights with domains, confidence scores, and abstractive summaries (extended with embedding, source_doc_id, chunk_index for Knowledge Brain)
+- `document_sources` table: Tracks ingested documents with file paths, status, processing timestamps
+- `knowledge_relationships` table: Bidirectional relationships between concepts (explicit mentions, similarity, co-occurrence)
+- `knowledge_fts` virtual table: FTS5 full-text search index for BM25-ranked content retrieval
+- `knowledge_usage` table: Meta-learning data tracking which knowledge helps which workflows
 - Auto-compresses entries when context exceeds limits
 
 ### felix_memory.db
@@ -153,17 +185,27 @@ llm:
 
 ## GUI Interface
 
-The Tkinter GUI ([src/gui/](src/gui/)) provides five tabs with dark mode support:
+The Tkinter GUI ([src/gui/](src/gui/)) provides eight tabs with dark mode support:
 1. **Dashboard**: Start/stop Felix system, monitor logs
 2. **Workflows**: Run tasks through linear pipeline with web search, save formatted results
 3. **Memory**: Browse/edit task memory and knowledge stores
 4. **Agents**: Spawn and interact with agents
-5. **Workflow History**: Browse past executions, view details, search and filter results
+5. **Approvals**: View pending system command approvals and approval history
+6. **Terminal**: Monitor active command execution and browse command history
+7. **Prompts**: Manage agent prompts and templates
+8. **Learning**: Configure feedback and learning systems
+9. **Knowledge Brain**: Autonomous document learning with 4 sub-tabs:
+   - **Overview**: Daemon control, status, and statistics
+   - **Documents**: Browse ingested documents with status filtering
+   - **Concepts**: Search and explore extracted knowledge by domain
+   - **Activity**: Real-time processing log with auto-refresh
 
 Additional features:
 - Dark/light theme toggle with persistent preference
 - Markdown export for synthesis results
 - Real-time workflow execution tracking
+- System command approval workflow with 5 decision types
+- Real-time command execution monitoring with streaming output
 
 Requires LM Studio running before starting Felix system via GUI.
 
@@ -172,6 +214,7 @@ Requires LM Studio running before starting Felix system via GUI.
 - `test_felix.py`: Basic import and component tests
 - `test_felix_advanced.py`: Integration tests with mock LLM
 - `test_agents_integration.py`: Agent spawning and communication tests
+- `test_knowledge_brain_system.py`: Comprehensive Knowledge Brain tests (6 tests covering ingestion, comprehension, graph building, retrieval, meta-learning, daemon)
 - `exp/benchmark_felix.py`: Performance validation for H1-H3 hypotheses
 
 No formal test framework (pytest/unittest) - uses direct script execution.
@@ -189,3 +232,5 @@ No formal test framework (pytest/unittest) - uses direct script execution.
 5. **Agent Limits**: Default max 10 agents for local systems. Can scale to 133 with sufficient resources
 
 6. **Hypothesis Validation**: Run benchmarks to verify expected gains (H1: 20%, H2: 15%, H3: 25%)
+
+7. **Knowledge Brain System**: Fully optional - zero external dependencies through tiered fallback (LM Studio → TF-IDF → FTS5). Enable via GUI Settings tab. Monitors watch directories, uses agentic comprehension for document understanding, builds knowledge graphs, and provides semantic retrieval with meta-learning. Requires PyPDF2 for PDF support and watchdog for file monitoring (both optional - system adapts if missing)

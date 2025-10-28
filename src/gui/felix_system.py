@@ -24,6 +24,22 @@ from src.agents import ResearchAgent, AnalysisAgent, CriticAgent, PromptOptimize
 from src.agents.system_agent import SystemAgent
 from src.agents.agent import AgentState
 
+# Knowledge Brain imports
+try:
+    from src.knowledge import (
+        KnowledgeDaemon, DaemonConfig,
+        KnowledgeRetriever,
+        EmbeddingProvider
+    )
+    KNOWLEDGE_BRAIN_AVAILABLE = True
+except ImportError as e:
+    logger.debug(f"Knowledge Brain not available: {e}")
+    KNOWLEDGE_BRAIN_AVAILABLE = False
+    KnowledgeDaemon = None
+    DaemonConfig = None
+    KnowledgeRetriever = None
+    EmbeddingProvider = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -82,6 +98,25 @@ class FelixConfig:
     workflow_max_steps_complex: int = 20  # Max steps for complex tasks (confidence < 0.50)
     workflow_simple_threshold: float = 0.75  # Confidence threshold for simple tasks
     workflow_medium_threshold: float = 0.50  # Confidence threshold for medium tasks
+
+    # Learning system configuration
+    enable_learning: bool = True  # Enable adaptive learning systems
+    learning_auto_apply: bool = True  # Auto-apply high-confidence recommendations (≥95%)
+    learning_min_samples_patterns: int = 10  # Minimum samples for pattern recommendations
+    learning_min_samples_calibration: int = 10  # Minimum samples for confidence calibration
+    learning_min_samples_thresholds: int = 20  # Minimum samples for threshold learning
+
+    # Knowledge Brain configuration
+    enable_knowledge_brain: bool = False  # Enable autonomous knowledge brain (requires setup)
+    knowledge_watch_dirs: List[str] = None  # Directories to watch for documents
+    knowledge_embedding_mode: str = "auto"  # Embedding mode: auto/lm_studio/tfidf/fts5
+    knowledge_auto_augment: bool = True  # Auto-augment workflows with relevant knowledge
+    knowledge_daemon_enabled: bool = True  # Enable background daemon
+    knowledge_refinement_interval: int = 3600  # Refinement interval in seconds (1 hour)
+    knowledge_processing_threads: int = 2  # Number of processing threads
+    knowledge_max_memory_mb: int = 512  # Maximum memory for processing (MB)
+    knowledge_chunk_size: int = 1000  # Characters per chunk
+    knowledge_chunk_overlap: int = 200  # Character overlap between chunks
 
 
 class AgentManager:
@@ -185,6 +220,11 @@ class FelixSystem:
         self.task_memory: Optional[TaskMemory] = None
         self.context_compressor: Optional[ContextCompressor] = None
 
+        # Knowledge Brain components
+        self.embedding_provider: Optional[EmbeddingProvider] = None
+        self.knowledge_retriever: Optional[KnowledgeRetriever] = None
+        self.knowledge_daemon: Optional[KnowledgeDaemon] = None
+
         # Current simulation time
         self._current_time = 0.0
 
@@ -275,6 +315,63 @@ class FelixSystem:
                 self.context_compressor = ContextCompressor(config=compression_config)
                 logger.info(f"Context compressor initialized (strategy: {strategy.value}, max_context: {compression_config.max_context_size})")
 
+            # Initialize Knowledge Brain components (if enabled)
+            if self.config.enable_knowledge_brain and KNOWLEDGE_BRAIN_AVAILABLE:
+                try:
+                    logger.info("Initializing Knowledge Brain...")
+
+                    # 1. Create embedding provider
+                    self.embedding_provider = EmbeddingProvider(
+                        lm_studio_client=self.lm_client,
+                        db_path=self.config.knowledge_db_path
+                    )
+                    logger.info(f"  Embedding provider initialized (tier: {self.embedding_provider.active_tier.value})")
+
+                    # 2. Create knowledge retriever
+                    self.knowledge_retriever = KnowledgeRetriever(
+                        knowledge_store=self.knowledge_store,
+                        embedding_provider=self.embedding_provider,
+                        enable_meta_learning=True
+                    )
+                    logger.info("  Knowledge retriever initialized")
+
+                    # 3. Create daemon config
+                    daemon_config = DaemonConfig(
+                        watch_directories=self.config.knowledge_watch_dirs or ['./knowledge_sources'],
+                        enable_batch_processing=True,
+                        enable_refinement=True,
+                        enable_file_watching=True,
+                        refinement_interval=self.config.knowledge_refinement_interval,
+                        processing_threads=self.config.knowledge_processing_threads,
+                        max_memory_mb=self.config.knowledge_max_memory_mb,
+                        chunk_size=self.config.knowledge_chunk_size,
+                        chunk_overlap=self.config.knowledge_chunk_overlap
+                    )
+
+                    # 4. Create knowledge daemon
+                    self.knowledge_daemon = KnowledgeDaemon(
+                        config=daemon_config,
+                        knowledge_store=self.knowledge_store,
+                        llm_client=self.lm_client
+                    )
+                    logger.info("  Knowledge daemon initialized")
+
+                    # 5. Start daemon if enabled
+                    if self.config.knowledge_daemon_enabled:
+                        self.knowledge_daemon.start()
+                        logger.info("  Knowledge daemon started")
+
+                    logger.info("✓ Knowledge Brain fully operational")
+
+                except Exception as e:
+                    logger.error(f"Failed to initialize Knowledge Brain: {e}")
+                    logger.error("Continuing without Knowledge Brain...")
+                    self.embedding_provider = None
+                    self.knowledge_retriever = None
+                    self.knowledge_daemon = None
+            elif self.config.enable_knowledge_brain and not KNOWLEDGE_BRAIN_AVAILABLE:
+                logger.warning("Knowledge Brain enabled but dependencies not available")
+
             # Initialize prompt optimizer
             self.prompt_optimizer = PromptOptimizer()
             logger.info("Prompt optimizer initialized")
@@ -349,6 +446,14 @@ class FelixSystem:
             # Shutdown central post
             if self.central_post:
                 self.central_post.shutdown()
+
+            # Stop knowledge daemon
+            if self.knowledge_daemon:
+                try:
+                    self.knowledge_daemon.stop()
+                    logger.info("Knowledge daemon stopped")
+                except Exception as e:
+                    logger.warning(f"Error stopping knowledge daemon: {e}")
 
             # Close LM client if it has a close method
             if self.lm_client and hasattr(self.lm_client, 'close_async'):

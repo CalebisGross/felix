@@ -40,6 +40,7 @@ results/
 outputs/
 *_workflow_results_*.txt
 felix_synthesis_*.md
+temp/
 
 # IDE
 .vscode/

@@ -6,7 +6,7 @@
 
 Felix is a Python multi-agent AI framework that leverages helical geometry for adaptive agent progression, enabling dynamic, scalable AI interactions. The framework models agent behaviors and communications along helical structures, allowing for continuous evolution and optimization of AI tasks through a hub-spoke communication model combined with helical progression.
 
-Key features include helical progression from exploration (top_radius=3.0) to synthesis (bottom_radius=0.5), dynamic agent spawning based on confidence thresholds (0.80), role-specialized agents (Research/Analysis/Critic), smart CentralPost synthesis (adaptive temp 0.2-0.4, tokens 1500-3000), agent awareness with phase-based coordination, efficient hub-spoke messaging (O(N) complexity), web search integration (DuckDuckGo/SearxNG) with caching, workflow history tracking, system autonomy with SYSTEM_ACTION_NEEDED pattern detection, three-tier trust system (SAFE/REVIEW/BLOCKED) with configurable trust rules, approval workflow with 5 decision types (Approve Once, Always Exact, Always Command, Always Path, Deny), workflow pausing via threading.Event synchronization, command history tracking in felix_system_actions.db with deduplication, approval history browser in GUI, persistent memory with SQLite storage and abstractive compression (target_length=100, ~0.3 ratio), local LLM integration via LMStudioClient with incremental token streaming and token budgeting (base=2048, strict mode), markdown result formatting, dark mode GUI theme support, and linear pipelines with chunking (chunk=512).
+Key features include helical progression from exploration (top_radius=3.0) to synthesis (bottom_radius=0.5), dynamic agent spawning based on confidence thresholds (0.80), role-specialized agents (Research/Analysis/Critic), smart CentralPost synthesis (adaptive temp 0.2-0.4, tokens 1500-3000), agent awareness with phase-based coordination, efficient hub-spoke messaging (O(N) complexity), autonomous knowledge brain for document learning with 3-tier embeddings and knowledge graph construction, web search integration (DuckDuckGo/SearxNG) with caching, workflow history tracking, system autonomy with SYSTEM_ACTION_NEEDED pattern detection, three-tier trust system (SAFE/REVIEW/BLOCKED) with configurable trust rules, approval workflow with 5 decision types (Approve Once, Always Exact, Always Command, Always Path, Deny), workflow pausing via threading.Event synchronization, command history tracking in felix_system_actions.db with deduplication, approval history browser in GUI, persistent memory with SQLite storage and abstractive compression (target_length=100, ~0.3 ratio), local LLM integration via LMStudioClient with incremental token streaming and token budgeting (base=2048, strict mode), markdown result formatting, dark mode GUI theme support, and linear pipelines with chunking (chunk=512).
 
 Felix validates three key hypotheses: H1 (helical progression enhances agent adaptation by 20% workload distribution), H2 (hub-spoke communication optimizes resource allocation by 15% efficiency), and H3 (memory compression reduces latency by 25% attention focus). The framework supports up to 50 agents and is designed for applications like autonomous drone swarms, personalized AI assistants, and scalable chatbots.
 
@@ -19,6 +19,11 @@ For detailed structure, see [index.md](index.md).
 - **Agent Awareness System**: Phase-based coordination with team state queries and peer discovery
 - **Smart CentralPost**: Hub performs intelligent final synthesis with adaptive parameters
 - **Hub-Spoke Communication**: O(N) efficient messaging vs O(N²) mesh networks
+- **Autonomous Knowledge Brain**: Document ingestion, agentic comprehension, and semantic retrieval with continuous learning
+- **3-Tier Embeddings**: LM Studio → TF-IDF → FTS5 with automatic fallback for zero external dependencies
+- **Knowledge Graph**: Relationship discovery via explicit mentions, embedding similarity, and co-occurrence analysis
+- **Meta-Learning**: Tracks which knowledge proves useful for which workflows to improve retrieval relevance
+- **Agentic RAG**: Agents actively comprehend documents using Research, Analysis, and Critic roles, not just chunking
 - **Web Search Integration**: DuckDuckGo and SearxNG providers with result caching and domain filtering
 - **Workflow History**: Persistent tracking of all workflow executions with searchable database
 - **Token-Budgeted LLM Calls**: Local LM Studio integration with adaptive budgeting and incremental streaming
@@ -169,7 +174,12 @@ Run benchmarks from the exp/ directory to generate CSV metrics. Results demonstr
 
 A Tkinter GUI is available in `src/gui/` for interactive control of Felix components with dark mode support. Features include:
 
-- **Seven Tabs**: Dashboard, Workflows (with web search and approval polling), Memory, Agents, Approvals (pending and history), Terminal (command execution monitoring), and Prompts
+- **Eight Tabs**: Dashboard, Workflows (with web search and approval polling), Memory, Agents, Approvals (pending and history), Terminal (command execution monitoring), Prompts, Learning, and Knowledge Brain
+- **Knowledge Brain Tab**: Autonomous document learning with 4 sub-tabs:
+  - Overview: Daemon control, status, and statistics
+  - Documents: Browse ingested documents with status filtering
+  - Concepts: Search and explore extracted knowledge by domain
+  - Activity: Real-time processing log with auto-refresh
 - **Dark/Light Themes**: Toggle between themes with persistent preferences
 - **Terminal Tab**: Real-time command execution monitoring with:
   - Active Commands panel showing currently executing commands with live output streaming
@@ -219,6 +229,39 @@ Agents are trained to:
 - Consider data preservation (append vs overwrite)
 
 Configuration via `config/trust_rules.yaml`. Command history persisted in `felix_system_actions.db`.
+
+## Knowledge Brain Configuration
+
+The Knowledge Brain system enables autonomous document learning and semantic retrieval. Configure via the Settings tab in the GUI:
+
+### Core Settings
+- **Enable Knowledge Brain**: Toggle the autonomous learning system (default: disabled)
+- **Watch Directories**: Directories to monitor for documents (one per line, e.g., `./knowledge_sources`, `./docs`)
+- **Embedding Mode**: Embedding tier selection
+  - `auto`: Automatically select best available (LM Studio → TF-IDF → FTS5)
+  - `lm_studio`: Use LM Studio embeddings only
+  - `tfidf`: Use TF-IDF embeddings only
+  - `fts5`: Use SQLite FTS5 full-text search only
+
+### Behavior Settings
+- **Auto-Augment Workflows**: Automatically inject relevant knowledge into workflow context
+- **Daemon Enabled**: Enable background processing daemon
+- **Refinement Interval**: Hours between knowledge graph refinement cycles (default: 1 hour)
+- **Processing Threads**: Number of concurrent document processing threads (default: 2)
+- **Max Memory**: Maximum memory for processing in MB (default: 512)
+- **Chunk Size**: Characters per document chunk (default: 1000)
+- **Chunk Overlap**: Character overlap between chunks (default: 200)
+
+### How It Works
+1. **Document Ingestion**: Monitors watch directories for PDFs, markdown, text files, and code
+2. **Agentic Comprehension**: Uses Felix agents (Research, Analysis, Critic) to understand content
+3. **Knowledge Extraction**: Extracts concepts, entities, and relationships
+4. **Graph Building**: Discovers connections via explicit mentions, similarity, and co-occurrence
+5. **Semantic Search**: Makes knowledge retrievable via 3-tier embedding system
+6. **Meta-Learning**: Tracks which knowledge helps which workflows over time
+7. **Continuous Learning**: Runs indefinitely with batch processing, refinement, and file watching
+
+The system requires zero external dependencies thanks to the tiered fallback architecture. Enable it, point it at your document directories, and let it build your knowledge brain autonomously.
 
 ## Documentation
 

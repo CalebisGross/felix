@@ -19,6 +19,34 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+# Import validation functions for quality control
+try:
+    from src.workflows.truth_assessment import validate_knowledge_entry
+    VALIDATION_AVAILABLE = True
+except ImportError:
+    logger.warning("Validation functions not available - running without quality control")
+    VALIDATION_AVAILABLE = False
+
+# Lazy import for embeddings to avoid circular dependency
+# (src.knowledge modules import KnowledgeStore, so we can't import at module level)
+_serialize_embedding = None
+_deserialize_embedding = None
+
+def _get_embedding_functions():
+    """Lazy import of embedding functions to avoid circular dependency."""
+    global _serialize_embedding, _deserialize_embedding
+    if _serialize_embedding is None:
+        try:
+            from src.knowledge.embeddings import serialize_embedding, deserialize_embedding
+            _serialize_embedding = serialize_embedding
+            _deserialize_embedding = deserialize_embedding
+            logger.debug("Embedding serialization functions loaded successfully")
+        except ImportError as e:
+            logger.debug(f"Embeddings module not available: {e}")
+            _serialize_embedding = False  # Mark as tried and failed
+            _deserialize_embedding = False
+    return _serialize_embedding, _deserialize_embedding
+
 class KnowledgeType(Enum):
     """Types of knowledge that can be stored."""
     TASK_RESULT = "task_result"
@@ -50,6 +78,15 @@ class KnowledgeEntry:
     access_count: int = 0
     success_rate: float = 1.0
     related_entries: List[str] = field(default_factory=list)
+    # Validation fields (added for quality control)
+    validation_score: float = 1.0
+    validation_flags: List[str] = field(default_factory=list)
+    validation_status: str = "trusted"
+    validated_at: Optional[float] = None
+    # Knowledge Brain fields (added for document ingestion)
+    embedding: Optional[bytes] = None
+    source_doc_id: Optional[str] = None
+    chunk_index: Optional[int] = None
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for storage."""
@@ -85,17 +122,14 @@ class KnowledgeStore:
     enabling learning and knowledge accumulation over time.
     """
     
-    def __init__(self, storage_path: str = "felix_knowledge.db", 
-                 enable_compression: bool = True):
+    def __init__(self, storage_path: str = "felix_knowledge.db"):
         """
         Initialize knowledge store.
-        
+
         Args:
             storage_path: Path to SQLite database file
-            enable_compression: Whether to compress large content
         """
         self.storage_path = Path(storage_path)
-        self.enable_compression = enable_compression
         self._init_database()
     
     def _init_database(self) -> None:
@@ -116,7 +150,14 @@ class KnowledgeStore:
                     updated_at REAL NOT NULL,
                     access_count INTEGER DEFAULT 0,
                     success_rate REAL DEFAULT 1.0,
-                    related_entries_json TEXT DEFAULT '[]'
+                    related_entries_json TEXT DEFAULT '[]',
+                    validation_score REAL DEFAULT 1.0,
+                    validation_flags TEXT DEFAULT '[]',
+                    validation_status TEXT DEFAULT 'trusted',
+                    validated_at REAL,
+                    embedding BLOB,
+                    source_doc_id TEXT,
+                    chunk_index INTEGER
                 )
             """)
             
@@ -158,10 +199,25 @@ class KnowledgeStore:
             """)
             
             conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_knowledge_id_tag 
+                CREATE INDEX IF NOT EXISTS idx_knowledge_id_tag
                 ON knowledge_tags(knowledge_id)
             """)
-            
+
+            # Create FTS5 virtual table for full-text search (Knowledge Brain)
+            try:
+                conn.execute("""
+                    CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
+                        knowledge_id UNINDEXED,
+                        content,
+                        domain,
+                        tags,
+                        tokenize='porter unicode61'
+                    )
+                """)
+            except sqlite3.OperationalError as e:
+                # FTS5 might not be available in some SQLite builds
+                logger.debug(f"FTS5 table creation skipped: {e}")
+
             # Migrate existing data if needed
             self._migrate_existing_tags(conn)
     
@@ -231,12 +287,12 @@ class KnowledgeStore:
 
         return hashlib.sha256(hash_input.encode()).hexdigest()[:16]
     
-    def _compress_content(self, content: Dict[str, Any]) -> bytes:
-        """Compress large content using pickle."""
-        return pickle.dumps(content)
-    
     def _decompress_content(self, compressed_data: bytes) -> Dict[str, Any]:
-        """Decompress content from bytes."""
+        """
+        Decompress legacy compressed content.
+
+        Note: For backward compatibility only. New entries are stored as JSON.
+        """
         return pickle.loads(compressed_data)
     
     def store_knowledge(self, knowledge_type: KnowledgeType,
@@ -244,7 +300,10 @@ class KnowledgeStore:
                        confidence_level: ConfidenceLevel,
                        source_agent: str,
                        domain: str,
-                       tags: Optional[List[str]] = None) -> str:
+                       tags: Optional[List[str]] = None,
+                       embedding: Optional[List[float]] = None,
+                       source_doc_id: Optional[str] = None,
+                       chunk_index: Optional[int] = None) -> str:
         """
         Store new knowledge entry.
 
@@ -255,6 +314,9 @@ class KnowledgeStore:
             source_agent: Agent that generated this knowledge
             domain: Domain this knowledge applies to
             tags: Optional tags for categorization
+            embedding: Optional embedding vector for semantic search
+            source_doc_id: Optional source document ID
+            chunk_index: Optional chunk index within source document
 
         Returns:
             Knowledge ID of stored entry
@@ -271,6 +333,39 @@ class KnowledgeStore:
 
         knowledge_id = self._generate_knowledge_id(content, source_agent, domain)
         logger.info(f"   Generated knowledge_id: {knowledge_id}")
+
+        # Perform validation (if enabled)
+        validation_result = None
+        if VALIDATION_AVAILABLE:
+            try:
+                validation_result = validate_knowledge_entry(
+                    content, source_agent, domain, confidence_level
+                )
+                logger.info(f"   Validation score: {validation_result['validation_score']:.2f}")
+                logger.info(f"   Validation status: {validation_result['validation_status']}")
+                if validation_result['validation_flags']:
+                    logger.info(f"   Validation flags: {', '.join(validation_result['validation_flags'])}")
+
+                # Handle quarantine case
+                if not validation_result['should_store']:
+                    logger.warning(f"   ⛔ Entry QUARANTINED - not stored (score too low)")
+                    return knowledge_id  # Return ID but don't store
+            except Exception as e:
+                logger.warning(f"   Validation failed with error: {e} - proceeding without validation")
+                validation_result = {
+                    'validation_score': 1.0,
+                    'validation_flags': [],
+                    'validation_status': 'trusted',
+                    'should_store': True
+                }
+        else:
+            # No validation available - default to trusted
+            validation_result = {
+                'validation_score': 1.0,
+                'validation_flags': [],
+                'validation_status': 'trusted',
+                'should_store': True
+            }
 
         # Check if entry already exists (for deduplication logging)
         with sqlite3.connect(self.storage_path) as conn:
@@ -301,13 +396,20 @@ class KnowledgeStore:
             updated_at=updated_at
         )
 
-        # Determine storage method based on content size
+        # Store content as JSON (no compression)
         content_json = json.dumps(content)
-        content_compressed = None
+        content_compressed = None  # Always None for new entries
 
-        if self.enable_compression and len(content_json) > 1000:
-            content_compressed = self._compress_content(content)
-            content_json = ""  # Clear JSON to save space
+        # Serialize embedding if provided (using lazy import to avoid circular dependency)
+        embedding_blob = None
+        if embedding:
+            serialize_fn, _ = _get_embedding_functions()
+            if serialize_fn and serialize_fn is not False:
+                try:
+                    embedding_blob = serialize_fn(embedding)
+                    logger.debug(f"Serialized embedding: {len(embedding)} floats → {len(embedding_blob)} bytes")
+                except Exception as e:
+                    logger.warning(f"Failed to serialize embedding: {e}")
 
         with sqlite3.connect(self.storage_path) as conn:
             # Store main entry (INSERT OR REPLACE will update if exists)
@@ -316,8 +418,10 @@ class KnowledgeStore:
                 INSERT OR REPLACE INTO knowledge_entries
                 (knowledge_id, knowledge_type, content_json, content_compressed,
                  confidence_level, source_agent, domain, tags_json,
-                 created_at, updated_at, access_count, success_rate, related_entries_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 created_at, updated_at, access_count, success_rate, related_entries_json,
+                 validation_score, validation_flags, validation_status, validated_at,
+                 embedding, source_doc_id, chunk_index)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 knowledge_id,
                 knowledge_type.value,
@@ -331,7 +435,14 @@ class KnowledgeStore:
                 entry.updated_at,
                 0,
                 1.0,
-                json.dumps([])
+                json.dumps([]),
+                validation_result['validation_score'],
+                json.dumps(validation_result['validation_flags']),
+                validation_result['validation_status'],
+                time.time(),
+                embedding_blob,
+                source_doc_id,
+                chunk_index
             ))
             logger.info(f"   ✓ INSERT OR REPLACE executed")
 
@@ -488,17 +599,54 @@ class KnowledgeStore:
         return entries
     
     def _row_to_entry(self, row, conn=None) -> KnowledgeEntry:
-        """Convert database row to KnowledgeEntry."""
-        (knowledge_id, knowledge_type, content_json, content_compressed,
-         confidence_level, source_agent, domain, tags_json,
-         created_at, updated_at, access_count, success_rate, related_entries_json) = row
-        
+        """
+        Convert database row to KnowledgeEntry.
+
+        Note: Handles legacy compressed data for backward compatibility.
+        New entries always use content_json, but old entries may have
+        content stored in content_compressed using pickle serialization.
+        """
+        # Handle old (13), validation (17), and full (20 columns) schemas for backward compatibility
+        if len(row) == 20:
+            # Full schema with validation + knowledge brain fields
+            (knowledge_id, knowledge_type, content_json, content_compressed,
+             confidence_level, source_agent, domain, tags_json,
+             created_at, updated_at, access_count, success_rate, related_entries_json,
+             validation_score, validation_flags, validation_status, validated_at,
+             embedding, source_doc_id, chunk_index) = row
+        elif len(row) == 17:
+            # Schema with validation fields only
+            (knowledge_id, knowledge_type, content_json, content_compressed,
+             confidence_level, source_agent, domain, tags_json,
+             created_at, updated_at, access_count, success_rate, related_entries_json,
+             validation_score, validation_flags, validation_status, validated_at) = row
+            # Set default knowledge brain values
+            embedding = None
+            source_doc_id = None
+            chunk_index = None
+        elif len(row) == 13:
+            # Old schema without validation or knowledge brain fields
+            (knowledge_id, knowledge_type, content_json, content_compressed,
+             confidence_level, source_agent, domain, tags_json,
+             created_at, updated_at, access_count, success_rate, related_entries_json) = row
+            # Set default validation values
+            validation_score = 1.0
+            validation_flags = "[]"
+            validation_status = "trusted"
+            validated_at = None
+            # Set default knowledge brain values
+            embedding = None
+            source_doc_id = None
+            chunk_index = None
+        else:
+            raise ValueError(f"Unexpected row length: {len(row)}. Expected 13, 17, or 20 columns.")
+
         # Determine content source
         if content_compressed:
             content = self._decompress_content(content_compressed)
         else:
             content = json.loads(content_json)
-        
+
         # Get tags from normalized table if connection provided, otherwise fallback to JSON
         tags = []
         if conn:
@@ -510,7 +658,11 @@ class KnowledgeStore:
                 tags = json.loads(tags_json)
         else:
             tags = json.loads(tags_json)
-        
+
+        # Parse validation_flags JSON if it's a string
+        if isinstance(validation_flags, str):
+            validation_flags = json.loads(validation_flags)
+
         return KnowledgeEntry(
             knowledge_id=knowledge_id,
             knowledge_type=KnowledgeType(knowledge_type),
@@ -523,7 +675,14 @@ class KnowledgeStore:
             updated_at=updated_at,
             access_count=access_count,
             success_rate=success_rate,
-            related_entries=json.loads(related_entries_json)
+            related_entries=json.loads(related_entries_json),
+            validation_score=validation_score,
+            validation_flags=validation_flags,
+            validation_status=validation_status,
+            validated_at=validated_at,
+            embedding=embedding,
+            source_doc_id=source_doc_id,
+            chunk_index=chunk_index
         )
     
     def _increment_access_count(self, knowledge_id: str) -> None:
@@ -626,11 +785,33 @@ class KnowledgeStore:
                 SELECT AVG(success_rate) FROM knowledge_entries
             """)
             avg_success_rate = cursor.fetchone()[0] or 0.0
-            
+
+            # Count by tag (concepts vs entities)
+            try:
+                cursor = conn.execute("""
+                    SELECT kt.tag, COUNT(DISTINCT kt.knowledge_id)
+                    FROM knowledge_tags kt
+                    WHERE kt.tag IN ('concept', 'entity')
+                    GROUP BY kt.tag
+                """)
+                tag_counts = dict(cursor.fetchall())
+                concept_count = tag_counts.get('concept', 0)
+                entity_count = tag_counts.get('entity', 0)
+            except sqlite3.Error as e:
+                logger.warning(f"Failed to count by tag: {e}")
+                concept_count = 0
+                entity_count = 0
+
+            # Count high confidence entries
+            high_conf_count = by_confidence.get('high', 0) + by_confidence.get('verified', 0)
+
             return {
                 "total_entries": total_entries,
+                "concept_count": concept_count,
+                "entity_count": entity_count,
+                "high_confidence_entries": high_conf_count,
                 "by_type": by_type,
-                "by_domain": by_domain,
+                "domain_distribution": by_domain,  # Renamed for consistency with GUI
                 "by_confidence": by_confidence,
                 "average_success_rate": avg_success_rate,
                 "storage_path": str(self.storage_path)
