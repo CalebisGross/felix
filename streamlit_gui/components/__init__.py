@@ -37,6 +37,16 @@ from .log_monitor import (
 
 from .web_search_monitor import WebSearchMonitor
 from .truth_assessment_display import TruthAssessmentDisplay
+from .phase_performance import (
+    PhasePerformanceAnalyzer,
+    create_phase_performance_chart,
+    render_phase_performance
+)
+from .risk_heatmap import (
+    RiskHeatmapGenerator,
+    create_risk_heatmap,
+    render_risk_heatmap
+)
 
 __all__ = [
     # Metrics display
@@ -73,5 +83,15 @@ __all__ = [
     'WebSearchMonitor',
 
     # Truth assessment display
-    'TruthAssessmentDisplay'
+    'TruthAssessmentDisplay',
+
+    # Phase performance
+    'PhasePerformanceAnalyzer',
+    'create_phase_performance_chart',
+    'render_phase_performance',
+
+    # Risk heatmap
+    'RiskHeatmapGenerator',
+    'create_risk_heatmap',
+    'render_risk_heatmap'
 ]
