@@ -256,18 +256,49 @@ class KnowledgeDaemon:
 
         # Stop file watching
         if self.observer:
-            self.observer.stop()
-            self.observer.join(timeout=5)
-            self.observer = None  # Reset observer for clean restart
+            try:
+                self.observer.stop()
+                self.observer.join(timeout=5)
+            except Exception as e:
+                logger.warning(f"Error stopping file observer: {e}")
+            finally:
+                self.observer = None  # Reset observer for clean restart
 
-        # Wait for threads to finish (with timeout)
+        # Wait for threads to finish (with increased timeout for graceful shutdown)
         for thread in self.threads:
-            thread.join(timeout=2.0)
+            thread.join(timeout=10.0)  # Increased from 2.0 to 10.0 seconds
+            if thread.is_alive():
+                logger.warning(f"Thread {thread.name} still alive after 10 second timeout")
 
         # Clear thread list for clean restart
         self.threads.clear()
 
         logger.info("Knowledge Daemon stopped")
+
+    def force_stop(self):
+        """
+        Forcefully stop daemon without waiting for threads.
+
+        Use this as an emergency option if normal stop() hangs.
+        Threads may remain active after this call.
+        """
+        logger.warning("Force-stopping Knowledge Daemon (threads may remain active)")
+        self.running = False
+
+        # Stop file watching immediately
+        if self.observer:
+            try:
+                self.observer.stop()
+                self.observer.join(timeout=1)  # Very short timeout
+            except Exception as e:
+                logger.warning(f"Error force-stopping file observer: {e}")
+            finally:
+                self.observer = None
+
+        # Don't wait for threads - just clear the list
+        self.threads.clear()
+
+        logger.warning("Knowledge Daemon force-stopped (check for orphaned threads)")
 
     def get_status(self) -> DaemonStatus:
         """Get current daemon status."""
@@ -343,12 +374,18 @@ class KnowledgeDaemon:
 
         # Process queue
         while self.running:
-            file_path = self.document_queue.get()
+            file_path = self.document_queue.get(timeout=0.5)  # Shorter timeout for responsive shutdown
 
             if file_path is None:
-                # Queue empty, sleep
-                time.sleep(1.0)
+                # Queue empty - check if we should stop before sleeping
+                if not self.running:
+                    break
+                time.sleep(0.5)  # Shorter sleep for responsive shutdown
                 continue
+
+            # Check stop flag before processing
+            if not self.running:
+                break
 
             try:
                 self._process_document(file_path)
@@ -375,8 +412,13 @@ class KnowledgeDaemon:
         logger.info("Refinement: Starting continuous refinement loop")
 
         while self.running:
-            # Wait for refinement interval
-            time.sleep(self.config.refinement_interval)
+            # Wait for refinement interval with interruptible sleep
+            # Sleep in 1-second increments to check self.running frequently
+            sleep_remaining = self.config.refinement_interval
+            while sleep_remaining > 0 and self.running:
+                sleep_time = min(1.0, sleep_remaining)
+                time.sleep(sleep_time)
+                sleep_remaining -= sleep_time
 
             if not self.running:
                 break
@@ -604,6 +646,45 @@ class KnowledgeDaemon:
         return {
             'queued': queued_count,
             'directory': directory_path
+        }
+
+    def add_watch_directory(self, directory_path: str) -> Dict[str, Any]:
+        """
+        Add a directory to the persistent watch list.
+
+        Args:
+            directory_path: Path to directory to watch
+
+        Returns:
+            Dict with success status
+        """
+        logger.info(f"Adding watch directory: {directory_path}")
+
+        # Validate directory exists
+        if not Path(directory_path).is_dir():
+            return {
+                'success': False,
+                'error': 'Directory does not exist'
+            }
+
+        # Check if already in watch list
+        if directory_path in self.config.watch_directories:
+            return {
+                'success': False,
+                'error': 'Directory already in watch list'
+            }
+
+        # Add to config
+        self.config.watch_directories.append(directory_path)
+
+        # If file watching is active, restart it to update observer
+        if self.config.enable_file_watching and self.observer:
+            self._restart_file_watching()
+
+        logger.info(f"Successfully added directory: {directory_path}")
+        return {
+            'success': True,
+            'added': directory_path
         }
 
     def remove_watch_directory(self, directory_path: str) -> Dict[str, Any]:

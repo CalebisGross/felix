@@ -1221,6 +1221,13 @@ class CentralPost:
             for command in matches:
                 command = command.strip()
 
+                # Skip nested WEB_SEARCH_NEEDED patterns (validation gap fix)
+                if command.startswith('WEB_SEARCH_NEEDED:'):
+                    logger.warning(f"⚠️ Agent {agent_id} nested WEB_SEARCH_NEEDED inside SYSTEM_ACTION_NEEDED")
+                    logger.warning(f"   Invalid command skipped: {command}")
+                    logger.info(f"   Tip: Use WEB_SEARCH_NEEDED: on its own line, not inside SYSTEM_ACTION_NEEDED:")
+                    continue  # Skip this malformed command
+
                 # Validate extracted command (debug logging)
                 logger.debug(f"Extracted command: '{command}' (length: {len(command)})")
                 if len(command) > 200:

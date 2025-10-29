@@ -103,7 +103,7 @@ class KnowledgeBrainFrame(ttk.Frame):
 
         ttk.Separator(control_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=10)
 
-        ttk.Button(control_frame, text="📂 Add Directory", command=self._add_directory).pack(side=tk.LEFT, padx=2)
+        ttk.Button(control_frame, text="📂 Process Directory Once", command=self._add_directory).pack(side=tk.LEFT, padx=2)
         ttk.Button(control_frame, text="🗑️ Manage Directories", command=self._manage_directories).pack(side=tk.LEFT, padx=2)
         ttk.Button(control_frame, text="🔄 Force Refinement", command=self._force_refinement).pack(side=tk.LEFT, padx=2)
 
@@ -290,7 +290,7 @@ class KnowledgeBrainFrame(ttk.Frame):
                 messagebox.showerror("Error", f"Failed to stop daemon: {e}")
 
     def _add_directory(self):
-        """Add a directory for processing."""
+        """Add a directory for one-time processing (not persistent watch)."""
         directory = filedialog.askdirectory(title="Select Directory with Documents")
         if directory:
             if self.knowledge_daemon:
@@ -298,7 +298,7 @@ class KnowledgeBrainFrame(ttk.Frame):
                     result = self.knowledge_daemon.process_directory_now(directory)
                     messagebox.showinfo("Success",
                                        f"Queued {result.get('queued', 0)} documents from:\n{directory}")
-                    self._log_activity(f"Added directory: {directory} ({result.get('queued', 0)} documents)")
+                    self._log_activity(f"Processed directory once: {directory} ({result.get('queued', 0)} documents)")
                     self._refresh_overview()
                 except Exception as e:
                     messagebox.showerror("Error", f"Failed to process directory: {e}")
@@ -394,12 +394,47 @@ class KnowledgeBrainFrame(ttk.Frame):
             for idx in reversed(selection):
                 dir_listbox.delete(idx)
 
+            # Save to persistent config
+            if removed_count > 0 and hasattr(self.main_app, 'save_watch_directories'):
+                self.main_app.save_watch_directories()
+
             # Show result
             if removed_count > 0:
                 messagebox.showinfo("Success", f"Removed {removed_count} director{'y' if removed_count == 1 else 'ies'}")
                 self._refresh_overview()
             update_info()
 
+        def add_directory():
+            """Add a directory to persistent watch list."""
+            from tkinter import filedialog
+            directory = filedialog.askdirectory(title="Select Directory to Watch", parent=dialog)
+            if directory:
+                try:
+                    result = self.knowledge_daemon.add_watch_directory(directory)
+
+                    if result.get('success'):
+                        # Add to listbox immediately
+                        dir_listbox.insert(tk.END, directory)
+
+                        # Save to persistent config
+                        if hasattr(self.main_app, 'save_watch_directories'):
+                            self.main_app.save_watch_directories()
+
+                        messagebox.showinfo("Success",
+                                           f"Added to persistent watch list:\n{directory}\n\n"
+                                           "This directory will be monitored for changes.",
+                                           parent=dialog)
+                        self._log_activity(f"Added watch directory: {directory}")
+                        self._refresh_overview()
+                        update_info()
+                    else:
+                        error_msg = result.get('error', 'Unknown error')
+                        messagebox.showwarning("Cannot Add Directory", error_msg, parent=dialog)
+
+                except Exception as e:
+                    messagebox.showerror("Error", f"Failed to add watch directory: {e}", parent=dialog)
+
+        ttk.Button(btn_frame, text="➕ Add Directory", command=add_directory).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="🗑️ Remove Selected", command=remove_selected).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="✖ Close", command=dialog.destroy).pack(side=tk.LEFT, padx=5)
 

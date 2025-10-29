@@ -349,6 +349,33 @@ class MainApp(tk.Tk):
             logger.error(f"Failed to start knowledge daemon: {e}")
             return False
 
+    def save_watch_directories(self):
+        """Save current watch directories to persistent config."""
+        if not self.felix_system or not self.felix_system.knowledge_daemon:
+            logger.error("Cannot save watch directories: Knowledge daemon not initialized")
+            return False
+
+        try:
+            # Load current config
+            current_config = self._load_config()
+
+            # Get current watch directories from daemon
+            watch_dirs = self.felix_system.knowledge_daemon.config.watch_directories
+
+            # Update config with new watch directories
+            current_config['knowledge_watch_dirs'] = watch_dirs
+
+            # Save to file
+            with open(self.config_file, 'w') as f:
+                json.dump(current_config, f, indent=2)
+
+            logger.info(f"Watch directories saved to {self.config_file}: {watch_dirs}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to save watch directories: {e}")
+            return False
+
 if __name__ == "__main__":
     app = MainApp()
     app.mainloop()

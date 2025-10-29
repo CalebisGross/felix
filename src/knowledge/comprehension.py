@@ -1,13 +1,14 @@
 """
 Knowledge Comprehension Engine for Felix Knowledge Brain
 
-Uses Felix agents to read, understand, and extract knowledge from documents:
-- ResearchAgent: Reads and summarizes document content
-- AnalysisAgent: Extracts entities, concepts, relationships
-- CriticAgent: Validates extraction quality
+Uses standalone agents to read, understand, and extract knowledge from documents:
+- Research mode: Reads and summarizes document content
+- Analysis mode: Extracts entities, concepts, relationships
+- Critic mode: Validates extraction quality
 
 Implements agentic RAG approach where agents actively comprehend content
-rather than just chunking and indexing.
+rather than just chunking and indexing. Uses StandaloneAgent (not workflow
+agents) since document processing doesn't fit the helix progression model.
 """
 
 import logging
@@ -15,7 +16,7 @@ import time
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass, field
 
-from src.agents.specialized_agents import ResearchAgent, AnalysisAgent, CriticAgent
+from src.agents.standalone_agent import StandaloneAgent
 from src.memory.knowledge_store import KnowledgeStore, KnowledgeType, ConfidenceLevel
 from .document_ingest import DocumentChunk
 
@@ -122,32 +123,38 @@ class KnowledgeComprehensionEngine:
         self.min_quality_threshold = min_quality_threshold
         self.max_retries = max_retries
 
-        # Initialize agents (without helix position for document processing)
+        # Initialize standalone agents (lazy initialization in _initialize_agents)
         self.research_agent = None
         self.analysis_agent = None
         self.critic_agent = None
 
     def _initialize_agents(self):
-        """Lazy initialization of agents."""
+        """Lazy initialization of standalone agents."""
         if self.research_agent is None:
-            self.research_agent = ResearchAgent(
+            self.research_agent = StandaloneAgent(
                 agent_id="research_comprehension",
+                mode="research",
                 llm_client=self.llm_client,
-                helix_position=0.5  # Mid-helix
+                temperature=0.7,
+                max_tokens=1500
             )
 
         if self.analysis_agent is None:
-            self.analysis_agent = AnalysisAgent(
+            self.analysis_agent = StandaloneAgent(
                 agent_id="analysis_comprehension",
+                mode="analysis",
                 llm_client=self.llm_client,
-                helix_position=0.7  # Lower helix for focused analysis
+                temperature=0.5,  # Lower temperature for precise extraction
+                max_tokens=1500
             )
 
         if self.critic_agent is None:
-            self.critic_agent = CriticAgent(
+            self.critic_agent = StandaloneAgent(
                 agent_id="critic_comprehension",
+                mode="critic",
                 llm_client=self.llm_client,
-                helix_position=0.3  # Upper helix for broader perspective
+                temperature=0.3,  # Even lower for critical evaluation
+                max_tokens=1000
             )
 
     def comprehend_chunk(self,
