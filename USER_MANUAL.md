@@ -194,7 +194,7 @@ query = knowledge_store.retrieve_knowledge(KnowledgeQuery(domains=["domain"], li
 ### Pipeline Execution
 Use LinearPipeline for sequential processing or chunking for large outputs:
 ```python
-from src.pipeline.linear_pipeline import LinearPipeline
+from exp.benchmarks.linear_pipeline import LinearPipeline
 pipeline = LinearPipeline()
 result = pipeline.process(task)
 ```
