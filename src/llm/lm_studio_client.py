@@ -373,6 +373,50 @@ class LMStudioClient:
             logger.error(f"LLM completion failed for {agent_id}: {e}")
             raise
 
+    def generate_embedding(self, text: str, model: str = "local-model") -> Optional[List[float]]:
+        """
+        Generate embedding vector for text using LM Studio's embedding endpoint.
+
+        LM Studio supports OpenAI-compatible embeddings API when an embedding-capable
+        model is loaded (e.g., text-embedding-ada-002, nomic-embed-text).
+
+        Args:
+            text: Input text to embed
+            model: Model identifier (LM Studio will use loaded embedding model)
+
+        Returns:
+            List of floats (embedding vector) or None if failed
+
+        Raises:
+            LMStudioConnectionError: If cannot connect to LM Studio
+        """
+        self.ensure_connection()
+
+        try:
+            # Use OpenAI-compatible embeddings API
+            response = self.client.embeddings.create(
+                model=model,
+                input=text
+            )
+
+            # Extract embedding from response
+            if response.data and len(response.data) > 0:
+                embedding = response.data[0].embedding
+
+                if self.verbose_logging:
+                    logger.info(f"Generated embedding for text ({len(text)} chars), "
+                               f"dimension: {len(embedding)}")
+
+                return embedding
+
+            logger.warning("LM Studio embedding response contained no data")
+            return None
+
+        except Exception as e:
+            # This is expected if LM Studio doesn't have an embedding model loaded
+            logger.debug(f"Embedding generation failed: {e}")
+            return None
+
     def complete_streaming(
         self,
         agent_id: str,

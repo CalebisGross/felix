@@ -52,8 +52,9 @@ class LMStudioEmbedder:
             lm_studio_client: Existing LMStudioClient instance
         """
         self.client = lm_studio_client
-        self.available = self._check_availability()
+        self.available = False  # Set default before availability check to avoid circular dependency
         self.embedding_dim = 768  # Most embedding models use 768 dimensions
+        self.available = self._check_availability()  # Now check actual availability
 
     def _check_availability(self) -> bool:
         """Check if LM Studio has an embedding model loaded."""

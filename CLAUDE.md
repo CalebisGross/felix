@@ -194,11 +194,12 @@ The Tkinter GUI ([src/gui/](src/gui/)) provides eight tabs with dark mode suppor
 6. **Terminal**: Monitor active command execution and browse command history
 7. **Prompts**: Manage agent prompts and templates
 8. **Learning**: Configure feedback and learning systems
-9. **Knowledge Brain**: Autonomous document learning with 4 sub-tabs:
+9. **Knowledge Brain**: Autonomous document learning with 5 sub-tabs:
    - **Overview**: Daemon control, status, and statistics
    - **Documents**: Browse ingested documents with status filtering
-   - **Concepts**: Search and explore extracted knowledge by domain
+   - **Concepts**: Search and explore extracted knowledge by domain with related concepts
    - **Activity**: Real-time processing log with auto-refresh
+   - **Relationships**: Explore knowledge graph connections, search by concept, view network traversal
 
 Additional features:
 - Dark/light theme toggle with persistent preference

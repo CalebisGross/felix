@@ -375,10 +375,10 @@ class KnowledgeStore:
             ).fetchone()
 
             if existing:
-                logger.info(f"   📌 DEDUPLICATION: Entry exists (created: {time.ctime(existing[0])}) - updating")
-                # Preserve original created_at for deduplication
-                created_at = existing[0]
-                updated_at = time.time()
+                logger.info(f"   🔄 REFRESHING: Entry exists (originally created: {time.ctime(existing[0])}) - treating as new for freshness")
+                # Update created_at to current time so fresh content appears in time-range queries
+                created_at = time.time()
+                updated_at = created_at
             else:
                 logger.info(f"   ✨ NEW ENTRY: Storing for first time")
                 created_at = time.time()

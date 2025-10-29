@@ -107,7 +107,8 @@ class PatternLearner:
             # Query TaskMemory for strategy recommendation
             recommendation_data = self.task_memory.recommend_strategy(
                 task_description=task_description,
-                task_type=task_type
+                task_type=task_type,
+                complexity=task_complexity
             )
 
             if not recommendation_data:

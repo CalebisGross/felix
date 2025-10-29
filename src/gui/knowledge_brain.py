@@ -4,8 +4,9 @@ Knowledge Brain GUI Tab for Felix
 Provides monitoring and control interface for the autonomous knowledge brain:
 - Overview: Status, statistics, daemon control
 - Documents: Browse ingested sources, view status
-- Concepts: Explore extracted knowledge
+- Concepts: Explore extracted knowledge with related concepts
 - Activity: Real-time processing log
+- Relationships: Explore knowledge graph connections between concepts
 """
 
 import tkinter as tk
@@ -61,6 +62,11 @@ class KnowledgeBrainFrame(ttk.Frame):
         self.activity_frame = ttk.Frame(self.notebook)
         self.notebook.add(self.activity_frame, text="Activity")
         self._create_activity_tab()
+
+        # Tab 5: Relationships
+        self.relationships_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.relationships_frame, text="Relationships")
+        self._create_relationships_tab()
 
     def _enable_features(self):
         """Enable features when Felix system starts."""
@@ -244,6 +250,73 @@ class KnowledgeBrainFrame(ttk.Frame):
 
         # Initial activity
         self._refresh_activity()
+
+    def _create_relationships_tab(self):
+        """Create relationships tab for exploring the knowledge graph."""
+        # Controls
+        control_frame = ttk.Frame(self.relationships_frame)
+        control_frame.pack(fill=tk.X, padx=10, pady=10)
+
+        ttk.Label(control_frame, text="Filter:", font=("TkDefaultFont", 9)).pack(side=tk.LEFT, padx=(0, 5))
+
+        # Domain filter
+        self.rel_domain_var = tk.StringVar(value="all")
+        domain_combo = ttk.Combobox(control_frame, textvariable=self.rel_domain_var, state="readonly", width=15)
+        domain_combo['values'] = ("all", "python", "web", "ai", "database", "general")
+        domain_combo.pack(side=tk.LEFT, padx=5)
+        domain_combo.bind("<<ComboboxSelected>>", lambda e: self._refresh_relationships())
+
+        ttk.Button(control_frame, text="🔄 Refresh", command=self._refresh_relationships).pack(side=tk.LEFT, padx=5)
+        ttk.Button(control_frame, text="📊 Show Statistics", command=self._show_relationship_stats).pack(side=tk.LEFT, padx=5)
+
+        # Search frame
+        search_frame = ttk.Frame(self.relationships_frame)
+        search_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
+
+        ttk.Label(search_frame, text="Find Concept:", font=("TkDefaultFont", 9)).pack(side=tk.LEFT, padx=(0, 5))
+        self.rel_search_var = tk.StringVar()
+        search_entry = ttk.Entry(search_frame, textvariable=self.rel_search_var, width=40)
+        search_entry.pack(side=tk.LEFT, padx=5)
+        search_entry.bind("<Return>", lambda e: self._search_relationships())
+
+        ttk.Button(search_frame, text="🔍 Search", command=self._search_relationships).pack(side=tk.LEFT, padx=5)
+
+        # Relationships list (TreeView)
+        list_frame = ttk.Frame(self.relationships_frame)
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+
+        # Create treeview
+        columns = ("source_concept", "target_concept", "source_domain", "target_domain", "strength")
+        self.rel_tree = ttk.Treeview(list_frame, columns=columns, show="headings", height=15)
+
+        self.rel_tree.heading("source_concept", text="Source Concept")
+        self.rel_tree.heading("target_concept", text="Target Concept")
+        self.rel_tree.heading("source_domain", text="Source Domain")
+        self.rel_tree.heading("target_domain", text="Target Domain")
+        self.rel_tree.heading("strength", text="Connections")
+
+        self.rel_tree.column("source_concept", width=250)
+        self.rel_tree.column("target_concept", width=250)
+        self.rel_tree.column("source_domain", width=100)
+        self.rel_tree.column("target_domain", width=100)
+        self.rel_tree.column("strength", width=100)
+
+        rel_scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.rel_tree.yview)
+        self.rel_tree.config(yscrollcommand=rel_scrollbar.set)
+
+        self.rel_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        rel_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Context menu on right-click
+        self.rel_tree.bind("<Button-3>", self._show_relationship_context_menu)
+        self.rel_tree.bind("<Double-1>", self._explore_relationship_network)
+
+        # Status label
+        self.rel_status_label = ttk.Label(self.relationships_frame, text="", foreground="gray")
+        self.rel_status_label.pack(pady=5)
+
+        # Initial refresh
+        self._refresh_relationships()
 
     # === Command Handlers ===
 
@@ -610,7 +683,7 @@ class KnowledgeBrainFrame(ttk.Frame):
                 domain_filter = self.concept_domain_var.get()
                 if domain_filter == "all":
                     query = """
-                        SELECT content_json, content_compressed, domain, confidence_level
+                        SELECT knowledge_id, content_json, content_compressed, domain, confidence_level, related_entries_json
                         FROM knowledge_entries
                         WHERE ((content_json IS NOT NULL AND content_json != ''
                                 AND json_extract(content_json, '$.concept') IS NOT NULL)
@@ -620,7 +693,7 @@ class KnowledgeBrainFrame(ttk.Frame):
                     params = ()
                 else:
                     query = """
-                        SELECT content_json, content_compressed, domain, confidence_level
+                        SELECT knowledge_id, content_json, content_compressed, domain, confidence_level, related_entries_json
                         FROM knowledge_entries
                         WHERE ((content_json IS NOT NULL AND content_json != ''
                                 AND json_extract(content_json, '$.concept') IS NOT NULL)
@@ -642,10 +715,12 @@ class KnowledgeBrainFrame(ttk.Frame):
                 for row in cursor:
                     examined += 1
                     # Handle both compressed (legacy) and JSON content
-                    content_json = row[0]
-                    content_compressed = row[1]
-                    domain = row[2]
-                    confidence = row[3]
+                    knowledge_id = row[0]
+                    content_json = row[1]
+                    content_compressed = row[2]
+                    domain = row[3]
+                    confidence = row[4]
+                    related_json = row[5]
 
                     try:
                         if content_compressed:
@@ -668,7 +743,35 @@ class KnowledgeBrainFrame(ttk.Frame):
 
                         text += f"• {concept_name}\n"
                         text += f"  Domain: {domain} | Confidence: {confidence}\n"
-                        text += f"  {definition}\n\n"
+                        text += f"  {definition}\n"
+
+                        # Show related concepts if available
+                        if related_json and related_json != '[]':
+                            try:
+                                related_ids = json.loads(related_json)
+                                if related_ids:
+                                    # Fetch names of related concepts (limit to 3 for brevity)
+                                    related_names = []
+                                    for rel_id in related_ids[:3]:
+                                        rel_cursor = conn.execute(
+                                            "SELECT content_json FROM knowledge_entries WHERE knowledge_id = ?",
+                                            (rel_id,)
+                                        )
+                                        rel_row = rel_cursor.fetchone()
+                                        if rel_row and rel_row[0]:
+                                            rel_content = json.loads(rel_row[0])
+                                            rel_name = rel_content.get('concept', 'Unknown')
+                                            related_names.append(rel_name)
+
+                                    if related_names:
+                                        text += f"  Related: {', '.join(related_names)}"
+                                        if len(related_ids) > 3:
+                                            text += f" (+{len(related_ids) - 3} more)"
+                                        text += "\n"
+                            except Exception as rel_error:
+                                logger.debug(f"Failed to load related concepts: {rel_error}")
+
+                        text += "\n"
                         concepts_found += 1
                     except Exception as parse_error:
                         parse_errors += 1
@@ -708,13 +811,54 @@ class KnowledgeBrainFrame(ttk.Frame):
                 result = self.knowledge_retriever.search(query, top_k=20)
 
                 if result.results:
+                    import sqlite3
+                    import json
+                    conn = sqlite3.connect(self.knowledge_store.storage_path) if self.knowledge_store else None
+
                     for i, search_result in enumerate(result.results, 1):
                         concept = search_result.content.get('concept', 'Unknown')
                         definition = search_result.content.get('definition', 'No definition')
 
                         text += f"{i}. {concept} (relevance: {search_result.relevance_score:.2f})\n"
                         text += f"   Domain: {search_result.domain}\n"
-                        text += f"   {definition}\n\n"
+                        text += f"   {definition}\n"
+
+                        # Show related concepts if available
+                        if conn and hasattr(search_result, 'knowledge_id') and search_result.knowledge_id:
+                            try:
+                                cursor = conn.execute(
+                                    "SELECT related_entries_json FROM knowledge_entries WHERE knowledge_id = ?",
+                                    (search_result.knowledge_id,)
+                                )
+                                row = cursor.fetchone()
+                                if row and row[0] and row[0] != '[]':
+                                    related_ids = json.loads(row[0])
+                                    if related_ids:
+                                        # Fetch names (limit to 3)
+                                        related_names = []
+                                        for rel_id in related_ids[:3]:
+                                            rel_cursor = conn.execute(
+                                                "SELECT content_json FROM knowledge_entries WHERE knowledge_id = ?",
+                                                (rel_id,)
+                                            )
+                                            rel_row = rel_cursor.fetchone()
+                                            if rel_row and rel_row[0]:
+                                                rel_content = json.loads(rel_row[0])
+                                                rel_name = rel_content.get('concept', 'Unknown')
+                                                related_names.append(rel_name)
+
+                                        if related_names:
+                                            text += f"   Related: {', '.join(related_names)}"
+                                            if len(related_ids) > 3:
+                                                text += f" (+{len(related_ids) - 3} more)"
+                                            text += "\n"
+                            except Exception as rel_error:
+                                logger.debug(f"Failed to load related concepts: {rel_error}")
+
+                        text += "\n"
+
+                    if conn:
+                        conn.close()
 
                     text += f"\nFound {len(result.results)} results in {result.processing_time:.2f}s\n"
                     text += f"Method: {result.retrieval_method}\n"
@@ -800,6 +944,382 @@ class KnowledgeBrainFrame(ttk.Frame):
             details += f"Date: {values[5]}\n"
 
             messagebox.showinfo("Document Details", details)
+
+    def _refresh_relationships(self):
+        """Refresh relationships list."""
+        # Clear existing items
+        for item in self.rel_tree.get_children():
+            self.rel_tree.delete(item)
+
+        if not self.knowledge_store:
+            self.rel_status_label.config(text="Knowledge store not available")
+            return
+
+        try:
+            import sqlite3
+            import json
+
+            conn = sqlite3.connect(self.knowledge_store.storage_path)
+
+            # Build query with domain filter
+            domain_filter = self.rel_domain_var.get()
+
+            # Query to get all entries with relationships
+            if domain_filter == "all":
+                query = """
+                    SELECT knowledge_id, content_json, domain, related_entries_json
+                    FROM knowledge_entries
+                    WHERE related_entries_json IS NOT NULL
+                    AND related_entries_json != '[]'
+                    AND json_extract(content_json, '$.concept') IS NOT NULL
+                    ORDER BY created_at DESC
+                    LIMIT 500
+                """
+                params = ()
+            else:
+                query = """
+                    SELECT knowledge_id, content_json, domain, related_entries_json
+                    FROM knowledge_entries
+                    WHERE related_entries_json IS NOT NULL
+                    AND related_entries_json != '[]'
+                    AND json_extract(content_json, '$.concept') IS NOT NULL
+                    AND domain = ?
+                    ORDER BY created_at DESC
+                    LIMIT 500
+                """
+                params = (domain_filter,)
+
+            cursor = conn.execute(query, params)
+
+            relationships_found = 0
+            entries_with_rels = 0
+
+            for row in cursor:
+                knowledge_id = row[0]
+                content_json = row[1]
+                domain = row[2]
+                related_json = row[3]
+
+                try:
+                    content = json.loads(content_json) if content_json else {}
+                    related_ids = json.loads(related_json) if related_json else []
+
+                    source_concept = content.get('concept', 'Unknown')
+
+                    if not related_ids:
+                        continue
+
+                    entries_with_rels += 1
+
+                    # For each related entry, fetch its details
+                    for related_id in related_ids[:10]:  # Limit to first 10 to avoid clutter
+                        rel_cursor = conn.execute(
+                            "SELECT content_json, domain FROM knowledge_entries WHERE knowledge_id = ?",
+                            (related_id,)
+                        )
+                        rel_row = rel_cursor.fetchone()
+
+                        if rel_row:
+                            rel_content = json.loads(rel_row[0]) if rel_row[0] else {}
+                            target_concept = rel_content.get('concept', 'Unknown')
+                            target_domain = rel_row[1]
+
+                            # Insert into treeview
+                            self.rel_tree.insert("", tk.END, values=(
+                                source_concept,
+                                target_concept,
+                                domain,
+                                target_domain,
+                                f"{len(related_ids)} total"
+                            ), tags=(knowledge_id, related_id))
+
+                            relationships_found += 1
+
+                except Exception as e:
+                    logger.warning(f"Failed to parse relationship entry: {e}")
+                    continue
+
+            conn.close()
+
+            # Update status
+            status_text = f"Showing {relationships_found} relationships from {entries_with_rels} concepts"
+            self.rel_status_label.config(text=status_text)
+
+        except Exception as e:
+            logger.error(f"Failed to refresh relationships: {e}")
+            self.rel_status_label.config(text=f"Error: {e}")
+
+    def _search_relationships(self):
+        """Search for relationships involving a specific concept."""
+        query = self.rel_search_var.get().strip()
+
+        if not query:
+            self._refresh_relationships()
+            return
+
+        # Clear existing items
+        for item in self.rel_tree.get_children():
+            self.rel_tree.delete(item)
+
+        if not self.knowledge_store:
+            self.rel_status_label.config(text="Knowledge store not available")
+            return
+
+        try:
+            import sqlite3
+            import json
+
+            conn = sqlite3.connect(self.knowledge_store.storage_path)
+
+            # Search for concepts matching the query (case-insensitive)
+            search_query = f"%{query}%"
+            cursor = conn.execute("""
+                SELECT knowledge_id, content_json, domain, related_entries_json
+                FROM knowledge_entries
+                WHERE related_entries_json IS NOT NULL
+                AND related_entries_json != '[]'
+                AND json_extract(content_json, '$.concept') IS NOT NULL
+                AND (json_extract(content_json, '$.concept') LIKE ?
+                     OR json_extract(content_json, '$.definition') LIKE ?)
+                ORDER BY created_at DESC
+                LIMIT 100
+            """, (search_query, search_query))
+
+            relationships_found = 0
+            concepts_found = 0
+
+            for row in cursor:
+                knowledge_id = row[0]
+                content_json = row[1]
+                domain = row[2]
+                related_json = row[3]
+
+                try:
+                    content = json.loads(content_json) if content_json else {}
+                    related_ids = json.loads(related_json) if related_json else []
+
+                    source_concept = content.get('concept', 'Unknown')
+
+                    if not related_ids:
+                        continue
+
+                    concepts_found += 1
+
+                    # For each related entry, fetch its details
+                    for related_id in related_ids:
+                        rel_cursor = conn.execute(
+                            "SELECT content_json, domain FROM knowledge_entries WHERE knowledge_id = ?",
+                            (related_id,)
+                        )
+                        rel_row = rel_cursor.fetchone()
+
+                        if rel_row:
+                            rel_content = json.loads(rel_row[0]) if rel_row[0] else {}
+                            target_concept = rel_content.get('concept', 'Unknown')
+                            target_domain = rel_row[1]
+
+                            # Insert into treeview
+                            self.rel_tree.insert("", tk.END, values=(
+                                source_concept,
+                                target_concept,
+                                domain,
+                                target_domain,
+                                f"{len(related_ids)} total"
+                            ), tags=(knowledge_id, related_id))
+
+                            relationships_found += 1
+
+                except Exception as e:
+                    logger.warning(f"Failed to parse relationship entry: {e}")
+                    continue
+
+            conn.close()
+
+            # Update status
+            status_text = f"Found {relationships_found} relationships across {concepts_found} concepts matching '{query}'"
+            self.rel_status_label.config(text=status_text)
+
+        except Exception as e:
+            logger.error(f"Failed to search relationships: {e}")
+            self.rel_status_label.config(text=f"Error: {e}")
+
+    def _show_relationship_stats(self):
+        """Show statistics about relationships."""
+        if not self.knowledge_store:
+            messagebox.showwarning("Not Available", "Knowledge store not available")
+            return
+
+        try:
+            import sqlite3
+            import json
+
+            conn = sqlite3.connect(self.knowledge_store.storage_path)
+
+            # Count total entries with relationships
+            cursor = conn.execute("""
+                SELECT COUNT(*) FROM knowledge_entries
+                WHERE related_entries_json IS NOT NULL
+                AND related_entries_json != '[]'
+            """)
+            entries_with_rels = cursor.fetchone()[0]
+
+            # Count total relationships (sum of all related_entries arrays)
+            cursor = conn.execute("""
+                SELECT related_entries_json FROM knowledge_entries
+                WHERE related_entries_json IS NOT NULL
+                AND related_entries_json != '[]'
+            """)
+
+            total_relationships = 0
+            max_connections = 0
+            relationship_counts = []
+
+            for row in cursor:
+                try:
+                    related_ids = json.loads(row[0]) if row[0] else []
+                    count = len(related_ids)
+                    total_relationships += count
+                    relationship_counts.append(count)
+                    max_connections = max(max_connections, count)
+                except:
+                    continue
+
+            avg_connections = total_relationships / entries_with_rels if entries_with_rels > 0 else 0
+
+            # Get domain breakdown
+            cursor = conn.execute("""
+                SELECT domain, COUNT(*) as count
+                FROM knowledge_entries
+                WHERE related_entries_json IS NOT NULL
+                AND related_entries_json != '[]'
+                GROUP BY domain
+                ORDER BY count DESC
+            """)
+
+            domain_breakdown = cursor.fetchall()
+
+            conn.close()
+
+            # Format statistics message
+            stats = "RELATIONSHIP STATISTICS\n"
+            stats += "=" * 50 + "\n\n"
+            stats += f"Concepts with Relationships: {entries_with_rels}\n"
+            stats += f"Total Relationship Edges: {total_relationships}\n"
+            stats += f"Average Connections per Concept: {avg_connections:.1f}\n"
+            stats += f"Maximum Connections: {max_connections}\n\n"
+
+            stats += "Domain Distribution:\n"
+            for domain, count in domain_breakdown[:5]:
+                stats += f"  {domain}: {count} concepts\n"
+
+            messagebox.showinfo("Relationship Statistics", stats)
+
+        except Exception as e:
+            logger.error(f"Failed to get relationship stats: {e}")
+            messagebox.showerror("Error", f"Failed to get statistics: {e}")
+
+    def _show_relationship_context_menu(self, event):
+        """Show context menu on right-click."""
+        # Get clicked item
+        item = self.rel_tree.identify_row(event.y)
+        if item:
+            self.rel_tree.selection_set(item)
+
+            # Create context menu
+            menu = tk.Menu(self, tearoff=0)
+            menu.add_command(label="Explore Network (Double-click)",
+                           command=lambda: self._explore_relationship_network(None))
+            menu.add_separator()
+            menu.add_command(label="Copy Source Concept",
+                           command=lambda: self._copy_concept(0))
+            menu.add_command(label="Copy Target Concept",
+                           command=lambda: self._copy_concept(1))
+
+            try:
+                menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                menu.grab_release()
+
+    def _copy_concept(self, column_index):
+        """Copy concept name to clipboard."""
+        selection = self.rel_tree.selection()
+        if selection:
+            item = self.rel_tree.item(selection[0])
+            concept = item['values'][column_index]
+            self.clipboard_clear()
+            self.clipboard_append(concept)
+            self._log_activity(f"Copied: {concept}")
+
+    def _explore_relationship_network(self, event):
+        """Explore the full network for a selected concept."""
+        selection = self.rel_tree.selection()
+        if not selection:
+            return
+
+        item = self.rel_tree.item(selection[0])
+        source_concept = item['values'][0]
+
+        if not self.knowledge_retriever:
+            messagebox.showwarning("Not Available", "Knowledge retriever not available")
+            return
+
+        # Get the knowledge_id from tags
+        tags = self.rel_tree.item(selection[0])['tags']
+        if not tags:
+            return
+
+        knowledge_id = tags[0]
+
+        try:
+            # Use get_related_concepts to traverse the graph
+            related_results = self.knowledge_retriever.get_related_concepts(knowledge_id, max_depth=2)
+
+            # Create popup window to show network
+            dialog = tk.Toplevel(self)
+            dialog.title(f"Relationship Network: {source_concept}")
+            dialog.geometry("800x600")
+            dialog.transient(self)
+
+            # Title
+            ttk.Label(dialog, text=f"Exploring connections for: {source_concept}",
+                     font=("TkDefaultFont", 12, "bold")).pack(pady=10)
+
+            # Text display with scrollbar
+            text_frame = ttk.Frame(dialog)
+            text_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+
+            text_widget = tk.Text(text_frame, wrap=tk.WORD, height=30, width=90)
+            scrollbar = ttk.Scrollbar(text_frame, command=text_widget.yview)
+            text_widget.config(yscrollcommand=scrollbar.set)
+
+            text_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+            # Build network display
+            network_text = f"SOURCE CONCEPT: {source_concept}\n"
+            network_text += "=" * 70 + "\n\n"
+            network_text += f"Found {len(related_results)} related concepts (up to 2 hops away):\n\n"
+
+            for i, result in enumerate(related_results, 1):
+                concept_name = result.content.get('concept', 'Unknown')
+                definition = result.content.get('definition', 'No definition')
+                score = result.relevance_score
+
+                network_text += f"{i}. {concept_name} (relevance: {score:.2f})\n"
+                network_text += f"   Domain: {result.domain}\n"
+                network_text += f"   {definition}\n\n"
+
+            text_widget.insert(1.0, network_text)
+            text_widget.config(state=tk.DISABLED)
+
+            # Close button
+            ttk.Button(dialog, text="Close", command=dialog.destroy).pack(pady=10)
+
+            self._log_activity(f"Explored network for: {source_concept}")
+
+        except Exception as e:
+            logger.error(f"Failed to explore relationship network: {e}")
+            messagebox.showerror("Error", f"Failed to explore network: {e}")
 
     def set_knowledge_components(self, daemon, retriever, knowledge_store):
         """Set knowledge brain components (called by main_app)."""

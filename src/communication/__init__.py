@@ -21,7 +21,8 @@ The system supports:
 - Scalable agent connections
 """
 
-from .central_post import CentralPost, Message, MessageType
+from .message_types import Message, MessageType
+from .central_post import CentralPost
 from .spoke import Spoke, SpokeConnection, SpokeManager
 from .mesh import MeshCommunication, MeshConnection, MeshMessage
 
