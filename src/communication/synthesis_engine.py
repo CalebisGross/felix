@@ -23,6 +23,9 @@ from typing import Dict, List, Any, Optional
 # Import message types
 from src.communication.message_types import Message, MessageType
 
+# Import validation functions
+from src.workflows.truth_assessment import calculate_validation_score, get_validation_flags
+
 # Set up logging
 logger = logging.getLogger(__name__)
 
@@ -169,49 +172,112 @@ class SynthesisEngine:
                 "error": "no_messages"
             }
 
-        # Calculate average confidence from agent outputs
+        # Validate messages and calculate dynamic confidence
         confidences = []
+        validation_scores = []
+        critic_count = 0
+        flagged_count = 0
+
         for msg in messages:
             if msg.message_type == MessageType.STATUS_UPDATE:
                 conf = msg.content.get('confidence', 0.0)
+                agent_type = msg.content.get('agent_type', 'unknown')
+
                 if conf > 0:
                     confidences.append(conf)
 
-        avg_confidence = sum(confidences) / len(confidences) if confidences else 0.5
+                # Calculate validation score for this message
+                try:
+                    content_dict = {"result": msg.content.get('content', '')}
+                    score = calculate_validation_score(
+                        content=content_dict,
+                        source_agent=msg.sender_id,
+                        domain=msg.content.get('domain', 'workflow_task'),
+                        confidence_level=msg.content.get('confidence_level', 'MEDIUM')
+                    )
+
+                    flags = get_validation_flags(
+                        content=content_dict,
+                        source_agent=msg.sender_id,
+                        domain=msg.content.get('domain', 'workflow_task')
+                    )
+
+                    validation_scores.append(score)
+
+                    if agent_type == 'critic':
+                        critic_count += 1
+                    if len(flags) > 0:
+                        flagged_count += 1
+
+                except Exception as e:
+                    logger.warning(f"Validation failed for message from {msg.sender_id}: {e}")
+                    # Fail-open: use neutral validation score
+                    validation_scores.append(0.7)
+
+        avg_agent_confidence = sum(confidences) / len(confidences) if confidences else 0.5
+        avg_validation_score = sum(validation_scores) / len(validation_scores) if validation_scores else 0.5
+
+        # Calculate dynamic synthesis confidence (weighted: 60% validation, 40% agent confidence)
+        synthesis_confidence = avg_validation_score * 0.6 + avg_agent_confidence * 0.4
+
+        # Boost for critic validation
+        if critic_count >= 1:
+            synthesis_confidence = min(1.0, synthesis_confidence * 1.1)
+
+        # Penalty for validation issues
+        if flagged_count > len(messages) * 0.3:  # More than 30% flagged
+            synthesis_confidence *= 0.8
 
         # Calculate adaptive synthesis parameters
-        temperature = self.calculate_synthesis_temperature(avg_confidence)
+        temperature = self.calculate_synthesis_temperature(avg_agent_confidence)
         max_tokens = self.calculate_synthesis_tokens(len(messages), task_complexity)
 
         logger.info(f"Synthesis Parameters:")
         logger.info(f"  Task complexity: {task_complexity}")
         logger.info(f"  Agent messages: {len(messages)}")
-        logger.info(f"  Average confidence: {avg_confidence:.2f}")
+        logger.info(f"  Average agent confidence: {avg_agent_confidence:.2f}")
+        logger.info(f"  Average validation score: {avg_validation_score:.2f}")
+        logger.info(f"  Dynamic synthesis confidence: {synthesis_confidence:.2f}")
+        logger.info(f"  Critics present: {critic_count}")
+        logger.info(f"  Flagged messages: {flagged_count}")
         logger.info(f"  Adaptive temperature: {temperature}")
         logger.info(f"  Adaptive token budget: {max_tokens}")
 
         # Build synthesis prompt
         user_prompt = self.build_synthesis_prompt(task_description, messages, task_complexity)
 
-        # Helical-aware system prompt
-        system_prompt = """You are the Central Post of the Felix helical multi-agent system.
+        # Truth-seeking system prompt
+        system_prompt = """You are the Central Post of the Felix helical multi-agent system - a truth-seeking synthesis engine.
 
 Felix agents operate along a helical geometry:
 - Top of helix: Broad exploration (research agents)
 - Middle spiral: Focused analysis (analysis agents)
 - Bottom convergence: Critical validation (critic agents)
 
-You represent the central axis of this helix - the single point of truth that all agents spiral around.
+Your role is NOT to simply concatenate or summarize agent outputs. Your role is to REASON about them, VALIDATE them, and SYNTHESIZE TRUTH.
 
-Your synthesis represents the convergence point where all helical agent paths meet.
+Your synthesis must:
 
-Synthesize the agent outputs below into a final answer that:
-1. Captures insights from the exploration phase (research)
-2. Integrates findings from the analysis phase (analysis)
-3. Addresses concerns raised by the validation phase (critics)
-4. Represents the natural convergence of all agent trajectories
+1. **Validate Facts**: Cross-check claims between agents. If agents disagree, identify the disagreement and reason about which source is more authoritative or recent.
 
-This is the emergent output of the entire helical system."""
+2. **Prioritize Critic Feedback**: CRITIC agents provide quality control. Their concerns must be explicitly addressed, not ignored. If critics identified issues, explain how you resolved them or acknowledge limitations.
+
+3. **Acknowledge Contradictions**: If agent outputs contradict each other, DO NOT paper over the conflict. Explicitly note the contradiction and either:
+   - Resolve it with reasoning (e.g., "Source A is more recent/authoritative")
+   - Acknowledge uncertainty (e.g., "Conflicting information exists, confidence is low")
+
+4. **Express Appropriate Uncertainty**: If validation is weak, sources are questionable, or agents disagree, EXPRESS THIS. Use phrases like:
+   - "Based on available information, but with low confidence..."
+   - "Sources disagree on this point..."
+   - "This claim could not be verified..."
+
+5. **Identify Gaps**: If important information is missing or agents didn't address key aspects of the query, say so.
+
+6. **Reason Transparently**: Don't just state conclusions. Briefly explain WHY you believe certain facts over others (recency, authority, consensus, verification).
+
+7. **Preserve Helical Insights**: Still integrate exploration (research), analysis, and validation (critic) phases - but critically, not blindly.
+
+Your output should reflect JUSTIFIED confidence, not reflexive confidence. If the agent outputs are low-quality, your synthesis confidence should reflect that reality."""
 
         # Call LLM for synthesis
         start_time = time.time()
@@ -233,12 +299,15 @@ This is the emergent output of the entire helical system."""
 
             return {
                 "synthesis_content": llm_response.content,
-                "confidence": 0.95,  # High confidence for CentralPost synthesis
+                "confidence": synthesis_confidence,  # Dynamic confidence based on validation
                 "temperature": temperature,
                 "tokens_used": llm_response.tokens_used,
                 "max_tokens": max_tokens,
                 "agents_synthesized": len(messages),
-                "avg_agent_confidence": avg_confidence,
+                "avg_agent_confidence": avg_agent_confidence,
+                "avg_validation_score": avg_validation_score,
+                "critic_count": critic_count,
+                "flagged_count": flagged_count,
                 "synthesis_time": synthesis_time,
                 "timestamp": time.time()
             }

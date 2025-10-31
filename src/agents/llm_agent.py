@@ -1266,7 +1266,7 @@ class LLMAgent(Agent):
         if result.is_chunked:
             content_data["chunking_metadata"] = result.get_chunking_metadata()
             content_data["chunking_strategy"] = result.chunking_strategy
-            
+
             # For streaming synthesis, make chunks available to synthesis agents
             if result.chunking_strategy == "streaming" and result.chunk_results:
                 content_data["streaming_chunks"] = [
@@ -1279,7 +1279,29 @@ class LLMAgent(Agent):
                     }
                     for chunk in result.chunk_results
                 ]
-        
+
+        # Add validation metadata for critic agents (optional, backward compatible)
+        if self.agent_type == 'critic':
+            try:
+                from src.workflows.truth_assessment import calculate_validation_score, get_validation_flags
+
+                validation_score = calculate_validation_score(
+                    content={"result": result.content},
+                    source_agent=self.agent_id,
+                    domain="workflow_task",
+                    confidence_level="HIGH" if result.confidence > 0.8 else "MEDIUM"
+                )
+                validation_flags = get_validation_flags(
+                    content={"result": result.content},
+                    source_agent=self.agent_id,
+                    domain="workflow_task"
+                )
+
+                content_data['validation_score'] = validation_score
+                content_data['validation_flags'] = validation_flags
+            except Exception as e:
+                logger.warning(f"Could not add validation metadata for critic {self.agent_id}: {e}")
+
         return Message(
             sender_id=self.agent_id,
             message_type=MessageType.STATUS_UPDATE,

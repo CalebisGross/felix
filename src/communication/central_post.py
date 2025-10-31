@@ -2583,33 +2583,40 @@ class AgentFactory:
             task_complexity=task_complexity
         )
     
-    def assess_team_needs(self, processed_messages: List[Message], 
-                         current_time: float, current_agents: Optional[List["LLMAgent"]] = None) -> List["LLMAgent"]:
+    def assess_team_needs(self, processed_messages: List[Message],
+                         current_time: float, current_agents: Optional[List["LLMAgent"]] = None,
+                         task_description: Optional[str] = None) -> List["LLMAgent"]:
         """
         Assess current team composition and suggest new agents if needed.
-        
+
         Enhanced with DynamicSpawning system that provides:
         - Confidence monitoring with trend analysis
         - Content analysis for contradictions and gaps
         - Team size optimization based on task complexity
         - Resource-aware spawning decisions
-        
+        - NEW: Plugin-aware spawning based on task description
+
         Falls back to basic heuristics if dynamic spawning is disabled.
-        
+
         Args:
             processed_messages: Messages processed so far
             current_time: Current simulation time
             current_agents: List of currently active agents
-            
+            task_description: Optional task description for plugin-aware spawning
+
         Returns:
             List of recommended new agents to spawn
         """
         # Use dynamic spawning if enabled and available
         if self.enable_dynamic_spawning and self.dynamic_spawner:
+            # NEW: Set task description for plugin-aware spawning
+            if task_description:
+                self.dynamic_spawner.set_task_description(task_description)
+
             return self.dynamic_spawner.analyze_and_spawn(
                 processed_messages, current_agents or [], current_time
             )
-        
+
         # Fallback to basic heuristics for backward compatibility
         return self._assess_team_needs_basic(processed_messages, current_time)
     

@@ -730,17 +730,27 @@ class DynamicSpawning:
             token_budget_limit: Total token budget limit
         """
         self.agent_factory = agent_factory
-        
+
         # Initialize monitoring systems
         self.confidence_monitor = ConfidenceMonitor(confidence_threshold=confidence_threshold)
         self.content_analyzer = ContentAnalyzer()
-        self.team_optimizer = TeamSizeOptimizer(max_agents=max_agents, 
+        self.team_optimizer = TeamSizeOptimizer(max_agents=max_agents,
                                               token_budget_limit=token_budget_limit)
-        
+
         # State tracking
         self._last_analysis_time = 0.0
         self._spawning_history: List[SpawningDecision] = []
-    
+        self.task_description: Optional[str] = None  # NEW: Store task description for plugin-aware spawning
+
+    def set_task_description(self, task_description: str):
+        """
+        Set the task description for plugin-aware spawning decisions.
+
+        Args:
+            task_description: The description of the current task
+        """
+        self.task_description = task_description
+
     def analyze_and_spawn(self, processed_messages: List[Any], 
                          current_agents: List[Any], current_time: float) -> List[Any]:
         """
@@ -817,34 +827,75 @@ class DynamicSpawning:
         # Override: Force spawning if team is too small (minimum 3 agents)
         if not should_expand and len(current_agents) < 3:
             should_expand = True
-            import logging
-            logger = logging.getLogger(__name__)
             logger.info(f"Forcing team expansion: current size {len(current_agents)} < minimum 3")
 
         if not should_expand:
             return decisions  # No spawning needed
-        
-        # Priority 1: Confidence-based spawning
+
+        # NEW: Get suitable agents using plugin registry if task description is available
+        suitable_agent_types = None
+        if self.task_description and hasattr(self.agent_factory, 'get_suitable_agents_for_task'):
+            try:
+                # Estimate complexity from content analysis
+                if content_analysis.complexity_score > 0.7:
+                    complexity = "complex"
+                elif content_analysis.complexity_score < 0.3:
+                    complexity = "simple"
+                else:
+                    complexity = "medium"
+
+                suitable_agent_types = self.agent_factory.get_suitable_agents_for_task(
+                    task_description=self.task_description,
+                    task_complexity=complexity
+                )
+
+                # Filter out already-spawned types
+                current_types = {agent.agent_type for agent in current_agents if hasattr(agent, 'agent_type')}
+                suitable_agent_types = [t for t in suitable_agent_types if t not in current_types]
+
+                logger.debug(f"Task-aware filtering: {len(suitable_agent_types)} suitable unspawned agents for task")
+
+            except Exception as e:
+                logger.warning(f"Failed to get suitable agents from registry: {e}")
+                suitable_agent_types = None
+
+        # Priority 1: Confidence-based spawning (task-aware if possible)
         if confidence_metrics.current_average < 0.7:
-            agent_type = self.confidence_monitor.get_recommended_agent_type()
+            # NEW: Use suitable agents if available, otherwise fall back to default
+            if suitable_agent_types and len(suitable_agent_types) > 0:
+                agent_type = suitable_agent_types[0]  # Highest priority suitable agent
+                reasoning_suffix = " (task-relevant agent selected)"
+            else:
+                agent_type = self.confidence_monitor.get_recommended_agent_type()
+                reasoning_suffix = " (default agent selected)"
+
             priority_score = 1.0 - confidence_metrics.current_average  # Higher priority for lower confidence
-            
+
             decisions.append(SpawningDecision(
                 should_spawn=True,
                 agent_type=agent_type,
                 spawn_parameters={
                     "spawn_time_range": (current_time, min(current_time + 0.01, 1.0)),  # Immediate spawn (clamped to 1.0)
-                    "max_tokens": self.team_optimizer.get_resource_budget_for_new_agent(agent_type)
+                    "max_tokens": self.team_optimizer.get_resource_budget_for_new_agent(agent_type),
+                    "complexity": complexity if 'complexity' in locals() else "medium"
                 },
                 priority_score=priority_score,
-                reasoning=f"Low confidence ({confidence_metrics.current_average:.2f}) triggered {agent_type} spawn"
+                reasoning=f"Low confidence ({confidence_metrics.current_average:.2f}) triggered {agent_type} spawn{reasoning_suffix}"
             ))
         
-        # Priority 2: Content-based spawning
-        for suggested_type in content_analysis.suggested_agent_types:
+        # Priority 2: Content-based spawning (task-aware if possible)
+        # NEW: Filter suggested types against suitable types if available
+        types_to_consider = content_analysis.suggested_agent_types
+        if suitable_agent_types is not None:
+            # Only consider suggested types that are also task-suitable
+            types_to_consider = [t for t in types_to_consider if t in suitable_agent_types or t in ["research", "analysis", "critic"]]
+            if types_to_consider:
+                logger.debug(f"Filtered content suggestions to task-suitable types: {types_to_consider}")
+
+        for suggested_type in types_to_consider:
             if len(decisions) >= 4:  # Limit concurrent spawns
                 break
-                
+
             # Calculate priority based on issue severity
             priority_score = 0.5  # Base priority
             if ContentIssue.CONTRADICTION in content_analysis.detected_issues:
@@ -874,8 +925,6 @@ class DynamicSpawning:
 
         # If too many critics (7+), skip spawning additional critics
         if current_types.get("critic", 0) >= 7:
-            import logging
-            logger = logging.getLogger('felix_workflows')
             logger.info(f"  Diversity check: {current_types.get('critic', 0)} critics exist, limiting critic spawns")
             # Filter out critic decisions if we have too many
             decisions = [d for d in decisions if d.agent_type != "critic"]
@@ -898,16 +947,44 @@ class DynamicSpawning:
         return "general"
     
     def _spawn_agent(self, decision: SpawningDecision):
-        """Spawn agent based on decision parameters."""
+        """
+        Spawn agent based on decision parameters.
+
+        NEW: Plugin-aware spawning - tries to create agent via plugin registry first,
+        then falls back to hardcoded types for backward compatibility.
+        """
         spawn_params = decision.spawn_parameters
         agent_type = decision.agent_type
-        
+
         # Extract spawn parameters
         spawn_time_range = spawn_params.get("spawn_time_range", (0.1, 0.3))
         max_tokens = spawn_params.get("max_tokens", 800)
         specialized_focus = spawn_params.get("specialized_focus", "general")
-        
-        # Create agent based on type
+
+        # NEW: Try plugin-aware path first (supports all registered agent types)
+        if hasattr(self.agent_factory, 'create_agent_by_type'):
+            try:
+                # Estimate complexity from spawn parameters or default to "medium"
+                complexity = spawn_params.get("complexity", "medium")
+
+                # Use plugin-aware factory method
+                agent = self.agent_factory.create_agent_by_type(
+                    agent_type=agent_type,
+                    complexity=complexity,
+                    spawn_time_range=spawn_time_range,
+                    max_tokens=max_tokens,
+                    **spawn_params
+                )
+
+                if agent is not None:
+                    logger.debug(f"Successfully spawned {agent_type} agent via plugin registry")
+                    return agent
+
+            except Exception as e:
+                # Plugin creation failed, fall back to hardcoded types
+                logger.warning(f"Plugin creation failed for {agent_type}: {e}. Falling back to hardcoded types.")
+
+        # FALLBACK: Backward compatibility for built-in types
         if agent_type == "research":
             return self.agent_factory.create_research_agent(
                 domain=specialized_focus,
@@ -925,6 +1002,7 @@ class DynamicSpawning:
             )
         # Note: synthesis agent type removed - CentralPost now handles synthesis directly
 
+        logger.warning(f"Unable to spawn agent of type '{agent_type}' - not found in registry or hardcoded types")
         return None
     
     def get_spawning_summary(self) -> Dict[str, Any]:

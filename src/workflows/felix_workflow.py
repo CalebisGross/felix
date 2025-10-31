@@ -778,11 +778,12 @@ def run_felix_workflow(felix_system, task_input: str,
                     logger.info(f"  Avg confidence: {avg_confidence:.2f} (threshold: 0.7)")
                     logger.info(f"  Current team: {len(active_agents)} agents, types: {[a.agent_type for a in active_agents]}")
 
-                # Call assess_team_needs with REAL messages
+                # Call assess_team_needs with REAL messages and task description
                 new_agents = agent_factory.assess_team_needs(
                     all_processed_messages,  # REAL messages with all fields!
                     current_time,
-                    active_agents
+                    active_agents,
+                    task_description=task_input  # NEW: Pass task for plugin-aware spawning
                 )
 
                 if new_agents:

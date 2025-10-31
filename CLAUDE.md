@@ -6,11 +6,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Felix is a Python multi-agent AI framework that uses helical geometry for adaptive agent progression. It models agent behaviors along helical structures (spiral paths) to enable dynamic, scalable AI interactions with continuous evolution and optimization. The framework includes an autonomous knowledge brain system that enables continuous learning from documents through agentic comprehension, knowledge graph construction, and semantic retrieval with meta-learning.
 
-The framework implements three core hypotheses:
-- **H1**: Helical progression enhances agent adaptation (20% workload distribution improvement)
-- **H2**: Hub-spoke communication optimizes resource allocation (15% efficiency gain)
-- **H3**: Memory compression reduces latency (25% attention focus improvement)
-
 ## Development Commands
 
 ### Setup and Installation
@@ -127,7 +122,7 @@ Agents move down the helix from exploration to synthesis, with their behavior (t
    - `AgentFactory`: Creates agents with helix positioning
    - `AgentRegistry`: Phase-based agent tracking (exploration/analysis/synthesis)
    - Agent awareness: Query team state, discover peers, coordinate collaboration
-   - Handles up to 133 agents with efficient message queuing
+   - Handles 25+ agents with efficient message queuing
 
 3. **Memory Systems** ([src/memory/](src/memory/))
    - `KnowledgeStore`: SQLite persistence in `felix_knowledge.db`
@@ -328,7 +323,7 @@ No formal test framework (pytest/unittest) - uses direct script execution.
 
 4. **Token Budgets**: Configured for local 7B models (~2048 context). Adjust for larger models
 
-5. **Agent Limits**: Default max 10 agents for local systems. Can scale to 133 with sufficient resources
+5. **Agent Limits**: Default max 10 agents for local systems. Can scale indefinitely with sufficient resources
 
 6. **Hypothesis Validation**: Run benchmarks to verify expected gains (H1: 20%, H2: 15%, H3: 25%)
 
