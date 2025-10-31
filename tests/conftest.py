@@ -164,6 +164,12 @@ def mock_helix_geometry():
     )
 
 
+@pytest.fixture
+def mock_helix(mock_helix_geometry):
+    """Alias for mock_helix_geometry for backward compatibility."""
+    return mock_helix_geometry
+
+
 @pytest.fixture(autouse=True)
 def reset_logging():
     """Reset logging configuration before each test."""
@@ -211,4 +217,7 @@ def pytest_configure(config):
     )
     config.addinivalue_line(
         "markers", "router: Tests for LLM router"
+    )
+    config.addinivalue_line(
+        "markers", "plugins: Tests for agent plugin system"
     )

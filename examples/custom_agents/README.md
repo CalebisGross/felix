@@ -113,6 +113,117 @@ agent = registry.create_agent(
 )
 ```
 
+## Engineering Agent Plugins (NEW!)
+
+Three production-ready plugins for software engineering workflows:
+
+### FrontendAgent
+
+Specializes in UI/UX design, frontend architecture, and responsive web development.
+
+**Capabilities:**
+- UI component architecture and design patterns
+- Responsive design and mobile-first approaches
+- Accessibility (WCAG, ARIA) standards
+- CSS optimization and modern styling strategies
+- Frontend frameworks (React, Vue, Angular, Svelte)
+
+**Spawn Range:** 0.3-0.6 (Analysis phase)
+**Priority:** 7 (Equal with backend)
+**Keywords:** ui, ux, frontend, css, html, react, vue, component, layout, responsive, accessibility
+
+**Usage:**
+```python
+# Register plugins
+registry.add_plugin_directory("./examples/custom_agents")
+
+# Frontend agent auto-spawns for tasks like:
+# - "Design responsive navigation menu"
+# - "Build React component for user dashboard"
+# - "Fix CSS alignment bug"
+# - "Add ARIA labels for accessibility"
+```
+
+### BackendAgent
+
+Specializes in API design, database architecture, and server-side development.
+
+**Capabilities:**
+- RESTful APIs and GraphQL endpoint design
+- Database schema and data model optimization
+- Authentication and authorization strategies
+- Microservices architecture
+- Performance optimization and caching
+
+**Spawn Range:** 0.3-0.6 (Analysis phase, parallel with frontend)
+**Priority:** 7 (Equal with frontend)
+**Keywords:** api, rest, graphql, backend, server, database, authentication, microservice, sql, nosql
+
+**Usage:**
+```python
+# Backend agent auto-spawns for tasks like:
+# - "Design REST API for user management"
+# - "Create database schema for e-commerce"
+# - "Build JWT authentication service"
+# - "Design microservices architecture"
+```
+
+### QAAgent
+
+Specializes in testing strategy, quality assurance, and validation planning.
+
+**Capabilities:**
+- Test strategy development (unit, integration, e2e)
+- Test case generation and edge case identification
+- Coverage analysis and gap detection
+- Acceptance criteria definition
+- Quality metrics and validation planning
+
+**Spawn Range:** 0.5-0.8 (Late phase, after implementation discussion)
+**Priority:** 5 (Lower than critic, reviews last)
+**Keywords:** test, testing, qa, validation, coverage, bug, edge case
+
+**Auto-Spawns For:**
+- Explicit testing tasks: "Create test suite for payment system"
+- Medium/complex development tasks: "Build todo app" (auto-tests)
+
+**Usage:**
+```python
+# QA agent auto-spawns for tasks like:
+# - "Create test strategy for checkout flow"
+# - "Build comprehensive API" (medium/complex)
+# - "Identify edge cases for validation"
+```
+
+### Demo Script
+
+Run the demo to see all three agents in action:
+
+```bash
+python3 examples/custom_agents/demo_engineering_agents.py
+```
+
+This demonstrates:
+- Task-based filtering (which agents spawn for which tasks)
+- Complexity-based spawn timing
+- Real-world engineering scenarios
+- Integration with Felix's plugin system
+
+### Running Tests
+
+Comprehensive tests for all three plugins:
+
+```bash
+python3 -m pytest tests/unit/test_custom_agent_plugins.py -v
+```
+
+Tests verify:
+- Metadata and configuration
+- Task filtering correctness (supports_task)
+- Complexity-based spawn ranges
+- Agent creation and integration
+- Real-world scenario behavior
+
 ## Plugin API Reference
 
 ### AgentMetadata Fields
