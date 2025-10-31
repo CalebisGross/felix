@@ -1,7 +1,6 @@
 """
 Dynamic Agent Spawning System for Felix Framework
 
-Implements Priority 2 of the enhancement plan:
 - ConfidenceMonitor for team-wide confidence tracking
 - ContentAnalyzer for detecting contradictions, gaps, complexity
 - TeamSizeOptimizer for adaptive team sizing with resource constraints
@@ -818,7 +817,7 @@ class DynamicSpawning:
                 should_spawn=True,
                 agent_type=agent_type,
                 spawn_parameters={
-                    "spawn_time_range": (current_time, current_time + 0.01),  # Immediate spawn
+                    "spawn_time_range": (current_time, min(current_time + 0.01, 1.0)),  # Immediate spawn (clamped to 1.0)
                     "max_tokens": self.team_optimizer.get_resource_budget_for_new_agent(agent_type)
                 },
                 priority_score=priority_score,
@@ -843,7 +842,7 @@ class DynamicSpawning:
                 should_spawn=True,
                 agent_type=suggested_type,
                 spawn_parameters={
-                    "spawn_time_range": (current_time, current_time + 0.01),  # Immediate spawn
+                    "spawn_time_range": (current_time, min(current_time + 0.01, 1.0)),  # Immediate spawn (clamped to 1.0)
                     "max_tokens": self.team_optimizer.get_resource_budget_for_new_agent(suggested_type),
                     "specialized_focus": self._get_specialized_focus(content_analysis, suggested_type)
                 },
@@ -851,43 +850,19 @@ class DynamicSpawning:
                 reasoning=f"Content analysis detected {len(content_analysis.detected_issues)} issues requiring {suggested_type} agent"
             ))
 
+        # Note: Diversity enforcement for synthesis agents removed - CentralPost now handles synthesis directly
         # DIVERSITY ENFORCEMENT: Prevent too many of one agent type
         # Count current agent types
         from collections import Counter
         current_types = Counter([a.agent_type if hasattr(a, 'agent_type') else 'unknown' for a in current_agents])
 
-        # If too many critics (7+), replace some spawning decisions with synthesis agents
+        # If too many critics (7+), skip spawning additional critics
         if current_types.get("critic", 0) >= 7:
             import logging
             logger = logging.getLogger('felix_workflows')
-            logger.info(f"  Enforcing diversity: {current_types.get('critic', 0)} critics exist, promoting synthesis agents")
-
-            # Replace critic decisions with synthesis if we have too many critics
-            for decision in decisions:
-                if decision.agent_type == "critic" and current_types.get("critic", 0) >= 7:
-                    decision.agent_type = "synthesis"
-                    decision.reasoning += " (diversity enforcement: too many critics)"
-                    # Update spawn parameters for synthesis agent
-                    decision.spawn_parameters["max_tokens"] = self.team_optimizer.get_resource_budget_for_new_agent("synthesis")
-                    break  # Only replace one decision per cycle
-
-        # If too many analysis agents (5+) and few synthesis (< 2), promote synthesis
-        if current_types.get("analysis", 0) >= 5 and current_types.get("synthesis", 0) < 2:
-            import logging
-            logger = logging.getLogger('felix_workflows')
-            logger.info(f"  Enforcing diversity: {current_types.get('analysis', 0)} analysis, {current_types.get('synthesis', 0)} synthesis - promoting synthesis")
-
-            # Add a synthesis agent decision
-            decisions.append(SpawningDecision(
-                should_spawn=True,
-                agent_type="synthesis",
-                spawn_parameters={
-                    "spawn_time_range": (current_time, current_time + 0.01),
-                    "max_tokens": self.team_optimizer.get_resource_budget_for_new_agent("synthesis")
-                },
-                priority_score=0.9,  # High priority for diversity
-                reasoning="Diversity enforcement: need synthesis to integrate analysis findings"
-            ))
+            logger.info(f"  Diversity check: {current_types.get('critic', 0)} critics exist, limiting critic spawns")
+            # Filter out critic decisions if we have too many
+            decisions = [d for d in decisions if d.agent_type != "critic"]
 
         # Sort by priority and return top decisions
         decisions.sort(key=lambda d: d.priority_score, reverse=True)
@@ -931,12 +906,8 @@ class DynamicSpawning:
                 review_focus=specialized_focus,
                 spawn_time_range=spawn_time_range
             )
-        elif agent_type == "synthesis":
-            return self.agent_factory.create_synthesis_agent(
-                output_format=specialized_focus,
-                spawn_time_range=spawn_time_range
-            )
-        
+        # Note: synthesis agent type removed - CentralPost now handles synthesis directly
+
         return None
     
     def get_spawning_summary(self) -> Dict[str, Any]:
@@ -945,7 +916,7 @@ class DynamicSpawning:
             "total_spawns": len(self._spawning_history),
             "spawns_by_type": {
                 agent_type: sum(1 for d in self._spawning_history if d.agent_type == agent_type)
-                for agent_type in ["research", "analysis", "critic", "synthesis"]
+                for agent_type in ["research", "analysis", "critic"]
             },
             "average_priority": statistics.mean([d.priority_score for d in self._spawning_history]) if self._spawning_history else 0.0,
             "spawning_reasons": [d.reasoning for d in self._spawning_history[-5:]]  # Last 5 reasons

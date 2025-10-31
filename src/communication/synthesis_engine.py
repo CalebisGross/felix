@@ -53,6 +53,69 @@ class SynthesisEngine:
 
         logger.info("✓ SynthesisEngine initialized")
 
+    def classify_task_complexity(self, task_description: str) -> str:
+        """
+        Classify task complexity to optimize synthesis strategy.
+
+        Task complexity affects:
+        - Synthesis temperature and token budgets
+        - Agent spawning strategies
+        - Workflow execution parameters
+
+        Args:
+            task_description: The task description from user
+
+        Returns:
+            Task complexity: "SIMPLE_FACTUAL", "MEDIUM", or "COMPLEX"
+
+        Examples:
+            >>> engine.classify_task_complexity("What time is it?")
+            'SIMPLE_FACTUAL'
+            >>> engine.classify_task_complexity("Explain quantum computing")
+            'MEDIUM'
+            >>> engine.classify_task_complexity("Design a microservices architecture")
+            'COMPLEX'
+        """
+        import re
+
+        task_lower = task_description.lower()
+
+        # Simple factual patterns that can be answered quickly with web search
+        simple_patterns = [
+            r'\b(what|when|who|where)\s+(is|are|was|were)\s+(the\s+)?current',
+            r'\bwhat\s+time\b',
+            r'\bwhat\s+date\b',
+            r'\btoday\'?s?\s+(date|time)',
+            r'\bcurrent\s+(time|date|datetime)',
+            r'\bwho\s+(won|is|was)\b',
+            r'\bwhen\s+(did|is|was)\b',
+            r'\bhow\s+many\b.*\b(now|current|today)',
+            r'\blatest\s+(news|update)\b',
+        ]
+
+        # Check for simple factual patterns
+        for pattern in simple_patterns:
+            if re.search(pattern, task_lower):
+                return "SIMPLE_FACTUAL"
+
+        # Medium complexity: specific questions but may need analysis
+        medium_patterns = [
+            r'\bexplain\b',
+            r'\bcompare\b',
+            r'\bwhat\s+are\s+the\s+(benefits|advantages|disadvantages)',
+            r'\bhow\s+does\b',
+            r'\bhow\s+to\b',
+            r'\blist\b',
+            r'\bsummarize\b',
+        ]
+
+        for pattern in medium_patterns:
+            if re.search(pattern, task_lower):
+                return "MEDIUM"
+
+        # Default to complex for open-ended, analytical tasks
+        return "COMPLEX"
+
     def synthesize_agent_outputs(self, task_description: str, max_messages: int = 20,
                                  task_complexity: str = "COMPLEX") -> Dict[str, Any]:
         """

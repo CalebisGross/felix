@@ -57,14 +57,14 @@ class ThresholdLearner:
 
     def __init__(self,
                  db_path: Path = None,
-                 min_samples: int = 20,
+                 min_samples: int = 15,
                  learning_rate: float = 0.1):
         """
         Initialize ThresholdLearner.
 
         Args:
             db_path: Path to felix_task_memory.db (default: auto-detect)
-            min_samples: Minimum samples before learning thresholds (default: 20)
+            min_samples: Minimum samples before learning thresholds (default: 15)
             learning_rate: How quickly to adjust thresholds (default: 0.1)
         """
         if db_path is None:

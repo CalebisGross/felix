@@ -14,6 +14,7 @@ is a comparison baseline for benchmarking purposes.
 
 import time
 import logging
+from datetime import datetime
 from typing import Dict, Any, Optional, Callable
 
 # Import collaborative context builder for agent collaboration
@@ -30,6 +31,9 @@ from src.memory.context_compression import (
     CompressionLevel
 )
 
+# Import TaskComplexity for task classification
+from src.memory.task_memory import TaskComplexity
+
 # Use module-specific logger that propagates to GUI
 # IMPORTANT: Use 'felix_workflows' to match GUI logger configuration
 logger = logging.getLogger('felix_workflows')
@@ -37,55 +41,28 @@ logger.setLevel(logging.INFO)
 logger.propagate = True  # Ensure logs reach GUI handlers
 
 
-def _classify_task_complexity(task_input: str) -> str:
+def _map_synthesis_complexity_to_task_complexity(synthesis_complexity: str) -> TaskComplexity:
     """
-    Classify task complexity to optimize workflow execution.
+    Map SynthesisEngine complexity classification to TaskComplexity enum.
+
+    SynthesisEngine returns: "SIMPLE_FACTUAL", "MEDIUM", "COMPLEX"
+    TaskMemory expects: TaskComplexity.SIMPLE, .MODERATE, .COMPLEX, .VERY_COMPLEX
 
     Args:
-        task_input: The task description from user
+        synthesis_complexity: String complexity from SynthesisEngine.classify_task_complexity()
 
     Returns:
-        Task complexity: "SIMPLE_FACTUAL", "MEDIUM", or "COMPLEX"
+        TaskComplexity enum value
     """
-    import re
-
-    task_lower = task_input.lower()
-
-    # Simple factual patterns that can be answered quickly with web search
-    simple_patterns = [
-        r'\b(what|when|who|where)\s+(is|are|was|were)\s+(the\s+)?current',
-        r'\bwhat\s+time\b',
-        r'\bwhat\s+date\b',
-        r'\btoday\'?s?\s+(date|time)',
-        r'\bcurrent\s+(time|date|datetime)',
-        r'\bwho\s+(won|is|was)\b',
-        r'\bwhen\s+(did|is|was)\b',
-        r'\bhow\s+many\b.*\b(now|current|today)',
-        r'\blatest\s+(news|update)\b',
-    ]
-
-    # Check for simple factual patterns
-    for pattern in simple_patterns:
-        if re.search(pattern, task_lower):
-            return "SIMPLE_FACTUAL"
-
-    # Medium complexity: specific questions but may need analysis
-    medium_patterns = [
-        r'\bexplain\b',
-        r'\bcompare\b',
-        r'\bwhat\s+are\s+the\s+(benefits|advantages|disadvantages)',
-        r'\bhow\s+does\b',
-        r'\bhow\s+to\b',
-        r'\blist\b',
-        r'\bsummarize\b',
-    ]
-
-    for pattern in medium_patterns:
-        if re.search(pattern, task_lower):
-            return "MEDIUM"
-
-    # Default to complex for open-ended, analytical tasks
-    return "COMPLEX"
+    mapping = {
+        "SIMPLE_FACTUAL": TaskComplexity.SIMPLE,
+        "SIMPLE": TaskComplexity.SIMPLE,
+        "MEDIUM": TaskComplexity.MODERATE,
+        "MODERATE": TaskComplexity.MODERATE,
+        "COMPLEX": TaskComplexity.COMPLEX,
+        "VERY_COMPLEX": TaskComplexity.VERY_COMPLEX
+    }
+    return mapping.get(synthesis_complexity.upper(), TaskComplexity.MODERATE)
 
 
 def run_felix_workflow(felix_system, task_input: str,
@@ -206,19 +183,24 @@ def run_felix_workflow(felix_system, task_input: str,
         if progress_callback:
             progress_callback("Initializing Felix workflow...", 0.0)
 
-        # Create LLM task
+        # Create LLM task with current date/time context
         from src.agents.llm_agent import LLMTask
+        current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S %Z").strip()
+        if not current_datetime.endswith(('UTC', 'EST', 'PST', 'CST', 'MST')):
+            # If timezone abbreviation is empty, add local time indicator
+            current_datetime = f"{current_datetime.strip()} (local time)"
+
         task = LLMTask(
             task_id=f"workflow_{int(time.time()*1000)}",
             description=task_input,
-            context="GUI workflow task - process through Felix agents"
+            context=f"Current date/time: {current_datetime}\n\nGUI workflow task - process through Felix agents"
         )
 
         # Set current task for CentralPost web search
         central_post.set_current_task(task_input)
 
-        # Classify task complexity for optimization
-        task_complexity = _classify_task_complexity(task_input)
+        # Classify task complexity for optimization (using SynthesisEngine)
+        task_complexity = central_post.synthesis_engine.classify_task_complexity(task_input)
         logger.info(f"Task complexity classification: {task_complexity}")
 
         # Check web search availability (Fix 5)
@@ -262,8 +244,8 @@ def run_felix_workflow(felix_system, task_input: str,
 
                     try:
                         # Trigger web search immediately
-                        logger.info("🚀 INVOKING central_post._perform_web_search() NOW...")
-                        result = central_post._perform_web_search(task_input)
+                        logger.info("🚀 INVOKING central_post.perform_web_search() NOW...")
+                        result = central_post.perform_web_search(task_input)
                         logger.info(f"✓ Method returned: {result}")
                         logger.info("✓ Proactive web search completed - results stored in knowledge base")
                     except Exception as e:
@@ -282,6 +264,7 @@ def run_felix_workflow(felix_system, task_input: str,
             "messages_processed": [],
             "llm_responses": [],
             "knowledge_entries": [],
+            "knowledge_entry_ids": [],  # Track actual knowledge IDs for meta-learning
             "status": "in_progress",
             "centralpost_synthesis": None  # Will store CentralPost synthesis output
         }
@@ -326,10 +309,12 @@ def run_felix_workflow(felix_system, task_input: str,
             logger.info("=" * 60)
             logger.info("🧠 LEARNING SYSTEM - Pre-Workflow Recommendations")
             try:
+                # Convert synthesis complexity string to TaskComplexity enum
+                task_complexity_enum = _map_synthesis_complexity_to_task_complexity(task_complexity)
                 unified_recommendation = recommendation_engine.get_pre_workflow_recommendations(
                     task_description=task_input,
                     task_type="workflow_task",
-                    task_complexity=task_complexity.lower()
+                    task_complexity=task_complexity_enum
                 )
 
                 if unified_recommendation:
@@ -464,6 +449,12 @@ def run_felix_workflow(felix_system, task_input: str,
                             task.context_history = enriched_context.context_history
                             task.knowledge_entries = enriched_context.knowledge_entries
                             logger.info(f"  ✓ Using collaborative context with {len(enriched_context.context_history)} previous outputs")
+
+                            # Track knowledge entry IDs for meta-learning
+                            if enriched_context.knowledge_entries:
+                                for entry in enriched_context.knowledge_entries:
+                                    if hasattr(entry, 'knowledge_id') and entry.knowledge_id not in results["knowledge_entry_ids"]:
+                                        results["knowledge_entry_ids"].append(entry.knowledge_id)
 
                         except Exception as ctx_error:
                             logger.warning(f"  ⚠ Collaborative context building failed, falling back to non-collaborative mode: {ctx_error}")
@@ -612,21 +603,31 @@ def run_felix_workflow(felix_system, task_input: str,
 
             # EARLY TERMINATION: Check if system actions completed successfully
             # If task requires only system actions (like file creation), exit early
-            if step >= 1:  # After first step to allow actions to execute
+            # BUT: Require meaningful progress (multiple operations) to avoid premature exit
+            if step >= 2:  # Wait at least 2 steps to allow multi-command workflows
                 # Get all completed system action results from CentralPost
-                # _action_results is a dict mapping action_id -> CommandResult
-                action_results = list(central_post._action_results.values())
+                action_results = central_post.get_action_results()
 
                 if action_results:
                     # Check if ALL actions succeeded
                     # CommandResult has a 'success' attribute
                     all_succeeded = all(result.success for result in action_results)
 
-                    if all_succeeded and len(action_results) > 0:
+                    # Smart termination: Require EITHER:
+                    # - Multiple commands (2+) for multi-step tasks, OR
+                    # - Later workflow stage (step >= 3) for single complex command
+                    multiple_commands = len(action_results) >= 2
+                    late_stage = step >= 3
+
+                    should_terminate = all_succeeded and (multiple_commands or late_stage)
+
+                    if should_terminate:
                         logger.info("=" * 60)
                         logger.info("⚡ EARLY TERMINATION TRIGGERED")
                         logger.info(f"  Reason: All system actions completed successfully")
                         logger.info(f"  Actions completed: {len(action_results)}")
+                        logger.info(f"  Multiple commands: {multiple_commands}")
+                        logger.info(f"  Late stage (step >= 3): {late_stage}")
                         logger.info(f"  Step: {step}/{total_steps}")
                         logger.info(f"  Skipping remaining {total_steps - step - 1} steps")
                         logger.info("=" * 60)
@@ -636,6 +637,8 @@ def run_felix_workflow(felix_system, task_input: str,
 
                         # Break early - will proceed to final synthesis
                         break
+                    elif all_succeeded and len(action_results) == 1:
+                        logger.info(f"⏸ Single command completed at step {step}, continuing workflow for potential follow-ups...")
 
             # Adaptive complexity assessment (only once after sample period)
             if adaptive_mode and not complexity_assessed and step >= sample_period:
@@ -695,7 +698,7 @@ def run_felix_workflow(felix_system, task_input: str,
                     # Spawn analysis agent
                     analysis_agent = agent_factory.create_analysis_agent(
                         analysis_type="comparative",
-                        spawn_time_range=(current_time, current_time + 0.01)
+                        spawn_time_range=(current_time, min(current_time + 0.01, 1.0))
                     )
                     agent_manager.register_agent(analysis_agent)
 
@@ -717,13 +720,20 @@ def run_felix_workflow(felix_system, task_input: str,
                         results["agents_spawned"].append(analysis_agent.agent_id)
                         spawned_agent_ids.append(analysis_agent.agent_id)  # Track for cleanup
                         logger.info(f"  → Spawned {analysis_agent.agent_type}: {analysis_agent.agent_id}")
+
+                        # Record scaling metric for H2 hypothesis validation
+                        elapsed_time = time.time() - workflow_start_time
+                        central_post.performance_monitor.record_scaling_metric(
+                            agent_count=len(active_agents),
+                            processing_time=elapsed_time
+                        )
                     else:
                         logger.warning(f"⚠ Agent cap reached during fallback spawning - skipping {analysis_agent.agent_id}")
 
                     # Also spawn critic agent for minimum team
                     if len(active_agents) < 3:
                         critic_agent = agent_factory.create_critic_agent(
-                            spawn_time_range=(current_time, current_time + 0.01)
+                            spawn_time_range=(current_time, min(current_time + 0.01, 1.0))
                         )
                         agent_manager.register_agent(critic_agent)
 
@@ -1014,10 +1024,12 @@ def run_felix_workflow(felix_system, task_input: str,
                 }
 
                 # Record outcome
+                # Convert synthesis complexity string to TaskComplexity enum
+                task_complexity_enum = _map_synthesis_complexity_to_task_complexity(task_complexity)
                 recommendation_engine.record_workflow_outcome(
                     workflow_id=workflow_id,
                     task_type="workflow_task",
-                    task_complexity=task_complexity.lower(),
+                    task_complexity=task_complexity_enum,
                     agents_used=agents_used_info,
                     workflow_success=workflow_success,
                     workflow_duration=workflow_duration,
@@ -1035,6 +1047,78 @@ def run_felix_workflow(felix_system, task_input: str,
             except Exception as learning_error:
                 # Don't fail workflow if learning recording fails
                 logger.warning(f"Could not record learning outcome: {learning_error}")
+
+        # === KNOWLEDGE USAGE RECORDING (META-LEARNING) ===
+        # Record which knowledge entries were used and how helpful they were
+        if results["knowledge_entry_ids"] and felix_system.knowledge_store:
+            try:
+                logger.info("=" * 60)
+                logger.info("RECORDING KNOWLEDGE USAGE (META-LEARNING)")
+
+                # Determine usefulness score based on workflow outcome
+                final_confidence = results.get("centralpost_synthesis", {}).get("confidence", 0.0)
+                workflow_success = final_confidence >= 0.7  # Consider 0.7+ as success
+
+                if workflow_success:
+                    if final_confidence >= 0.8:
+                        useful_score = 0.9  # Very helpful
+                    elif final_confidence >= 0.6:
+                        useful_score = 0.7  # Helpful
+                    else:
+                        useful_score = 0.5  # Somewhat helpful
+                else:
+                    useful_score = 0.3  # Not very helpful
+
+                # Record usage for meta-learning boost
+                felix_system.knowledge_store.record_knowledge_usage(
+                    workflow_id=workflow_id,
+                    knowledge_ids=results["knowledge_entry_ids"],
+                    task_type="workflow_task",  # Could be made more specific
+                    task_complexity=task_complexity,
+                    useful_score=useful_score,
+                    retrieval_method="adaptive"  # Using our new adaptive system
+                )
+
+                logger.info(f"  ✓ Recorded usage for {len(results['knowledge_entry_ids'])} knowledge entries")
+                logger.info(f"  Usefulness score: {useful_score:.2f} (confidence={final_confidence:.2f})")
+                logger.info("=" * 60)
+
+            except Exception as knowledge_error:
+                # Don't fail workflow if knowledge recording fails
+                logger.warning(f"Could not record knowledge usage: {knowledge_error}")
+
+        # === PERFORMANCE MONITORING ===
+        # Record final workflow metrics and log performance summary
+        try:
+            workflow_duration = time.time() - workflow_start_time
+            agent_count = len(active_agents) if 'active_agents' in locals() else 0
+
+            # Record final workflow processing time
+            central_post.performance_monitor.record_processing_time(workflow_duration)
+
+            # Get comprehensive performance summary
+            performance_summary = central_post.performance_monitor.get_performance_summary(
+                active_connections=agent_count
+            )
+
+            # Log performance metrics (for H1/H2/H3 hypothesis validation)
+            logger.info("=" * 60)
+            logger.info("WORKFLOW PERFORMANCE METRICS")
+            logger.info(f"  Duration: {workflow_duration:.2f}s")
+            logger.info(f"  Agent count: {agent_count}")
+            logger.info(f"  Messages processed: {performance_summary.get('total_messages_processed', 0)}")
+            logger.info(f"  Message throughput: {performance_summary.get('message_throughput', 0):.2f} msgs/sec")
+            logger.info(f"  Avg processing time: {performance_summary.get('avg_processing_time', 0):.3f}s")
+            if performance_summary.get('average_overhead_ratio', 0) > 0:
+                logger.info(f"  Overhead ratio: {performance_summary.get('average_overhead_ratio', 0):.3f}")
+            logger.info("=" * 60)
+
+            # Add performance metrics to results for GUI/analysis
+            results['performance_metrics'] = performance_summary
+
+        except Exception as perf_error:
+            # Don't fail workflow if performance logging fails
+            logger.warning(f"Could not log performance metrics: {perf_error}")
 
         return results
 

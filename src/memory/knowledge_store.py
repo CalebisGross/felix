@@ -113,6 +113,10 @@ class KnowledgeQuery:
     content_keywords: Optional[List[str]] = None
     time_range: Optional[tuple[float, float]] = None
     limit: int = 10
+    # Task context for meta-learning (new fields)
+    task_type: Optional[str] = None
+    task_complexity: Optional[str] = None
+    use_semantic_search: bool = False
     
 class KnowledgeStore:
     """
@@ -594,10 +598,96 @@ class KnowledgeStore:
                 # Update access count
                 self._increment_access_count(entry.knowledge_id)
 
+        logger.info(f"   ✅ Retrieved {len(entries)} entries before meta-learning boost")
+
+        # Apply meta-learning boost if task context is provided
+        if query.task_type and len(entries) > 0:
+            logger.info(f"   🎯 Applying meta-learning boost for task_type='{query.task_type}'")
+            entries = self._apply_meta_learning_boost(
+                entries,
+                query.task_type,
+                query.task_complexity
+            )
+            logger.info(f"   ✅ Re-ranked entries using historical usefulness data")
+
         logger.info(f"   ✅ Returning {len(entries)} knowledge entries")
 
         return entries
-    
+
+    def _apply_meta_learning_boost(self,
+                                    entries: List[KnowledgeEntry],
+                                    task_type: str,
+                                    task_complexity: Optional[str] = None) -> List[KnowledgeEntry]:
+        """
+        Apply meta-learning boost to re-rank entries based on historical usefulness.
+
+        Entries that have been useful for similar tasks in the past get boosted
+        in the ranking. Requires knowledge_usage table with historical data.
+
+        Args:
+            entries: List of knowledge entries to re-rank
+            task_type: Type of task (for matching historical usage)
+            task_complexity: Optional task complexity (SIMPLE_FACTUAL, MEDIUM, COMPLEX)
+
+        Returns:
+            Re-ranked list of entries (most useful first)
+        """
+        if not entries:
+            return entries
+
+        try:
+            with sqlite3.connect(self.storage_path) as conn:
+                # For each entry, get its historical usefulness score
+                entry_scores = []
+                for entry in entries:
+                    # Query knowledge_usage table for this entry's usefulness
+                    cursor = conn.execute("""
+                        SELECT AVG(useful_score) as avg_usefulness, COUNT(*) as usage_count
+                        FROM knowledge_usage
+                        WHERE knowledge_id = ?
+                        AND task_type = ?
+                    """, (entry.knowledge_id, task_type))
+
+                    row = cursor.fetchone()
+                    if row and row[0] is not None:
+                        avg_usefulness = row[0]
+                        usage_count = row[1]
+
+                        # Calculate boost factor (requires min 2 samples for reliability)
+                        if usage_count >= 2:
+                            boost_factor = 0.7 + (avg_usefulness * 0.3)  # 0.7 to 1.0
+                            logger.info(f"      Entry {entry.knowledge_id[:8]}: "
+                                      f"usefulness={avg_usefulness:.2f}, uses={usage_count}, boost={boost_factor:.2f}")
+                        else:
+                            boost_factor = 1.0  # Neutral boost for insufficient data
+                    else:
+                        boost_factor = 1.0  # Neutral boost for new/unused entries
+
+                    # Base score from confidence and success rate
+                    confidence_scores = {
+                        ConfidenceLevel.LOW: 1,
+                        ConfidenceLevel.MEDIUM: 2,
+                        ConfidenceLevel.HIGH: 3,
+                        ConfidenceLevel.VERIFIED: 4
+                    }
+                    base_score = (confidence_scores.get(entry.confidence_level, 2) * 10 +
+                                entry.success_rate * 10)
+
+                    # Apply boost to base score
+                    final_score = base_score * boost_factor
+                    entry_scores.append((entry, final_score))
+
+                # Sort by final score (highest first)
+                entry_scores.sort(key=lambda x: x[1], reverse=True)
+                reranked_entries = [entry for entry, score in entry_scores]
+
+                logger.info(f"   📊 Meta-learning boost applied: reranked {len(reranked_entries)} entries")
+                return reranked_entries
+
+        except sqlite3.Error as e:
+            logger.warning(f"   ⚠ Meta-learning boost failed: {e}, returning original order")
+            return entries
+
     def _row_to_entry(self, row, conn=None) -> KnowledgeEntry:
         """
         Convert database row to KnowledgeEntry.
@@ -689,11 +779,58 @@ class KnowledgeStore:
         """Increment access count for knowledge entry."""
         with sqlite3.connect(self.storage_path) as conn:
             conn.execute("""
-                UPDATE knowledge_entries 
-                SET access_count = access_count + 1 
+                UPDATE knowledge_entries
+                SET access_count = access_count + 1
                 WHERE knowledge_id = ?
             """, (knowledge_id,))
-    
+
+    def record_knowledge_usage(self,
+                              workflow_id: str,
+                              knowledge_ids: List[str],
+                              task_type: str,
+                              task_complexity: Optional[str] = None,
+                              useful_score: float = 0.5,
+                              retrieval_method: str = "sql") -> bool:
+        """
+        Record knowledge usage for meta-learning.
+
+        Tracks which knowledge entries were helpful for which types of tasks,
+        enabling meta-learning boost in future retrievals.
+
+        Args:
+            workflow_id: Unique workflow identifier
+            knowledge_ids: List of knowledge entry IDs that were used
+            task_type: Type of task (for matching future similar tasks)
+            task_complexity: Optional task complexity (SIMPLE_FACTUAL, MEDIUM, COMPLEX)
+            useful_score: Usefulness score 0.0-1.0 (0.2=unhelpful, 0.5=neutral, 0.9=very helpful)
+            retrieval_method: How knowledge was retrieved (sql, semantic, hybrid)
+
+        Returns:
+            True if recorded successfully, False otherwise
+        """
+        if not knowledge_ids:
+            return True  # Nothing to record
+
+        try:
+            with sqlite3.connect(self.storage_path) as conn:
+                for knowledge_id in knowledge_ids:
+                    conn.execute("""
+                        INSERT INTO knowledge_usage
+                        (workflow_id, knowledge_id, task_type, task_complexity,
+                         useful_score, retrieval_method, recorded_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """, (workflow_id, knowledge_id, task_type, task_complexity,
+                          useful_score, retrieval_method, time.time()))
+
+                conn.commit()
+                logger.info(f"   📊 Recorded usage for {len(knowledge_ids)} knowledge entries "
+                          f"(task_type={task_type}, usefulness={useful_score:.2f})")
+                return True
+
+        except sqlite3.Error as e:
+            logger.error(f"Failed to record knowledge usage: {e}")
+            return False
+
     def update_success_rate(self, knowledge_id: str, 
                            success_rate: float) -> bool:
         """

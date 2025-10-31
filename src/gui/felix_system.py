@@ -104,7 +104,7 @@ class FelixConfig:
     learning_auto_apply: bool = True  # Auto-apply high-confidence recommendations (≥95%)
     learning_min_samples_patterns: int = 10  # Minimum samples for pattern recommendations
     learning_min_samples_calibration: int = 10  # Minimum samples for confidence calibration
-    learning_min_samples_thresholds: int = 20  # Minimum samples for threshold learning
+    learning_min_samples_thresholds: int = 15  # Minimum samples for threshold learning (reduced from 20)
 
     # Knowledge Brain configuration
     enable_knowledge_brain: bool = False  # Enable autonomous knowledge brain (requires setup)
@@ -117,6 +117,14 @@ class FelixConfig:
     knowledge_max_memory_mb: int = 512  # Maximum memory for processing (MB)
     knowledge_chunk_size: int = 1000  # Characters per chunk
     knowledge_chunk_overlap: int = 200  # Character overlap between chunks
+
+    # Context Retrieval configuration (adaptive knowledge limits)
+    knowledge_limit_simple: int = 8  # Knowledge entries for SIMPLE_FACTUAL tasks
+    knowledge_limit_medium: int = 15  # Knowledge entries for MEDIUM complexity tasks
+    knowledge_limit_complex: int = 25  # Knowledge entries for COMPLEX tasks
+    enable_meta_learning_boost: bool = True  # Apply historical usefulness ranking
+    meta_learning_min_usages: int = 2  # Minimum usages before boost applies
+    enable_adaptive_limits: bool = True  # Use task complexity for adaptive limits
 
 
 class AgentManager:

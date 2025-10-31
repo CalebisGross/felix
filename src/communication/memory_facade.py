@@ -144,6 +144,37 @@ class MemoryFacade:
             logger.error(f"Failed to retrieve knowledge: {e}")
             return []
 
+    def retrieve_knowledge_with_query(self, query: 'KnowledgeQuery') -> List[KnowledgeEntry]:
+        """
+        Retrieve knowledge using a full KnowledgeQuery object.
+
+        This provides maximum flexibility for complex queries including
+        time ranges, multiple domains, and custom filtering criteria.
+
+        Args:
+            query: KnowledgeQuery object with full query parameters
+
+        Returns:
+            List of matching knowledge entries
+
+        Example:
+            >>> query = KnowledgeQuery(
+            ...     domains=["web_search", "workflow_task"],
+            ...     min_confidence=ConfidenceLevel.MEDIUM,
+            ...     time_range=(start_time, end_time),
+            ...     limit=5
+            ... )
+            >>> entries = memory_facade.retrieve_knowledge_with_query(query)
+        """
+        if not self._memory_enabled or not self.knowledge_store:
+            return []
+
+        try:
+            return self.knowledge_store.retrieve_knowledge(query)
+        except Exception as e:
+            logger.error(f"Failed to retrieve knowledge with query: {e}")
+            return []
+
     def get_task_strategy_recommendations(self, task_description: str,
                                         task_type: str = "general",
                                         complexity: str = "MODERATE") -> Dict[str, Any]:

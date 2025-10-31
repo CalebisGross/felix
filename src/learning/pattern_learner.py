@@ -20,6 +20,7 @@ from typing import Dict, Any, Optional, Tuple, List
 from dataclasses import dataclass
 
 from .db_utils import get_connection_with_wal, retry_on_locked
+from src.memory.task_memory import TaskComplexity
 
 logger = logging.getLogger(__name__)
 
@@ -91,14 +92,14 @@ class PatternLearner:
     def get_workflow_recommendations(self,
                                      task_description: str,
                                      task_type: str = "general",
-                                     task_complexity: str = "medium") -> Optional[WorkflowRecommendation]:
+                                     task_complexity: TaskComplexity = TaskComplexity.MODERATE) -> Optional[WorkflowRecommendation]:
         """
         Get workflow recommendations based on historical patterns.
 
         Args:
             task_description: Description of the task to optimize
             task_type: Type of task (research, coding, analysis, etc.)
-            task_complexity: Complexity level (simple, medium, complex)
+            task_complexity: Complexity level (TaskComplexity enum)
 
         Returns:
             WorkflowRecommendation if patterns found, None otherwise
@@ -142,7 +143,7 @@ class PatternLearner:
                 recommendation_id=str(uuid.uuid4()),
                 task_description=task_description,
                 task_type=task_type,
-                task_complexity=task_complexity,
+                task_complexity=task_complexity.value,
                 recommended_strategies=strategies,
                 recommended_agents=agents,
                 estimated_duration=estimated_duration,

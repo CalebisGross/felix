@@ -20,14 +20,14 @@ import logging
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
 
-from src.agents.llm_agent import LLMAgent, LLMTask, LLMResult
+from src.agents.llm_agent import LLMAgent, LLMTask
 from src.agents.agent import generate_spawn_times
 from src.core.helix_geometry import HelixGeometry
 from src.llm.lm_studio_client import LMStudioClient
 
 logger = logging.getLogger(__name__)
 from src.llm.token_budget import TokenBudgetManager
-from src.llm.web_search_client import WebSearchClient, SearchResult
+from src.llm.web_search_client import WebSearchClient  # For type hints only
 
 
 # Shared tool instructions header for all specialized agents
@@ -72,10 +72,12 @@ EXAMPLES OF CORRECT USAGE:
 📝 MULTI-STEP WORKFLOWS:
 For tasks requiring multiple commands, output multiple SYSTEM_ACTION_NEEDED lines:
 
-EXAMPLE - Creating a file with content:
+EXAMPLE - Creating a file with content (combined operation preferred):
 "I'll create the file for you.
-SYSTEM_ACTION_NEEDED: test -d results || mkdir -p results
-SYSTEM_ACTION_NEEDED: echo \"content here\" > results/file.txt"
+SYSTEM_ACTION_NEEDED: mkdir -p results && echo \"content here\" > results/file.txt"
+
+NOTE: Use && to combine directory creation with file operations in ONE command.
+This prevents workflow from terminating prematurely after just creating the directory.
 
 EXAMPLE - Setup and verification:
 "SYSTEM_ACTION_NEEDED: cd /project/dir
@@ -127,19 +129,21 @@ EXAMPLES:
 
 🧠 INTELLIGENT COMMAND PATTERNS - THINK BEFORE EXECUTING:
 
-⚠️ CHECK STATE BEFORE MODIFYING:
+⚠️ AVOID REDUNDANT OPERATIONS:
 
-❌ BAD - Blindly create directory:
-"SYSTEM_ACTION_NEEDED: mkdir -p /path/to/dir
-SYSTEM_ACTION_NEEDED: echo \\"content\\" > /path/to/dir/file.txt"
-
-✅ GOOD - Check if directory exists first:
-"SYSTEM_ACTION_NEEDED: test -d results || mkdir -p results
+❌ BAD - Separate mkdir then file creation (workflow may terminate after first command):
+"SYSTEM_ACTION_NEEDED: mkdir -p results
 SYSTEM_ACTION_NEEDED: echo \\"content\\" > results/file.txt"
 
-✅ BETTER - Use idempotent operations intelligently:
-"SYSTEM_ACTION_NEEDED: mkdir -p results  # Safe: only creates if missing
-SYSTEM_ACTION_NEEDED: echo \\"content\\" > results/file.txt"
+✅ GOOD - Combine operations with && (ensures both happen):
+"SYSTEM_ACTION_NEEDED: mkdir -p results && echo \\"content\\" > results/file.txt"
+
+✅ ALSO GOOD - File redirection automatically handles parent directories:
+"SYSTEM_ACTION_NEEDED: echo \\"content\\" > results/file.txt"
+# Note: If results/ doesn't exist, this will error. Then you can add mkdir.
+
+⚠️ KEY PRINCIPLE: COMBINE related operations into ONE command using && or ; operators
+to prevent premature workflow termination after the first successful command.
 
 ⚠️ FILE OVERWRITES - Consider data preservation:
 
@@ -152,10 +156,9 @@ SYSTEM_ACTION_NEEDED: echo \\"content\\" >> file.txt"  # Append, don't overwrite
 
 🎯 SMART WORKFLOW PATTERNS:
 
-EXAMPLE - File creation with validation:
+EXAMPLE - File creation (combined operation):
 "I'll create the report in the results directory.
-SYSTEM_ACTION_NEEDED: test -d results || mkdir -p results
-SYSTEM_ACTION_NEEDED: echo \\"Report: agent's findings\\" > results/report.md"
+SYSTEM_ACTION_NEEDED: mkdir -p results && echo \\"Report: agent's findings\\" > results/report.md"
 
 EXAMPLE - Append to log without overwriting:
 "I'll add this entry to the log.
@@ -170,6 +173,39 @@ KEY PRINCIPLES:
 3. Consider data preservation (append >> vs overwrite >)
 4. Avoid redundant operations (don't mkdir current directory)
 5. Use double quotes for text with apostrophes
+
+🤝 MULTI-AGENT FILE COORDINATION - CRITICAL FOR TEAMWORK:
+
+⚠️ YOU ARE WORKING WITH OTHER AGENTS - COORDINATE FILE OPERATIONS!
+
+When creating files, ALWAYS follow this workflow:
+1. CHECK if files already exist: "SYSTEM_ACTION_NEEDED: ls -la results/"
+2. REVIEW shared context to see what other agents have created
+3. APPEND to existing files rather than creating new ones when possible
+4. USE descriptive, unique filenames to avoid collisions
+
+❌ BAD - Creating duplicate fragmented files:
+Agent 1: "SYSTEM_ACTION_NEEDED: echo "Research data" > results/research.txt"
+Agent 2: "SYSTEM_ACTION_NEEDED: echo "Analysis data" > results/analysis.txt"
+Agent 3: "SYSTEM_ACTION_NEEDED: echo "Critique data" > results/critique.txt"
+Result: Three separate files with no cohesion!
+
+✅ GOOD - Coordinated single output file:
+Agent 1 (first): "SYSTEM_ACTION_NEEDED: ls -la results/ && echo "# Workflow Results\\n\\n## Research Findings\\n..." > results/workflow_output.md"
+Agent 2 (sees file exists): "SYSTEM_ACTION_NEEDED: echo "\\n## Analysis\\n..." >> results/workflow_output.md"
+Agent 3 (appends too): "SYSTEM_ACTION_NEEDED: echo "\\n## Critical Review\\n..." >> results/workflow_output.md"
+Result: One cohesive document with all contributions!
+
+COORDINATION RULES:
+- ONE primary output file per workflow (e.g., results/workflow_output.md)
+- CHECK for existing files before creating new ones
+- APPEND (>>) to shared files, don't overwrite (>)
+- REVIEW other agents' messages to avoid duplicate work
+- If unsure, ASK via your response what files others are using
+
+🎯 BEST PRACTICE - "One Workflow, One File":
+Each workflow should produce ONE primary output file that all agents contribute to.
+Only create separate files if truly necessary (e.g., different data formats).
 
 🚨 EXECUTE DON'T DESCRIBE:
 When the user asks you to "create a file", "open terminal", "write content":
@@ -193,20 +229,23 @@ SAFETY: Commands are classified as SAFE (execute immediately), REVIEW (need appr
 class ResearchAgent(LLMAgent):
     """
     Research agent specializing in broad information gathering.
-    
+
     Characteristics:
     - High creativity/temperature when at top of helix
     - Focuses on breadth over depth initially
-    - Provides diverse perspectives and information sources
+    - Provides several perspectives and information sources
     - Spawns early in the process
+
+    Note: Web search is handled by CentralPost's WebSearchCoordinator.
+    Search results are available via task.knowledge_entries (domain="web_search").
     """
     
     def __init__(self, agent_id: str, spawn_time: float, helix: HelixGeometry,
                  llm_client: LMStudioClient, research_domain: str = "general",
                  token_budget_manager: Optional[TokenBudgetManager] = None,
                  max_tokens: Optional[int] = None,
-                 web_search_client: Optional[WebSearchClient] = None,  # DEPRECATED: Web search now handled by CentralPost
-                 max_web_queries: int = 3,  # DEPRECATED
+                 web_search_client: Optional[WebSearchClient] = None,  # Legacy parameter (ignored)
+                 max_web_queries: int = 3,  # Legacy parameter (ignored)
                  prompt_manager: Optional['PromptManager'] = None):
         """
         Initialize research agent.
@@ -219,8 +258,8 @@ class ResearchAgent(LLMAgent):
             research_domain: Specific domain focus (general, technical, creative, etc.)
             token_budget_manager: Optional token budget manager
             max_tokens: Maximum tokens per processing stage
-            web_search_client: DEPRECATED - Web search now handled by CentralPost
-            max_web_queries: DEPRECATED
+            web_search_client: Legacy parameter (ignored). Web search handled by CentralPost WebSearchCoordinator.
+            max_web_queries: Legacy parameter (ignored).
             prompt_manager: Optional prompt manager for custom prompts
         """
         super().__init__(
@@ -236,8 +275,6 @@ class ResearchAgent(LLMAgent):
         )
 
         self.research_domain = research_domain
-        # Note: web_search_client parameters kept for backward compatibility but ignored
-        # Web search is now performed by CentralPost when confidence is low
     
     def create_position_aware_prompt(self, task: LLMTask, current_time: float) -> tuple[str, int]:
         """Create research-specific system prompt with token budget."""
@@ -470,7 +507,7 @@ Your Research Approach Based on Position:
             else:
                 base_prompt += """
 - BROAD EXPLORATION PHASE: Cast a wide net
-- Generate diverse research angles and questions
+- Generate multiple research angles and questions
 - Don't worry about precision - focus on coverage
 - Explore unconventional perspectives and sources
 - Think creatively and associatively
@@ -508,124 +545,7 @@ Your Research Approach Based on Position:
 
         return base_prompt
 
-    def process_research_task(self, task: LLMTask, current_time: float,
-                              central_post: Optional['CentralPost'] = None) -> LLMResult:
-        """Process research task with domain-specific handling and optional web search."""
-        import logging
-        logger = logging.getLogger(__name__)
 
-        # Get position info to determine if we should search
-        position_info = self.get_position_info(current_time)
-        depth_ratio = position_info.get("depth_ratio", 0.0)
-
-        # Perform web search if enabled and in early exploration phase (0.0-0.3)
-        web_search_context = ""
-        if self.web_search_client and depth_ratio <= 0.3:
-            logger.info(f"[{self.agent_id}] Performing web search at depth {depth_ratio:.2f}")
-
-            # Formulate search queries based on task and research domain
-            search_queries = self._formulate_search_queries(task)
-
-            # Perform searches (up to max_web_queries)
-            all_search_results = []
-            for i, query in enumerate(search_queries[:self.max_web_queries]):
-                logger.info(f"[{self.agent_id}] Searching: '{query}'")
-                try:
-                    results = self.web_search_client.search(
-                        query=query,
-                        task_id=task.task_id
-                    )
-                    all_search_results.extend(results)
-                    self.search_queries.append(query)
-
-                    # Extract sources
-                    for result in results:
-                        if result.url not in self.information_sources:
-                            self.information_sources.append(result.url)
-
-                except Exception as e:
-                    logger.error(f"[{self.agent_id}] Web search failed for '{query}': {e}")
-
-            # Store results
-            self.web_search_results = all_search_results
-
-            # Format results for LLM
-            if all_search_results:
-                web_search_context = "\n\n" + self.web_search_client.format_results_for_llm(all_search_results)
-                logger.info(f"[{self.agent_id}] Found {len(all_search_results)} web search results")
-
-        # Add research-specific metadata and web search results
-        enhanced_context = f"{task.context}\nResearch Domain: {self.research_domain}{web_search_context}"
-
-        enhanced_task = LLMTask(
-            task_id=task.task_id,
-            description=task.description,
-            context=enhanced_context,
-            metadata={
-                **task.metadata,
-                "research_domain": self.research_domain,
-                "web_search_enabled": self.web_search_client is not None,
-                "web_search_results_count": len(self.web_search_results)
-            }
-        )
-
-        result = super().process_task_with_llm(enhanced_task, current_time, central_post)
-
-        # Add metadata to result for tracking
-        result.metadata = enhanced_task.metadata
-
-        # Extract potential search queries and sources from the result
-        self._extract_research_metadata(result)
-
-        return result
-
-    def _formulate_search_queries(self, task: LLMTask) -> List[str]:
-        """
-        Formulate search queries based on task and research domain.
-
-        Args:
-            task: The research task
-
-        Returns:
-            List of search query strings
-        """
-        queries = []
-
-        # Base query from task description
-        base_query = task.description.strip()
-
-        # Add domain-specific queries
-        if self.research_domain != "general":
-            queries.append(f"{base_query} {self.research_domain}")
-        else:
-            queries.append(base_query)
-
-        # Add variations based on research domain
-        if self.research_domain == "technical":
-            queries.append(f"{base_query} documentation tutorial")
-        elif self.research_domain == "creative":
-            queries.append(f"{base_query} examples ideas inspiration")
-        elif self.research_domain == "general":
-            queries.append(f"{base_query} overview guide")
-
-        # Add a focused "latest" query for current information
-        if len(queries) < 3:
-            queries.append(f"{base_query} latest 2024 2025")
-
-        return queries
-    
-    def _extract_research_metadata(self, result: LLMResult) -> None:
-        """Extract research queries and sources from result content."""
-        content = result.content.lower()
-        
-        # Simple heuristics to extract useful metadata
-        if "search for" in content or "look up" in content:
-            # Could extract specific search terms
-            pass
-        
-        if "source:" in content or "reference:" in content:
-            # Could extract cited sources
-            pass
 
 
 class AnalysisAgent(LLMAgent):
@@ -967,16 +887,14 @@ def _create_simple_team(helix: HelixGeometry, llm_client: LMStudioClient,
     # Generate random spawn times within appropriate ranges for each agent type
     research_spawn = random.uniform(0.05, 0.25)  # Research agents spawn early
     analysis_spawn = random.uniform(0.3, 0.7)    # Analysis agents in middle
-    synthesis_spawn = random.uniform(0.7, 0.95)  # Synthesis agents late
+    # Note: Synthesis is now handled by CentralPost, not a specialized agent
 
     return [
         ResearchAgent("research_001", research_spawn, helix, llm_client,
                      token_budget_manager=token_budget_manager, max_tokens=800,
                      web_search_client=web_search_client, max_web_queries=max_web_queries),
         AnalysisAgent("analysis_001", analysis_spawn, helix, llm_client,
-                     token_budget_manager=token_budget_manager, max_tokens=800),
-        SynthesisAgent("synthesis_001", synthesis_spawn, helix, llm_client,
-                      token_budget_manager=token_budget_manager, max_tokens=800)
+                     token_budget_manager=token_budget_manager, max_tokens=800)
     ]
 
 
@@ -993,7 +911,7 @@ def _create_medium_team(helix: HelixGeometry, llm_client: LMStudioClient,
     research_spawns = [random.uniform(0.02, 0.2) for _ in range(2)]
     analysis_spawns = [random.uniform(0.25, 0.65) for _ in range(2)]
     critic_spawn = random.uniform(0.6, 0.8)
-    synthesis_spawn = random.uniform(0.8, 0.95)
+    # Note: Synthesis is now handled by CentralPost, not a specialized agent
 
     # Sort to maintain some ordering within types
     research_spawns.sort()
@@ -1006,8 +924,7 @@ def _create_medium_team(helix: HelixGeometry, llm_client: LMStudioClient,
                      token_budget_manager, 800, web_search_client, max_web_queries),
         AnalysisAgent("analysis_001", analysis_spawns[0], helix, llm_client, "general", token_budget_manager, 800),
         AnalysisAgent("analysis_002", analysis_spawns[1], helix, llm_client, "critical", token_budget_manager, 800),
-        CriticAgent("critic_001", critic_spawn, helix, llm_client, "accuracy", token_budget_manager, 800),
-        SynthesisAgent("synthesis_001", synthesis_spawn, helix, llm_client, "general", token_budget_manager, 800)
+        CriticAgent("critic_001", critic_spawn, helix, llm_client, "accuracy", token_budget_manager, 800)
     ]
 
 
@@ -1024,13 +941,12 @@ def _create_complex_team(helix: HelixGeometry, llm_client: LMStudioClient,
     research_spawns = [random.uniform(0.01, 0.25) for _ in range(3)]
     analysis_spawns = [random.uniform(0.2, 0.7) for _ in range(3)]
     critic_spawns = [random.uniform(0.6, 0.8) for _ in range(2)]
-    synthesis_spawns = [random.uniform(0.8, 0.98) for _ in range(2)]
+    # Note: Synthesis is now handled by CentralPost, not a specialized agent
 
     # Sort to maintain some ordering within types
     research_spawns.sort()
     analysis_spawns.sort()
     critic_spawns.sort()
-    synthesis_spawns.sort()
 
     return [
         ResearchAgent("research_001", research_spawns[0], helix, llm_client, "general",
@@ -1043,7 +959,5 @@ def _create_complex_team(helix: HelixGeometry, llm_client: LMStudioClient,
         AnalysisAgent("analysis_002", analysis_spawns[1], helix, llm_client, "technical", token_budget_manager, 800),
         AnalysisAgent("analysis_003", analysis_spawns[2], helix, llm_client, "critical", token_budget_manager, 800),
         CriticAgent("critic_001", critic_spawns[0], helix, llm_client, "accuracy", token_budget_manager, 800),
-        CriticAgent("critic_002", critic_spawns[1], helix, llm_client, "completeness", token_budget_manager, 800),
-        SynthesisAgent("synthesis_001", synthesis_spawns[0], helix, llm_client, "report", token_budget_manager, 800),
-        SynthesisAgent("synthesis_002", synthesis_spawns[1], helix, llm_client, "executive_summary", token_budget_manager, 800)
+        CriticAgent("critic_002", critic_spawns[1], helix, llm_client, "completeness", token_budget_manager, 800)
     ]

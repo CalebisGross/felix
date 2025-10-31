@@ -953,7 +953,7 @@ class CentralPost:
         """Get current confidence threshold."""
         return self.web_search_coordinator.get_confidence_threshold()
 
-    def _perform_web_search(self, task_description: str) -> None:
+    def perform_web_search(self, task_description: str) -> None:
         """
         Perform web search when consensus is low and store relevant info in knowledge base.
 
@@ -1028,6 +1028,20 @@ class CentralPost:
                 if self._current_task_description:
                     context += f": {self._current_task_description[:100]}"
 
+                # PRE-EXECUTION DEDUPLICATION: Check if command already executed in this workflow
+                # This prevents agents from repeatedly requesting the same command
+                if self._current_workflow_id:
+                    command_hash = self.system_executor.compute_command_hash(command)
+                    if self._current_workflow_id in self.system_command_manager._executed_commands:
+                        if command_hash in self.system_command_manager._executed_commands[self._current_workflow_id]:
+                            cached_result = self.system_command_manager._executed_commands[self._current_workflow_id][command_hash]
+                            logger.info("⚡ Command already executed in this workflow - skipping duplicate")
+                            logger.info(f"  Command: {command}")
+                            logger.info(f"  Previous result: {'SUCCESS' if cached_result.success else 'FAILED'}")
+                            logger.info(f"  Exit code: {cached_result.exit_code}")
+                            logger.info("=" * 60)
+                            continue  # Skip this duplicate command
+
                 # Request system action through normal flow
                 # This will handle trust classification, approval workflow, execution
                 action_id = self.request_system_action(
@@ -1097,6 +1111,19 @@ class CentralPost:
         return self.synthesis_engine.synthesize_agent_outputs(
             task_description, max_messages, task_complexity
         )
+
+    def get_action_results(self) -> List['CommandResult']:
+        """
+        Get list of completed system action results.
+
+        Returns:
+            List of CommandResult objects for all executed actions
+
+        Example:
+            >>> results = central_post.get_action_results()
+            >>> all_succeeded = all(r.success for r in results)
+        """
+        return list(self._action_results.values())
 
 
     def _handle_message(self, message: Message) -> None:
@@ -2492,17 +2519,7 @@ class AgentFactory:
             )
             recommended_agents.append(technical_research)
         
-        # Check for need for alternative synthesis
-        synthesis_count = sum(1 for msg in recent_messages
-                            if msg.content.get("agent_type") == "synthesis")
-        
-        if synthesis_count == 0 and current_time > 0.6:
-            # Late in process but no synthesis yet
-            synthesis = self.create_synthesis_agent(
-                output_format="comprehensive",
-                spawn_time_range=(current_time + 0.1, current_time + 0.25)
-            )
-            recommended_agents.append(synthesis)
+        # Note: Synthesis is now handled directly by CentralPost, not by a specialized agent
         
         return recommended_agents
     

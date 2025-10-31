@@ -11,6 +11,7 @@ provides OpenAI-compatible API endpoints for local language model inference.
 import asyncio
 import time
 import logging
+from datetime import datetime
 from typing import Optional, Dict, Any, List, Union, Callable
 from dataclasses import dataclass
 from enum import Enum
@@ -867,8 +868,19 @@ class LMStudioClient:
         """
         depth_ratio = position_info.get("depth_ratio", 0.0)
         radius = position_info.get("radius", 0.0)
-        
-        base_prompt = f"""⚠️⚠️⚠️ CRITICAL TOOLS AVAILABLE ⚠️⚠️⚠️
+
+        # Add current date/time to prompt for temporal awareness
+        current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S %Z").strip()
+        if not current_datetime.endswith(('UTC', 'EST', 'PST', 'CST', 'MST', 'EDT', 'PDT', 'CDT', 'MDT')):
+            # If timezone abbreviation is empty, add local time indicator
+            current_datetime = f"{current_datetime.strip()} (local time)"
+
+        base_prompt = f"""📅 CURRENT DATE/TIME: {current_datetime}
+Use this for any time-sensitive queries or context.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+⚠️⚠️⚠️ CRITICAL TOOLS AVAILABLE ⚠️⚠️⚠️
 
 🔍 WEB SEARCH - USE THIS FOR CURRENT INFORMATION:
 If you need current/real-time data (dates, times, recent events, latest stats), write EXACTLY:

@@ -641,6 +641,80 @@ class SystemCommandManager:
         """
         return self._live_command_outputs.get(execution_id, [])
 
+    def get_workflow_command_status(self, workflow_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get command execution status for a workflow.
+
+        Args:
+            workflow_id: Optional workflow ID to filter by. If None, returns all actions.
+
+        Returns:
+            Dictionary with:
+                - completed_count: Number of completed commands
+                - pending_count: Number of pending approvals
+                - all_succeeded: Whether all completed commands succeeded
+                - results: List of CommandResult objects for completed commands
+                - pending: List of pending action info dictionaries
+
+        Example:
+            >>> status = manager.get_workflow_command_status(workflow_id)
+            >>> if status['all_succeeded'] and status['completed_count'] > 0:
+            >>>     print("All commands completed successfully!")
+        """
+        # Filter completed action results by workflow_id if provided
+        if workflow_id:
+            results = [r for r in self._action_results.values()
+                      if hasattr(r, 'workflow_id') and r.workflow_id == workflow_id]
+        else:
+            results = list(self._action_results.values())
+
+        # Get pending actions filtered by workflow_id
+        pending = self.get_pending_actions(workflow_id)
+
+        return {
+            'completed_count': len(results),
+            'pending_count': len(pending),
+            'all_succeeded': all(r.success for r in results) if results else False,
+            'results': results,
+            'pending': pending
+        }
+
+    def get_workflow_executed_commands(self, workflow_id: str) -> List[Dict[str, Any]]:
+        """
+        Get all commands that have been executed in a specific workflow.
+
+        This provides visibility into what system actions have already completed,
+        allowing agents to avoid repeating commands and coordinate better.
+
+        Args:
+            workflow_id: Workflow ID to query
+
+        Returns:
+            List of dictionaries containing:
+                - command: The command that was executed
+                - result: CommandResult object with success status and output
+                - timestamp: When the command was executed
+
+        Example:
+            >>> executed = manager.get_workflow_executed_commands(workflow_id)
+            >>> for cmd in executed:
+            >>>     print(f"Executed: {cmd['command']} - Success: {cmd['result'].success}")
+        """
+        if workflow_id not in self._executed_commands:
+            return []
+
+        executed_list = []
+        for command_hash, result in self._executed_commands[workflow_id].items():
+            # Extract command from result if available
+            command_str = getattr(result, 'command', f"<hash:{command_hash}>")
+            executed_list.append({
+                'command': command_str,
+                'result': result,
+                'timestamp': getattr(result, 'end_time', None)
+            })
+
+        return executed_list
+
     # =============================================================================
     # BROADCAST METHODS - Unified pattern for message broadcasting
     # =============================================================================

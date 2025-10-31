@@ -21,6 +21,7 @@ from dataclasses import dataclass
 import statistics
 
 from .db_utils import get_connection_with_wal, retry_on_locked
+from src.memory.task_memory import TaskComplexity
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +84,7 @@ class ConfidenceCalibrator:
     @retry_on_locked(max_attempts=3)
     def record_agent_prediction(self,
                                  agent_type: str,
-                                 task_complexity: str,
+                                 task_complexity: TaskComplexity,
                                  predicted_confidence: float,
                                  actual_success: bool) -> bool:
         """
@@ -94,7 +95,7 @@ class ConfidenceCalibrator:
 
         Args:
             agent_type: Type of agent (research, analysis, critic, synthesis)
-            task_complexity: Complexity level (simple, medium, complex)
+            task_complexity: Complexity level (TaskComplexity enum)
             predicted_confidence: Agent's predicted confidence (0.0-1.0)
             actual_success: Whether workflow actually succeeded (True/False)
 
@@ -112,7 +113,7 @@ class ConfidenceCalibrator:
                 SELECT calibration_id, avg_predicted_confidence, avg_actual_success, sample_size
                 FROM confidence_calibration
                 WHERE agent_type = ? AND task_complexity = ?
-            """, (agent_type, task_complexity))
+            """, (agent_type, task_complexity.value))
 
             row = cursor.fetchone()
 
@@ -152,7 +153,7 @@ class ConfidenceCalibrator:
                 """, (new_avg_predicted, new_avg_actual, calibration_factor,
                       calibration_error, new_sample_size, time.time(), calibration_id))
 
-                logger.debug(f"Updated calibration for {agent_type}/{task_complexity}: "
+                logger.debug(f"Updated calibration for {agent_type}/{task_complexity.value}: "
                             f"factor={calibration_factor:.3f}, samples={new_sample_size}")
 
             else:
@@ -172,16 +173,16 @@ class ConfidenceCalibrator:
                      avg_actual_success, calibration_factor, calibration_error,
                      sample_size, last_updated)
                     VALUES (?, ?, ?, ?, ?, ?, 1, ?)
-                """, (agent_type, task_complexity, predicted_confidence,
+                """, (agent_type, task_complexity.value, predicted_confidence,
                       actual_success_float, calibration_factor, calibration_error, time.time()))
 
-                logger.info(f"Created calibration record for {agent_type}/{task_complexity}")
+                logger.info(f"Created calibration record for {agent_type}/{task_complexity.value}")
 
             conn.commit()
             conn.close()
 
             # Invalidate cache for this agent/complexity
-            cache_key = f"{agent_type}:{task_complexity}"
+            cache_key = f"{agent_type}:{task_complexity.value}"
             if cache_key in self._calibration_cache:
                 del self._calibration_cache[cache_key]
 
@@ -193,7 +194,7 @@ class ConfidenceCalibrator:
 
     def get_calibration_factor(self,
                                 agent_type: str,
-                                task_complexity: str,
+                                task_complexity: TaskComplexity,
                                 use_cache: bool = True) -> float:
         """
         Get calibration factor for agent type + task complexity.
@@ -202,13 +203,13 @@ class ConfidenceCalibrator:
 
         Args:
             agent_type: Type of agent
-            task_complexity: Complexity level
+            task_complexity: Complexity level (TaskComplexity enum)
             use_cache: Whether to use cached values (default: True)
 
         Returns:
             Calibration factor (typically 0.5-2.0, default 1.0)
         """
-        cache_key = f"{agent_type}:{task_complexity}"
+        cache_key = f"{agent_type}:{task_complexity.value}"
 
         # Check cache
         if use_cache and cache_key in self._calibration_cache:
@@ -224,7 +225,7 @@ class ConfidenceCalibrator:
                 SELECT calibration_factor, sample_size
                 FROM confidence_calibration
                 WHERE agent_type = ? AND task_complexity = ?
-            """, (agent_type, task_complexity))
+            """, (agent_type, task_complexity.value))
 
             row = cursor.fetchone()
             conn.close()
@@ -251,14 +252,14 @@ class ConfidenceCalibrator:
 
     def calibrate_confidence(self,
                              agent_type: str,
-                             task_complexity: str,
+                             task_complexity: TaskComplexity,
                              raw_confidence: float) -> float:
         """
         Apply calibration to raw confidence score.
 
         Args:
             agent_type: Type of agent
-            task_complexity: Complexity level
+            task_complexity: Complexity level (TaskComplexity enum)
             raw_confidence: Uncalibrated confidence (0.0-1.0)
 
         Returns:

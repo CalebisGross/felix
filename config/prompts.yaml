@@ -46,7 +46,7 @@ research:
     strict_mode: false
     template: |
       - BROAD EXPLORATION PHASE: Cast a wide net
-      - Generate diverse research angles and questions
+      - Generate several research angles and questions
       - Don't worry about precision - focus on coverage
       - Explore unconventional perspectives and sources
       - Think creatively and associatively
@@ -248,7 +248,7 @@ metadata:
   temperature_guidance:
     precise: "PRECISE mode (low creativity): Focus on accuracy and specific details"
     balanced: "BALANCED mode: Mix precision with moderate exploration"
-    exploratory: "EXPLORATORY mode: Consider diverse perspectives and connections"
+    exploratory: "EXPLORATORY mode: Consider multiple perspectives and connections"
     creative: "CREATIVE mode (high creativity): Generate novel insights and broad exploration"
 
   token_budget_message:

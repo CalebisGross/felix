@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from .pattern_learner import PatternLearner, WorkflowRecommendation
 from .confidence_calibrator import ConfidenceCalibrator
 from .threshold_learner import ThresholdLearner
+from src.memory.task_memory import TaskComplexity
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +86,7 @@ class RecommendationEngine:
     def get_pre_workflow_recommendations(self,
                                           task_description: str,
                                           task_type: str = "general",
-                                          task_complexity: str = "medium") -> UnifiedRecommendation:
+                                          task_complexity: TaskComplexity = TaskComplexity.MODERATE) -> UnifiedRecommendation:
         """
         Get comprehensive recommendations BEFORE starting workflow.
 
@@ -95,7 +96,7 @@ class RecommendationEngine:
         Args:
             task_description: Description of the task
             task_type: Type of task (research, coding, analysis, etc.)
-            task_complexity: Complexity level (simple, medium, complex)
+            task_complexity: Complexity level (TaskComplexity enum)
 
         Returns:
             UnifiedRecommendation with all learning system outputs
@@ -242,7 +243,7 @@ class RecommendationEngine:
     def record_workflow_outcome(self,
                                  workflow_id: str,
                                  task_type: str,
-                                 task_complexity: str,
+                                 task_complexity: TaskComplexity,
                                  agents_used: List[Dict[str, Any]],
                                  workflow_success: bool,
                                  workflow_duration: float,
@@ -257,7 +258,7 @@ class RecommendationEngine:
         Args:
             workflow_id: ID of completed workflow
             task_type: Type of task
-            task_complexity: Complexity level
+            task_complexity: Complexity level (TaskComplexity enum)
             agents_used: List of agent info dicts with {type, predicted_confidence}
             workflow_success: Whether workflow succeeded
             workflow_duration: Duration in seconds

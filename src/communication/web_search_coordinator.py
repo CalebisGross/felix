@@ -152,6 +152,71 @@ class WebSearchCoordinator:
         """Get current confidence threshold."""
         return self._web_search_trigger_threshold
 
+    def check_proactive_search_needed(self, task_description: str, task_complexity: str = "COMPLEX") -> bool:
+        """
+        Check if task requires immediate proactive web search.
+
+        Analyzes task patterns to detect time-sensitive queries or factual lookups
+        that would benefit from immediate web search before agent processing.
+
+        Args:
+            task_description: The task description from user
+            task_complexity: Task complexity classification (default "COMPLEX")
+
+        Returns:
+            True if proactive search is recommended, False otherwise
+
+        Examples:
+            >>> coordinator.check_proactive_search_needed("What time is it?", "SIMPLE_FACTUAL")
+            True
+            >>> coordinator.check_proactive_search_needed("Explain quantum physics", "MEDIUM")
+            False
+        """
+        import re
+
+        task_lower = task_description.lower()
+
+        # Only trigger for SIMPLE_FACTUAL tasks
+        if task_complexity != "SIMPLE_FACTUAL":
+            return False
+
+        # Check for web search client availability
+        if not self.web_search_client:
+            return False
+
+        # Check cooldown period
+        time_since_last_search = time.time() - self._last_search_time
+        if time_since_last_search < self._search_cooldown:
+            return False
+
+        # Time/date query patterns (proactive search highly recommended)
+        time_patterns = [
+            r'\bwhat\s+time\b',
+            r'\bwhat\s+date\b',
+            r'\btoday\'?s?\s+date\b',
+            r'\bcurrent\s+(time|date|datetime)\b',
+            r'\bwhat\s+(is|are)\s+(the\s+)?current\s+(time|date)',
+        ]
+
+        for pattern in time_patterns:
+            if re.search(pattern, task_lower):
+                logger.info(f"🔍 Proactive search triggered for time/date query: {task_description[:50]}...")
+                return True
+
+        # Latest news/events (benefit from recent data)
+        news_patterns = [
+            r'\blatest\s+(news|update|information)\b',
+            r'\brecent\s+(events|news|developments)\b',
+            r'\bwhat\s+happened\s+(today|recently|lately)\b',
+        ]
+
+        for pattern in news_patterns:
+            if re.search(pattern, task_lower):
+                logger.info(f"🔍 Proactive search triggered for news query: {task_description[:50]}...")
+                return True
+
+        return False
+
     def perform_web_search(self, task_description: str) -> None:
         """
         Perform web search when consensus is low and store relevant info in knowledge base.

@@ -1,9 +1,6 @@
 """
 Agent lifecycle management for the Felix Framework.
 
-This module implements autonomous agents that traverse the helical path,
-matching the behavior specified in the OpenSCAD model from thefelix.md.
-
 Mathematical Foundation:
 - Agent spawn distribution: T_i ~ U(0,1) (uniform random timing)
 - Position progression: r_i(τ) = r(T_i + (τ - T_i)) along helix path
@@ -11,7 +8,7 @@ Mathematical Foundation:
 - Agent density evolution: ρ(t,τ) for attention focusing (Hypothesis H3)
 
 Key Features:
-- Random spawn timing using configurable seeds (matches OpenSCAD rands() function)
+- Random spawn timing using configurable seeds
 - Helix path traversal with precise position tracking
 - State machine for lifecycle management (WAITING → ACTIVE → COMPLETED)
 - Task assignment and processing with performance measurement

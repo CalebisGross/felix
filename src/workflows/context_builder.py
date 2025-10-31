@@ -41,13 +41,23 @@ class CollaborativeContextBuilder:
         Initialize collaborative context builder.
 
         Args:
-            central_post: CentralPost instance for message retrieval
-            knowledge_store: Optional KnowledgeStore for memory integration
-            context_compressor: Optional ContextCompressor for context optimization
+            central_post: CentralPost instance for message retrieval and memory access
+            knowledge_store: DEPRECATED - Access through central_post.memory_facade instead
+            context_compressor: Optional ContextCompressor (fallback to memory_facade if None)
         """
         self.central_post = central_post
-        self.knowledge_store = knowledge_store
-        self.context_compressor = context_compressor
+
+        # Access memory systems through MemoryFacade for consistency
+        self.memory_facade = central_post.memory_facade if hasattr(central_post, 'memory_facade') else None
+
+        # Fallback for backward compatibility (will be removed in future)
+        self.knowledge_store = knowledge_store if self.memory_facade is None else None
+
+        # Use memory_facade's compressor if available, otherwise use provided one
+        if self.memory_facade and hasattr(self.memory_facade, 'context_compressor'):
+            self.context_compressor = self.memory_facade.context_compressor
+        else:
+            self.context_compressor = context_compressor
 
         # Track context building statistics
         self.contexts_built = 0
@@ -68,6 +78,80 @@ class CollaborativeContextBuilder:
             Estimated number of tokens
         """
         return len(text) // 4
+
+    @staticmethod
+    def _get_knowledge_limit_for_complexity(task_complexity: str) -> int:
+        """
+        Get adaptive knowledge retrieval limit based on task complexity.
+
+        Simple factual queries don't need many knowledge entries, while
+        complex analytical tasks benefit from richer context.
+
+        Args:
+            task_complexity: Task complexity ("SIMPLE_FACTUAL", "MEDIUM", "COMPLEX")
+
+        Returns:
+            Knowledge entry limit (8, 15, or 25)
+        """
+        if task_complexity == "SIMPLE_FACTUAL":
+            return 8  # Slight increase from 5 for simple queries
+        elif task_complexity == "MEDIUM":
+            return 15  # 3x for moderate analysis tasks
+        else:  # COMPLEX
+            return 25  # 5x for deep analytical work
+
+    @staticmethod
+    def _classify_task_complexity(task_description: str) -> str:
+        """
+        Classify task complexity to optimize knowledge retrieval.
+
+        Mirrors the classification logic from synthesis_engine.py to ensure
+        consistent complexity assessment throughout the workflow.
+
+        Args:
+            task_description: The task description from user
+
+        Returns:
+            Task complexity: "SIMPLE_FACTUAL", "MEDIUM", or "COMPLEX"
+        """
+        import re
+
+        task_lower = task_description.lower()
+
+        # Simple factual patterns
+        simple_patterns = [
+            r'\b(what|when|who|where)\s+(is|are|was|were)\s+(the\s+)?current',
+            r'\bwhat\s+time\b',
+            r'\bwhat\s+date\b',
+            r'\btoday\'?s?\s+(date|time)',
+            r'\bcurrent\s+(time|date|datetime)',
+            r'\bwho\s+(won|is|was)\b',
+            r'\bwhen\s+(did|is|was)\b',
+            r'\bhow\s+many\b.*\b(now|current|today)',
+            r'\blatest\s+(news|update)\b',
+        ]
+
+        for pattern in simple_patterns:
+            if re.search(pattern, task_lower):
+                return "SIMPLE_FACTUAL"
+
+        # Medium complexity patterns
+        medium_patterns = [
+            r'\bexplain\b',
+            r'\bcompare\b',
+            r'\bwhat\s+are\s+the\s+(benefits|advantages|disadvantages)',
+            r'\bhow\s+does\b',
+            r'\bhow\s+to\b',
+            r'\blist\b',
+            r'\bsummarize\b',
+        ]
+
+        for pattern in medium_patterns:
+            if re.search(pattern, task_lower):
+                return "MEDIUM"
+
+        # Default to complex for open-ended, analytical tasks
+        return "COMPLEX"
 
     def build_agent_context(self,
                            original_task: str,
@@ -106,6 +190,22 @@ class CollaborativeContextBuilder:
         logger.info(f"  Retrieved {len(recent_messages)} messages from CentralPost")
         if recent_messages:
             logger.info(f"  Previous agents: {[msg.sender_id for msg in recent_messages]}")
+
+        # CRITICAL: Also retrieve ALL system commands executed in this workflow
+        # This ensures agents can see what's already been done, even if messages were processed
+        workflow_system_actions = []
+        if hasattr(self.central_post, '_current_workflow_id') and self.central_post._current_workflow_id:
+            workflow_id = self.central_post._current_workflow_id
+            try:
+                executed_commands = self.central_post.system_command_manager.get_workflow_executed_commands(workflow_id)
+                workflow_system_actions = executed_commands
+                logger.info(f"  Retrieved {len(executed_commands)} executed system commands for workflow {workflow_id}")
+                for i, cmd_info in enumerate(executed_commands, 1):
+                    result = cmd_info['result']
+                    status = "✓" if result.success else "✗"
+                    logger.info(f"    {i}. {status} {cmd_info['command'][:50]}...")
+            except Exception as e:
+                logger.warning(f"  Could not retrieve workflow system actions: {e}")
 
         # Build context history from messages
         context_history = []
@@ -158,6 +258,35 @@ class CollaborativeContextBuilder:
             # Log each context entry being added
             response_preview = agent_response[:60] + "..." if len(agent_response) > 60 else agent_response
             logger.info(f"    {i}. {sender_type} ({msg.sender_id}): conf={agent_conf:.2f}, '{response_preview}'")
+
+        # Add workflow system actions to context (if not already included in messages)
+        # These are commands that were executed but might have been processed before this agent spawned
+        if workflow_system_actions:
+            logger.info(f"  Adding {len(workflow_system_actions)} executed system commands to context...")
+            for cmd_info in workflow_system_actions:
+                result = cmd_info['result']
+                command = cmd_info['command']
+
+                # Create a formatted context entry for the system action
+                action_response = f"System Command Executed:\nCommand: {command}\nSuccess: {result.success}\nExit Code: {result.exit_code}"
+                if hasattr(result, 'stdout') and result.stdout:
+                    action_response += f"\nOutput: {result.stdout[:200]}"  # Truncate long output
+                if hasattr(result, 'stderr') and result.stderr:
+                    action_response += f"\nErrors: {result.stderr[:200]}"
+
+                context_entry = {
+                    "agent_id": "system_executor",
+                    "agent_type": "system_action",
+                    "response": action_response,
+                    "confidence": 1.0,  # System actions have definitive results
+                    "timestamp": cmd_info.get('timestamp', 0)
+                }
+
+                context_history.append(context_entry)
+                original_size += self.estimate_tokens(action_response)
+
+                status_emoji = "✓" if result.success else "✗"
+                logger.info(f"    {status_emoji} {command[:50]}...")
 
         # ENFORCE TOKEN BUDGET: Ensure context never exceeds agent capacity
         # Reserve space for collaborative instructions (~150 tokens after 4:1 ratio)
@@ -243,12 +372,18 @@ class CollaborativeContextBuilder:
         logger.info("="*60)
 
         knowledge_entries = []
-        if self.knowledge_store:
-            logger.info("  ✓ Knowledge store available")
+        # Use MemoryFacade if available, fallback to knowledge_store for backward compatibility
+        memory_system = self.memory_facade if self.memory_facade else self.knowledge_store
+        if memory_system:
+            logger.info("  ✓ Memory system available (via " + ("MemoryFacade" if self.memory_facade else "knowledge_store") + ")")
             try:
                 import time as time_module
                 from src.memory.knowledge_store import KnowledgeQuery, ConfidenceLevel
                 from src.workflows.truth_assessment import detect_query_type, QueryType
+
+                # Detect task complexity for adaptive knowledge limits
+                task_complexity = self._classify_task_complexity(original_task)
+                knowledge_limit = self._get_knowledge_limit_for_complexity(task_complexity)
 
                 # Detect query type to determine appropriate freshness window
                 current_time = time_module.time()
@@ -266,22 +401,41 @@ class CollaborativeContextBuilder:
                 logger.info(f"  📝 Query parameters:")
                 logger.info(f"     - Domains: web_search, workflow_task")
                 logger.info(f"     - Min confidence: MEDIUM")
+                logger.info(f"     - Task complexity: {task_complexity} (adaptive limit: {knowledge_limit} entries)")
                 logger.info(f"     - Query type: {query_type.value} (freshness: {max_age}s / {max_age/60:.1f} min)")
                 logger.info(f"     - Time range: {int(time_window_start)} to {int(current_time)}")
-                logger.info(f"     - Limit: 5 entries")
 
                 # CRITICAL: Retrieve from BOTH web_search and workflow_task domains
                 # Web search results are stored in "web_search" domain (central_post.py)
                 # Agent results are stored in "workflow_task" domain
-                logger.info("  🔍 Calling knowledge_store.retrieve_knowledge()...")
-                relevant_knowledge = self.knowledge_store.retrieve_knowledge(
-                    KnowledgeQuery(
-                        domains=["web_search", "workflow_task"],  # Include web search results!
-                        min_confidence=ConfidenceLevel.MEDIUM,
-                        time_range=(time_window_start, current_time),  # Dynamic freshness based on query type
-                        limit=5  # Increased to allow more web search results
+                logger.info("  🔍 Calling memory system to retrieve knowledge...")
+
+                # Use MemoryFacade if available, fallback to direct knowledge_store
+                if self.memory_facade:
+                    logger.info("  → Using MemoryFacade.retrieve_knowledge_with_query()")
+                    relevant_knowledge = self.memory_facade.retrieve_knowledge_with_query(
+                        KnowledgeQuery(
+                            domains=["web_search", "workflow_task"],  # Include web search results!
+                            min_confidence=ConfidenceLevel.MEDIUM,
+                            time_range=(time_window_start, current_time),  # Dynamic freshness based on query type
+                            limit=knowledge_limit,  # Adaptive limit based on task complexity
+                            task_type=agent_type,  # For meta-learning boost
+                            task_complexity=task_complexity  # For future semantic search
+                        )
                     )
-                )
+                else:
+                    # Fallback for backward compatibility
+                    logger.info("  → Using knowledge_store.retrieve_knowledge() (fallback)")
+                    relevant_knowledge = self.knowledge_store.retrieve_knowledge(
+                        KnowledgeQuery(
+                            domains=["web_search", "workflow_task"],
+                            min_confidence=ConfidenceLevel.MEDIUM,
+                            time_range=(time_window_start, current_time),
+                            limit=knowledge_limit,  # Adaptive limit based on task complexity
+                            task_type=agent_type,
+                            task_complexity=task_complexity
+                        )
+                    )
                 knowledge_entries = relevant_knowledge
 
                 logger.info(f"  ✓ Retrieved {len(knowledge_entries)} entries from knowledge store")
@@ -296,7 +450,35 @@ class CollaborativeContextBuilder:
                     logger.warning("  ⚠️ Agents will NOT have web search data!")
                 else:
                     # Sort web_search entries first (they're typically most relevant for current queries)
+                    # Note: Meta-learning boost already applied optimal ranking
                     knowledge_entries = sorted(knowledge_entries, key=lambda ke: (ke.domain != "web_search", ke.created_at), reverse=False)
+
+                    # === TOKEN BUDGET SAFETY: Trim knowledge entries if needed ===
+                    # Reserve token budget for knowledge entries (max 30% of available context)
+                    knowledge_token_budget = int(max_context_tokens * 0.3)
+                    total_knowledge_tokens = 0
+                    trimmed_entries = []
+
+                    for entry in knowledge_entries:
+                        # Estimate tokens for this entry
+                        content_str = str(entry.content)
+                        entry_tokens = self.estimate_tokens(content_str)
+
+                        # Keep entry if within budget
+                        if total_knowledge_tokens + entry_tokens <= knowledge_token_budget:
+                            trimmed_entries.append(entry)
+                            total_knowledge_tokens += entry_tokens
+                        else:
+                            logger.info(f"  ⚠ Token budget reached: trimming remaining entries "
+                                      f"({total_knowledge_tokens}/{knowledge_token_budget} tokens used)")
+                            break
+
+                    # Report if entries were trimmed
+                    if len(trimmed_entries) < len(knowledge_entries):
+                        logger.info(f"  🔧 Token safety: kept {len(trimmed_entries)}/{len(knowledge_entries)} "
+                                  f"knowledge entries within budget ({total_knowledge_tokens} tokens)")
+
+                    knowledge_entries = trimmed_entries
 
                     logger.info("")
                     logger.info(f"  📚 Knowledge Entries (sorted with web_search first):")

@@ -32,11 +32,6 @@ pip install PyPDF2 watchdog  # PDF reading and file system monitoring
 
 ### Running the Framework
 ```bash
-# Run example workflow with mock LLM (no external server required)
-python exp/example_workflow.py "Your task description here"
-
-# Run comprehensive benchmarks to validate H1-H3 hypotheses
-cd exp && python benchmark_felix.py
 
 # Run the GUI interface (requires LM Studio running on port 1234)
 python -m src.gui
@@ -129,7 +124,7 @@ Agents spawn at different normalized time ranges (0.0-1.0):
 
 ## Configuration
 
-Felix uses YAML configuration (see [exp/optimal_parameters.md](exp/optimal_parameters.md) for tuning). Key parameters:
+Felix uses YAML configuration. Key parameters:
 
 ```yaml
 helix:
@@ -216,7 +211,6 @@ Requires LM Studio running before starting Felix system via GUI.
 - `test_felix_advanced.py`: Integration tests with mock LLM
 - `test_agents_integration.py`: Agent spawning and communication tests
 - `test_knowledge_brain_system.py`: Comprehensive Knowledge Brain tests (6 tests covering ingestion, comprehension, graph building, retrieval, meta-learning, daemon)
-- `exp/benchmark_felix.py`: Performance validation for H1-H3 hypotheses
 
 No formal test framework (pytest/unittest) - uses direct script execution.
 
