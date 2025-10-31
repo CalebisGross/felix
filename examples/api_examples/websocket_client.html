@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Felix WebSocket Client</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2em;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            opacity: 0.9;
+        }
+
+        .content {
+            padding: 30px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: #333;
+        }
+
+        input[type="text"],
+        input[type="number"],
+        textarea {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+
+        input[type="text"]:focus,
+        input[type="number"]:focus,
+        textarea:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        textarea {
+            resize: vertical;
+            min-height: 100px;
+            font-family: inherit;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        button {
+            flex: 1;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .btn-start {
+            background: #667eea;
+            color: white;
+        }
+
+        .btn-create {
+            background: #48bb78;
+            color: white;
+        }
+
+        .btn-disconnect {
+            background: #f56565;
+            color: white;
+        }
+
+        .status {
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            font-weight: 600;
+        }
+
+        .status.disconnected {
+            background: #fed7d7;
+            color: #c53030;
+        }
+
+        .status.connected {
+            background: #c6f6d5;
+            color: #22543d;
+        }
+
+        .status.running {
+            background: #bee3f8;
+            color: #2c5282;
+        }
+
+        .events-container {
+            background: #f7fafc;
+            border-radius: 6px;
+            padding: 20px;
+            max-height: 500px;
+            overflow-y: auto;
+        }
+
+        .events-container h3 {
+            margin-bottom: 15px;
+            color: #2d3748;
+        }
+
+        .event {
+            padding: 12px;
+            margin-bottom: 10px;
+            border-left: 4px solid #e0e0e0;
+            background: white;
+            border-radius: 4px;
+            animation: slideIn 0.3s ease;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateX(-10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+
+        .event-time {
+            font-size: 0.85em;
+            color: #718096;
+            margin-bottom: 4px;
+        }
+
+        .event-content {
+            color: #2d3748;
+        }
+
+        .event.connected {
+            border-left-color: #48bb78;
+        }
+
+        .event.status {
+            border-left-color: #4299e1;
+        }
+
+        .event.agent {
+            border-left-color: #9f7aea;
+        }
+
+        .event.synthesis {
+            border-left-color: #ed8936;
+        }
+
+        .event.complete {
+            border-left-color: #38b2ac;
+            background: #e6fffa;
+        }
+
+        .event.error {
+            border-left-color: #f56565;
+            background: #fff5f5;
+        }
+
+        .synthesis-result {
+            margin-top: 10px;
+            padding: 15px;
+            background: #f7fafc;
+            border-radius: 4px;
+            white-space: pre-wrap;
+            font-size: 0.9em;
+            line-height: 1.6;
+        }
+
+        .example-tasks {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        .example-task {
+            padding: 10px;
+            background: #edf2f7;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-size: 0.9em;
+        }
+
+        .example-task:hover {
+            background: #e2e8f0;
+            transform: translateY(-2px);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🤖 Felix WebSocket Client</h1>
+            <p>Real-time workflow streaming demonstration</p>
+        </div>
+
+        <div class="content">
+            <!-- Configuration -->
+            <div class="form-group">
+                <label>API URL</label>
+                <input type="text" id="apiUrl" value="http://localhost:8000">
+            </div>
+
+            <div class="form-group">
+                <label>WebSocket URL</label>
+                <input type="text" id="wsUrl" value="ws://localhost:8000">
+            </div>
+
+            <div class="form-group">
+                <label>API Key (optional)</label>
+                <input type="text" id="apiKey" placeholder="your-secret-api-key-here">
+            </div>
+
+            <!-- Start Felix Button -->
+            <div class="button-group">
+                <button class="btn-start" id="startBtn" onclick="startFelix()">
+                    Start Felix System
+                </button>
+            </div>
+
+            <!-- Example Tasks -->
+            <div class="form-group">
+                <label>Example Tasks (click to use)</label>
+                <div class="example-tasks">
+                    <div class="example-task" onclick="setTask('Explain quantum computing in simple terms')">
+                        Quantum Computing
+                    </div>
+                    <div class="example-task" onclick="setTask('Analyze the pros and cons of renewable energy')">
+                        Renewable Energy
+                    </div>
+                    <div class="example-task" onclick="setTask('What are the key differences between Python and JavaScript?')">
+                        Python vs JavaScript
+                    </div>
+                </div>
+            </div>
+
+            <!-- Task Input -->
+            <div class="form-group">
+                <label>Task</label>
+                <textarea id="taskInput" placeholder="Enter your task here...">Explain quantum computing in simple terms</textarea>
+            </div>
+
+            <div class="form-group">
+                <label>Max Steps</label>
+                <input type="number" id="maxSteps" value="10" min="1" max="50">
+            </div>
+
+            <!-- Action Buttons -->
+            <div class="button-group">
+                <button class="btn-create" id="createBtn" onclick="createWorkflow()" disabled>
+                    Create Workflow
+                </button>
+                <button class="btn-disconnect" id="disconnectBtn" onclick="disconnect()" disabled>
+                    Disconnect
+                </button>
+            </div>
+
+            <!-- Status -->
+            <div class="status disconnected" id="status">
+                Status: Disconnected
+            </div>
+
+            <!-- Events -->
+            <div class="events-container">
+                <h3>📡 Events</h3>
+                <div id="events"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let ws = null;
+        let felixStarted = false;
+        let currentWorkflowId = null;
+
+        function getApiUrl() {
+            return document.getElementById('apiUrl').value;
+        }
+
+        function getWsUrl() {
+            return document.getElementById('wsUrl').value;
+        }
+
+        function getApiKey() {
+            return document.getElementById('apiKey').value || null;
+        }
+
+        function getHeaders() {
+            const headers = { 'Content-Type': 'application/json' };
+            const apiKey = getApiKey();
+            if (apiKey) {
+                headers['Authorization'] = `Bearer ${apiKey}`;
+            }
+            return headers;
+        }
+
+        function setTask(task) {
+            document.getElementById('taskInput').value = task;
+        }
+
+        function updateStatus(message, className) {
+            const status = document.getElementById('status');
+            status.textContent = message;
+            status.className = `status ${className}`;
+        }
+
+        function addEvent(type, message, data = {}) {
+            const events = document.getElementById('events');
+            const event = document.createElement('div');
+            event.className = `event ${type}`;
+
+            const time = new Date().toLocaleTimeString();
+            event.innerHTML = `
+                <div class="event-time">${time}</div>
+                <div class="event-content">${message}</div>
+            `;
+
+            if (data.synthesis) {
+                const synthesis = document.createElement('div');
+                synthesis.className = 'synthesis-result';
+                synthesis.textContent = data.synthesis;
+                event.appendChild(synthesis);
+            }
+
+            events.insertBefore(event, events.firstChild);
+        }
+
+        async function startFelix() {
+            const btn = document.getElementById('startBtn');
+            btn.disabled = true;
+            btn.textContent = 'Starting...';
+
+            try {
+                const response = await fetch(`${getApiUrl()}/api/v1/system/start`, {
+                    method: 'POST',
+                    headers: getHeaders()
+                });
+
+                if (response.ok || response.status === 409) {
+                    felixStarted = true;
+                    updateStatus('Status: Felix System Running', 'connected');
+                    document.getElementById('createBtn').disabled = false;
+                    btn.textContent = 'Felix Started ✓';
+                    addEvent('connected', '✅ Felix system started');
+                } else {
+                    const error = await response.json();
+                    addEvent('error', `❌ Failed to start Felix: ${error.message || error.detail}`);
+                    btn.disabled = false;
+                    btn.textContent = 'Start Felix System';
+                }
+            } catch (error) {
+                addEvent('error', `❌ Connection error: ${error.message}`);
+                btn.disabled = false;
+                btn.textContent = 'Start Felix System';
+            }
+        }
+
+        async function createWorkflow() {
+            if (!felixStarted) {
+                addEvent('error', '❌ Please start Felix system first');
+                return;
+            }
+
+            const task = document.getElementById('taskInput').value;
+            const maxSteps = parseInt(document.getElementById('maxSteps').value);
+
+            if (!task) {
+                addEvent('error', '❌ Please enter a task');
+                return;
+            }
+
+            const btn = document.getElementById('createBtn');
+            btn.disabled = true;
+            btn.textContent = 'Creating...';
+
+            try {
+                const response = await fetch(`${getApiUrl()}/api/v1/workflows`, {
+                    method: 'POST',
+                    headers: getHeaders(),
+                    body: JSON.stringify({ task, max_steps: maxSteps })
+                });
+
+                if (response.status === 202) {
+                    const workflow = await response.json();
+                    currentWorkflowId = workflow.workflow_id;
+                    addEvent('status', `✅ Workflow created: ${currentWorkflowId}`);
+                    connectWebSocket(currentWorkflowId);
+                } else {
+                    const error = await response.json();
+                    addEvent('error', `❌ Failed to create workflow: ${error.message || error.detail}`);
+                    btn.disabled = false;
+                    btn.textContent = 'Create Workflow';
+                }
+            } catch (error) {
+                addEvent('error', `❌ Connection error: ${error.message}`);
+                btn.disabled = false;
+                btn.textContent = 'Create Workflow';
+            }
+        }
+
+        function connectWebSocket(workflowId) {
+            let wsUri = `${getWsUrl()}/api/v1/ws/workflows/${workflowId}`;
+            const apiKey = getApiKey();
+            if (apiKey) {
+                wsUri += `?api_key=${apiKey}`;
+            }
+
+            addEvent('status', `🔌 Connecting to WebSocket...`);
+            updateStatus('Status: Connecting...', 'running');
+
+            ws = new WebSocket(wsUri);
+
+            ws.onopen = () => {
+                addEvent('connected', '✅ WebSocket connected');
+                updateStatus('Status: Streaming Workflow', 'running');
+                document.getElementById('disconnectBtn').disabled = false;
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    if (event.data === 'pong') return;
+
+                    const data = JSON.parse(event.data);
+                    handleEvent(data);
+                } catch (error) {
+                    console.error('Error parsing event:', error);
+                }
+            };
+
+            ws.onerror = (error) => {
+                addEvent('error', `❌ WebSocket error: ${error.message || 'Connection failed'}`);
+                updateStatus('Status: Error', 'disconnected');
+            };
+
+            ws.onclose = () => {
+                addEvent('status', '🔌 WebSocket disconnected');
+                updateStatus('Status: Disconnected', 'disconnected');
+                document.getElementById('createBtn').disabled = false;
+                document.getElementById('createBtn').textContent = 'Create Workflow';
+                document.getElementById('disconnectBtn').disabled = true;
+                ws = null;
+            };
+        }
+
+        function handleEvent(event) {
+            const type = event.type;
+
+            switch (type) {
+                case 'connected':
+                    addEvent('connected', '📡 Connected to workflow stream');
+                    break;
+
+                case 'workflow_status':
+                    addEvent('status', `📊 Workflow status: ${event.status}`);
+                    break;
+
+                case 'agent_spawned':
+                    addEvent('agent', `🤖 Agent spawned: ${event.agent_id} (${event.agent_type})`);
+                    break;
+
+                case 'agent_output':
+                    const confidence = (event.confidence * 100).toFixed(1);
+                    addEvent('agent', `💬 Agent output: ${event.agent_id} (confidence: ${confidence}%)`);
+                    break;
+
+                case 'synthesis_started':
+                    addEvent('synthesis', `🔄 Synthesis started with ${event.agent_count} agents`);
+                    break;
+
+                case 'workflow_complete':
+                    const synth = event.synthesis;
+                    const conf = (synth.confidence * 100).toFixed(1);
+                    addEvent('complete', `✅ Workflow completed! (confidence: ${conf}%)`, {
+                        synthesis: synth.content
+                    });
+                    updateStatus('Status: Completed', 'connected');
+                    if (ws) ws.close();
+                    break;
+
+                case 'workflow_error':
+                    addEvent('error', `❌ Workflow failed: ${event.error}`);
+                    updateStatus('Status: Failed', 'disconnected');
+                    if (ws) ws.close();
+                    break;
+
+                case 'ping':
+                    // Respond to keepalive
+                    if (ws) ws.send('pong');
+                    break;
+
+                default:
+                    console.log('Unknown event:', type, event);
+            }
+        }
+
+        function disconnect() {
+            if (ws) {
+                ws.close();
+                addEvent('status', '🔌 Disconnecting...');
+            }
+        }
+
+        // Initial message
+        addEvent('status', '👋 Welcome! Start by initializing the Felix system.');
+    </script>
+</body>
+</html>

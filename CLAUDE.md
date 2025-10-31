@@ -32,9 +32,14 @@ pip install PyPDF2 watchdog  # PDF reading and file system monitoring
 
 ### Running the Framework
 ```bash
-
 # Run the GUI interface (requires LM Studio running on port 1234)
 python -m src.gui
+
+# Run the REST API server (requires LM Studio running on port 1234)
+# Install API dependencies first: pip install -r requirements-api.txt
+export FELIX_API_KEY="your-secret-key"  # Optional, for authentication
+python3 -m uvicorn src.api.main:app --reload --port 8000
+# API docs available at: http://localhost:8000/docs
 
 # Run basic tests
 python test_felix.py
@@ -44,6 +49,41 @@ python test_agents_integration.py
 # Test Knowledge Brain system (6 comprehensive tests)
 python test_knowledge_brain_system.py
 ```
+
+### Command-Line Interface (CLI)
+```bash
+# Run a workflow from the command line
+python -m src.cli run "Your task here"
+python -m src.cli run "Explain quantum computing" --output result.md
+python -m src.cli run "Design a REST API" --max-steps 10 --web-search
+
+# Check system status (LLM providers, databases, knowledge stats)
+python -m src.cli status
+
+# Test LLM connection and provider health
+python -m src.cli test-connection
+
+# Launch GUI from command line
+python -m src.cli gui
+
+# Initialize/reset databases
+python -m src.cli init
+
+# CLI options:
+#   --output, -o        Save results to file (txt, md, or json)
+#   --max-steps N       Maximum workflow steps (default: 10)
+#   --web-search        Enable web search for the workflow
+#   --config PATH       LLM config file (default: config/llm.yaml)
+#   --verbose, -v       Verbose output with stack traces
+```
+
+The CLI provides full Felix functionality without requiring the GUI, making it ideal for:
+- CI/CD integration and automated workflows
+- Remote server deployments without display
+- Scripting and batch processing
+- Quick one-off queries and testing
+
+See [docs/CLI_GUIDE.md](docs/CLI_GUIDE.md) for complete CLI documentation.
 
 ### LM Studio Setup (Optional for real LLM integration)
 - Start LM Studio server with a loaded model on default port 1234
@@ -67,16 +107,27 @@ Agents move down the helix from exploration to synthesis, with their behavior (t
    - `LLMAgent`: Agents with LLM integration and position-aware prompting
    - `specialized_agents.py`: Role-specific agents (Research, Analysis, Critic)
    - `dynamic_spawning.py`: Confidence-based agent spawning (threshold: 0.80)
+   - **Plugin System** ([src/agents/](src/agents/)):
+     - `base_specialized_agent.py`: Plugin API interface (`SpecializedAgentPlugin`, `AgentMetadata`)
+     - `agent_plugin_registry.py`: Auto-discovery and loading of agent plugins
+     - `builtin/`: Built-in plugins (Research, Analysis, Critic wrapped as plugins)
+     - Supports external plugins from custom directories
+     - Hot-reloadable custom agents without core modifications
    - **Note**: Synthesis is performed by CentralPost, not by a specialized agent
 
-2. **Communication Hub** ([src/communication/central_post.py](src/communication/central_post.py))
-   - `CentralPost`: O(N) hub-spoke message routing (vs O(N²) mesh)
-   - `CentralPost Synthesis`: Smart hub performs final synthesis of all agent outputs
+2. **Communication Hub** ([src/communication/](src/communication/))
+   - `CentralPost`: O(N) hub-spoke coordinator delegating to specialized subsystems (vs O(N²) mesh)
+   - `MessageTypes`: Core message definitions and protocol (15+ message types including system actions)
+   - `SynthesisEngine`: Smart synthesis of agent outputs with adaptive parameters (temp: 0.2-0.4, tokens: 1500-3000)
+   - `WebSearchCoordinator`: Confidence-based web search triggering and result distribution
+   - `SystemCommandManager`: Command execution with trust levels and approval workflows
+   - `StreamingCoordinator`: Real-time token streaming with callbacks and time-batched delivery
+   - `MemoryFacade`: Unified memory access layer for knowledge, tasks, and workflows
+   - `PerformanceMonitor`: Centralized metrics tracking for throughput, latency, and overhead analysis
    - `AgentFactory`: Creates agents with helix positioning
    - `AgentRegistry`: Phase-based agent tracking (exploration/analysis/synthesis)
    - Agent awareness: Query team state, discover peers, coordinate collaboration
    - Handles up to 133 agents with efficient message queuing
-   - Adaptive synthesis: temperature (0.2-0.4) and tokens (1500-3000) based on consensus
 
 3. **Memory Systems** ([src/memory/](src/memory/))
    - `KnowledgeStore`: SQLite persistence in `felix_knowledge.db`
@@ -85,11 +136,24 @@ Agents move down the helix from exploration to synthesis, with their behavior (t
    - `ContextCompression`: Abstractive compression (0.3 ratio)
 
 4. **LLM Integration** ([src/llm/](src/llm/))
-   - `LMStudioClient`: Local LLM via LM Studio (port 1234) with incremental token streaming
-   - `TokenBudgetManager`: Adaptive token allocation (base: 2048)
-   - `WebSearchClient`: DuckDuckGo and SearxNG integration with result caching and domain filtering
-   - Temperature gradient: 1.0 (top/exploration) → 0.2 (bottom/synthesis)
-   - Streaming support: Time-batched token delivery with callbacks
+   - **Multi-Provider Architecture**:
+     - `BaseLLMProvider`: Abstract provider interface with unified request/response structures
+     - `LLMRouter`: Intelligent routing with automatic fallback, health monitoring, and load balancing
+     - `RouterAdapter`: Backwards-compatible adapter for seamless integration with existing code
+     - `ProviderConfig`: YAML-based configuration loader (config/llm.yaml)
+   - **Provider Implementations** ([src/llm/providers/](src/llm/providers/)):
+     - `LMStudioProvider`: Local LLM via LM Studio (port 1234)
+     - `AnthropicProvider`: Claude models (API key required)
+     - `GeminiProvider`: Google Gemini models (API key required)
+   - **Additional Components**:
+     - `LMStudioClient`: Low-level client with incremental token streaming
+     - `TokenBudgetManager`: Adaptive token allocation (base: 2048)
+     - `WebSearchClient`: DuckDuckGo and SearxNG integration with result caching and domain filtering
+   - **Features**:
+     - Temperature gradient: 1.0 (top/exploration) → 0.2 (bottom/synthesis)
+     - Streaming support: Time-batched token delivery with callbacks
+     - Automatic failover between providers with statistics tracking
+     - Health checking and connection testing for all providers
 
 5. **Pipeline Processing** ([src/pipeline/](src/pipeline/))
    - `LinearPipeline`: Sequential task processing
@@ -108,6 +172,13 @@ Agents move down the helix from exploration to synthesis, with their behavior (t
    - `KnowledgeDaemon`: Autonomous processor with 3 concurrent modes (batch, hourly refinement, file watching)
    - `KnowledgeRetriever`: Semantic search with meta-learning boost tracking historical usefulness
    - `WorkflowIntegration`: Bridge connecting knowledge brain to Felix workflows
+   - **Meta-Learning System**:
+     - Tracks which knowledge entries are useful for specific task types
+     - Stores usage patterns in `knowledge_usage` table with usefulness scores (0.0-1.0)
+     - Boosts retrieval relevance based on historical data (≥3 samples required for reliable boost)
+     - Boost factor: 0.5 to 1.0 multiplier based on average usefulness
+     - Enables continuous improvement: knowledge that helped similar tasks ranks higher
+     - Task-type specific: boosts are context-aware (research tasks vs analysis tasks)
    - **Zero External Dependencies**: Intelligent fallback ensures operation without cloud APIs
 
 8. **Utilities** ([src/utils/](src/utils/))
@@ -205,6 +276,39 @@ Additional features:
 
 Requires LM Studio running before starting Felix system via GUI.
 
+## REST API Interface
+
+The FastAPI REST API ([src/api/](src/api/)) provides programmatic access to Felix functionality:
+
+### Endpoints
+- **System Management**: `/api/v1/system/start`, `/stop`, `/status` - Lifecycle control
+- **Workflows**: `/api/v1/workflows` - Create, monitor, and list workflows
+- **Interactive Docs**: `/docs` - Auto-generated Swagger UI
+- **OpenAPI Schema**: `/openapi.json` - API specification
+
+### Features
+- API key authentication (optional for development)
+- Async workflow execution with background tasks
+- Thread pool executor for sync/async bridge
+- CORS support for web clients
+- Auto-generated documentation
+
+### Quick Start
+```bash
+# Install API dependencies
+pip install -r requirements-api.txt
+
+# Set API key (optional)
+export FELIX_API_KEY="your-secret-key"
+
+# Start API server
+python3 -m uvicorn src.api.main:app --reload --port 8000
+
+# Access docs at http://localhost:8000/docs
+```
+
+See [docs/API_QUICKSTART.md](docs/API_QUICKSTART.md) for detailed usage examples.
+
 ## Testing Approach
 
 - `test_felix.py`: Basic import and component tests
@@ -229,3 +333,5 @@ No formal test framework (pytest/unittest) - uses direct script execution.
 6. **Hypothesis Validation**: Run benchmarks to verify expected gains (H1: 20%, H2: 15%, H3: 25%)
 
 7. **Knowledge Brain System**: Fully optional - zero external dependencies through tiered fallback (LM Studio → TF-IDF → FTS5). Enable via GUI Settings tab. Monitors watch directories, uses agentic comprehension for document understanding, builds knowledge graphs, and provides semantic retrieval with meta-learning. Requires PyPDF2 for PDF support and watchdog for file monitoring (both optional - system adapts if missing)
+
+8. **Custom Agent Plugins**: Felix supports custom agent plugins without modifying core code. Create agent classes inheriting from `LLMAgent` and wrap them in `SpecializedAgentPlugin`. See [docs/PLUGIN_API.md](docs/PLUGIN_API.md) for full documentation and [examples/custom_agents/](examples/custom_agents/) for examples. Plugins are auto-discovered from configured directories and integrate with AgentFactory for dynamic spawning.

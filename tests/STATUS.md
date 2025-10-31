@@ -68,7 +68,7 @@ Fix all Agent/Factory instantiation issues:
 
 ### 💡 Key Insight
 
-The **real value** of these tests isn't running actual Felix agents (that's what the GUI and exp/ folder are for). The value is:
+The **real value** of these tests isn't running actual Felix agents (that's what the GUI and CLI are for). The value is:
 
 1. **Proving the architectural concepts** through metric comparison
 2. **Demonstrating improvements** vs simpler approaches

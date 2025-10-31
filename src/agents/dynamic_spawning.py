@@ -538,6 +538,10 @@ class TeamSizeOptimizer:
         self._team_size_efficiency: Dict[int, List[float]] = defaultdict(list)
         self._current_team_size = 0
         self._current_token_usage = 0
+
+        # Spawn cooldown tracking (prevent spawning too frequently)
+        self._last_spawn_time = 0.0
+        self._spawn_cooldown_seconds = 30.0  # Wait 30 seconds between spawn checks
     
     def update_current_state(self, team_size: int, token_usage: int) -> None:
         """Update current team state for optimization calculations."""
@@ -566,9 +570,9 @@ class TeamSizeOptimizer:
         base_size = max(3, min(10, int(3 + task_complexity * 7)))
 
         # Adjust for confidence (low confidence = more agents)
-        # More aggressive: multiply by 10 and round instead of truncating with int
-        # This ensures even small confidence gaps trigger spawning
-        confidence_adjustment = max(-2, min(5, round((0.7 - current_confidence) * 10)))
+        # Reduced from 10 to 3 - less aggressive spawning
+        # This prevents excessive agent creation for simple tasks
+        confidence_adjustment = max(-2, min(5, round((0.7 - current_confidence) * 3)))
         adjusted_size = base_size + confidence_adjustment
         
         # Consider resource constraints
@@ -586,11 +590,11 @@ class TeamSizeOptimizer:
             optimal_size = int(0.7 * optimal_size + 0.3 * historical_optimal)
 
         # CRITICAL: Ensure minimum team size when confidence is low
-        # If confidence < 0.7, guarantee at least 7 agents to allow proper collaboration
-        # This prevents premature stopping when consensus hasn't been reached
+        # Reduced from 7 to 3 - more reasonable minimum for most tasks
+        # This prevents premature stopping while avoiding excessive spawning
         if current_confidence < 0.7:
-            optimal_size = max(optimal_size, 7)
-            logger.debug(f"    Enforcing minimum team size of 7 due to low confidence ({current_confidence:.2f} < 0.7)")
+            optimal_size = max(optimal_size, 3)
+            logger.debug(f"    Enforcing minimum team size of 3 due to low confidence ({current_confidence:.2f} < 0.7)")
 
         return max(1, min(optimal_size, self.max_agents))  # Ensure at least 1, at most max_agents
     
@@ -635,8 +639,15 @@ class TeamSizeOptimizer:
         # Log decision factors for visibility
         logger.debug(f"  Spawning decision factors:")
         logger.debug(f"    - Current size: {current_size}, Optimal size: {optimal_size}, Max: {self.max_agents}")
-        logger.debug(f"    - Confidence: {confidence_metrics.current_average:.2f} (threshold: 0.7)")
+        logger.debug(f"    - Confidence: {confidence_metrics.current_average:.2f} (threshold: 0.5)")
         logger.debug(f"    - Token usage: {self._current_token_usage}/{self.token_budget_limit}")
+
+        # COOLDOWN: Don't spawn too frequently (prevents spawn storms)
+        current_time = time.time()
+        time_since_last_spawn = current_time - self._last_spawn_time
+        if self._last_spawn_time > 0 and time_since_last_spawn < self._spawn_cooldown_seconds:
+            logger.info(f"    ✗ BLOCKED: Spawn cooldown active ({time_since_last_spawn:.1f}s / {self._spawn_cooldown_seconds}s)")
+            return False
 
         # HARD CONSTRAINT: Don't expand if resource constrained
         estimated_new_tokens = 800  # Per new agent
@@ -645,14 +656,17 @@ class TeamSizeOptimizer:
             return False
 
         # PRIMARY TRIGGER: Low confidence requires more agents (checked BEFORE optimal_size)
-        # This ensures we keep spawning when confidence is insufficient
-        if confidence_metrics.current_average < 0.7 and current_size < self.max_agents:
-            logger.info(f"    ✓ SPAWN TRIGGER: Low confidence ({confidence_metrics.current_average:.2f} < 0.7)")
+        # Reduced threshold from 0.7 to 0.5 - only spawn when confidence is very low
+        # This prevents excessive spawning for medium-complexity tasks
+        if confidence_metrics.current_average < 0.5 and current_size < self.max_agents:
+            logger.info(f"    ✓ SPAWN TRIGGER: Very low confidence ({confidence_metrics.current_average:.2f} < 0.5)")
+            self._last_spawn_time = current_time
             return True
 
         # SECONDARY TRIGGER: Haven't reached optimal size yet
         if current_size < optimal_size:
             logger.info(f"    ✓ SPAWN TRIGGER: Under optimal size ({current_size} < {optimal_size})")
+            self._last_spawn_time = current_time
             return True
 
         # ADDITIONAL TRIGGERS: Special conditions
@@ -661,6 +675,7 @@ class TeamSizeOptimizer:
         if (confidence_metrics.trend == ConfidenceTrend.DECLINING and
             current_size < self.max_agents):
             logger.info(f"    ✓ SPAWN TRIGGER: Declining confidence trend")
+            self._last_spawn_time = current_time
             return True
 
         # Trigger: Low confidence with high volatility
@@ -668,6 +683,7 @@ class TeamSizeOptimizer:
             confidence_metrics.volatility > 0.2 and
             current_size < self.max_agents):
             logger.info(f"    ✓ SPAWN TRIGGER: Low confidence ({confidence_metrics.current_average:.2f}) + high volatility ({confidence_metrics.volatility:.2f})")
+            self._last_spawn_time = current_time
             return True
 
         # No triggers met
@@ -865,8 +881,9 @@ class DynamicSpawning:
             decisions = [d for d in decisions if d.agent_type != "critic"]
 
         # Sort by priority and return top decisions
+        # Reduced from 5 to 2 - prevents spawning storms
         decisions.sort(key=lambda d: d.priority_score, reverse=True)
-        return decisions[:5]  # Maximum 5 spawns per analysis cycle
+        return decisions[:2]  # Maximum 2 spawns per analysis cycle
     
     def _get_specialized_focus(self, content_analysis: ContentAnalysis, agent_type: str) -> str:
         """Get specialized focus for agent based on content analysis."""

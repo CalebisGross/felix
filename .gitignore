@@ -8,6 +8,13 @@ __pycache__/
 *.so
 *.pyc
 
+# Testing and coverage
+.coverage
+coverage.xml
+htmlcov/
+.pytest_cache/
+*.coverage
+
 # Distribution / packaging
 .Python
 build/
@@ -35,12 +42,22 @@ wheels/
 # User-specific configuration
 felix_gui_config.json
 
+# Configuration files with potential secrets
+config/*.yaml
+config/*.yml
+!config/*.example.yaml
+!config/*.example.yml
+
 # Results and outputs
 results/
 outputs/
 *_workflow_results_*.txt
 felix_synthesis_*.md
 temp/
+
+# Knowledge sources (user data directory)
+knowledge_sources/*
+!knowledge_sources/README.md
 
 # IDE
 .vscode/

@@ -91,10 +91,9 @@ graph TD
     D -->|Import| H[src/core/helix_geometry]
     D -->|Import| I[src/agents/specialized_agents]
     D -->|Import| J[src/communication/central_post]
-    
-    E -->|Import| K[exp/benchmark_felix]
+
     E -->|Stream Results| B
-    
+
     D -->|Stream Logs| B
     J -->|Store Results| L[felix_memory.db]
     
@@ -814,7 +813,6 @@ class WorkflowRunner:
 
 ```python
 # gui/backend/benchmark_runner.py
-from exp.benchmark_felix import *
 import threading
 import queue
 
@@ -1421,7 +1419,6 @@ if st.button("Load"):
 - [ ] Add step-by-step execution mode
 
 ### Phase 4: Benchmarking (Week 4)
-- [ ] Integrate exp/benchmark_felix.py
 - [ ] Build benchmark parameter UI
 - [ ] Implement real-time progress tracking
 - [ ] Create interactive result visualizations (Plotly)

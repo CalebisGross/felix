@@ -1,0 +1,39 @@
+# Felix REST API Dependencies
+#
+# Install with: pip install -r requirements-api.txt
+#
+# These are additional dependencies required for the REST API server.
+# Core Felix dependencies should be installed from requirements.txt first.
+
+# FastAPI and ASGI server
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0  # Includes websockets, httptools, uvloop
+
+# WebSocket support
+websockets>=12.0
+
+# Request/response validation
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+
+# Multipart form data (for file uploads)
+python-multipart>=0.0.6
+
+# Authentication
+python-jose[cryptography]>=3.3.0  # For JWT tokens (optional, future feature)
+
+# Rate limiting
+slowapi>=0.1.9
+
+# CORS middleware (included with FastAPI, but listing for clarity)
+# No additional package needed
+
+# HTTP client for testing
+httpx>=0.25.0
+
+# Testing
+pytest-asyncio>=0.21.1  # For async tests
+
+# Optional: Monitoring and observability
+# prometheus-client>=0.19.0  # Metrics (uncomment if needed)
+# opentelemetry-api>=1.20.0  # Distributed tracing (uncomment if needed)

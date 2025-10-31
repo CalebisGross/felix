@@ -14,7 +14,8 @@ from dataclasses import dataclass
 from src.core.helix_geometry import HelixGeometry
 from src.communication.central_post import CentralPost, AgentFactory, Message, MessageType
 from src.communication.spoke import SpokeManager
-from src.llm.lm_studio_client import LMStudioClient
+from src.llm.lm_studio_client import LMStudioClient  # Keep for backward compatibility
+from src.llm.router_adapter import create_router_adapter
 from src.llm.token_budget import TokenBudgetManager
 from src.llm.web_search_client import WebSearchClient
 from src.memory.knowledge_store import KnowledgeStore
@@ -41,6 +42,9 @@ except ImportError as e:
     EmbeddingProvider = None
 
 logger = logging.getLogger(__name__)
+
+# Felix version constant
+FELIX_VERSION = "0.9.0"
 
 
 @dataclass
@@ -259,18 +263,29 @@ class FelixSystem:
             )
             logger.info(f"Helix geometry initialized: {self.helix}")
 
-            # Initialize LM Studio client
+            # Initialize LLM client (try router adapter first, fall back to LMStudioClient)
             base_url = f"http://{self.config.lm_host}:{self.config.lm_port}/v1"
-            self.lm_client = LMStudioClient(
-                base_url=base_url,
-                verbose_logging=self.config.verbose_llm_logging
-            )
 
-            # Test LM Studio connection
+            try:
+                # Try to use multi-provider router from config
+                logger.info("Attempting to initialize LLM router from config/llm.yaml")
+                self.lm_client = create_router_adapter("config/llm.yaml")
+                logger.info("Successfully initialized LLM router with multi-provider support")
+            except Exception as e:
+                # Fall back to direct LM Studio client
+                logger.warning(f"Failed to initialize LLM router ({e}), falling back to LM Studio client")
+                self.lm_client = LMStudioClient(
+                    base_url=base_url,
+                    verbose_logging=self.config.verbose_llm_logging
+                )
+
+            # Test LLM connection
             if not self.lm_client.test_connection():
-                logger.error(f"Failed to connect to LM Studio at {base_url}")
-                logger.error("Please ensure LM Studio is running with a model loaded")
+                logger.error(f"Failed to connect to LLM provider")
+                logger.error("Please ensure LM Studio is running with a model loaded, or configure cloud provider in config/llm.yaml")
                 return False
+
+            logger.info("LLM client initialized and connection verified")
 
             logger.info(f"Connected to LM Studio at {base_url}")
 
@@ -625,13 +640,35 @@ class FelixSystem:
         if not self.running:
             return {
                 "running": False,
+                "felix_version": FELIX_VERSION,
                 "agents": 0,
+                "active_agents": 0,  # API-preferred field name
+                "active_workflows": 0,
+                "llm_provider": "none",
+                "knowledge_brain_enabled": self.config.enable_knowledge_brain,
                 "messages": 0
             }
 
+        # Detect LLM provider type
+        llm_provider = "unknown"
+        if self.lm_client:
+            client_class_name = self.lm_client.__class__.__name__
+            if "Router" in client_class_name or "Adapter" in client_class_name:
+                llm_provider = "multi_provider_router"
+            elif "LMStudio" in client_class_name:
+                llm_provider = "lm_studio"
+            else:
+                llm_provider = "custom"
+
+        agent_count = self.agent_manager.get_agent_count()
         status = {
             "running": True,
-            "agents": self.agent_manager.get_agent_count(),
+            "felix_version": FELIX_VERSION,
+            "agents": agent_count,  # Keep for GUI backwards compatibility
+            "active_agents": agent_count,  # Add for API compatibility
+            "active_workflows": 0,  # TODO: Track workflows in future
+            "llm_provider": llm_provider,
+            "knowledge_brain_enabled": self.config.enable_knowledge_brain,
             "current_time": self._current_time
         }
 

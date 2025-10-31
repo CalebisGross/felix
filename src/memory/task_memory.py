@@ -15,6 +15,19 @@ from typing import Dict, List, Optional, Any, Tuple, Set
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 
+
+def get_enum_value(value):
+    """
+    Safely get string value from enum or string.
+
+    If value is an enum, returns its .value attribute.
+    If value is already a string, returns it as-is.
+    """
+    if isinstance(value, str):
+        return value
+    return getattr(value, 'value', str(value))
+
+
 class TaskOutcome(Enum):
     """Possible outcomes for task execution."""
     SUCCESS = "success"
@@ -50,7 +63,7 @@ class TaskPattern:
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for storage."""
         data = asdict(self)
-        data['complexity'] = self.complexity.value
+        data['complexity'] = get_enum_value(self.complexity)
         return data
     
     @classmethod
@@ -79,8 +92,8 @@ class TaskExecution:
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for storage."""
         data = asdict(self)
-        data['complexity'] = self.complexity.value
-        data['outcome'] = self.outcome.value
+        data['complexity'] = get_enum_value(self.complexity)
+        data['outcome'] = get_enum_value(self.outcome)
         return data
     
     @classmethod
@@ -174,11 +187,11 @@ class TaskMemory:
         hash_input = f"{task_description}:{time.time()}"
         return hashlib.sha256(hash_input.encode()).hexdigest()[:16]
     
-    def _generate_pattern_id(self, task_type: str, complexity: TaskComplexity, 
+    def _generate_pattern_id(self, task_type: str, complexity: TaskComplexity,
                            keywords: List[str]) -> str:
         """Generate unique ID for task pattern."""
         keywords_str = ":".join(sorted(keywords))
-        hash_input = f"{task_type}:{complexity.value}:{keywords_str}"
+        hash_input = f"{task_type}:{get_enum_value(complexity)}:{keywords_str}"
         return hashlib.sha256(hash_input.encode()).hexdigest()[:16]
     
     def record_task_execution(self, task_description: str, task_type: str,
@@ -243,8 +256,8 @@ class TaskMemory:
                 execution_id,
                 task_description,
                 task_type,
-                complexity.value,
-                outcome.value,
+                get_enum_value(complexity),
+                get_enum_value(outcome),
                 duration,
                 json.dumps(agents_used),
                 json.dumps(strategies_used),
@@ -415,7 +428,7 @@ class TaskMemory:
             """, (
                 pattern.pattern_id,
                 pattern.task_type,
-                pattern.complexity.value,
+                get_enum_value(pattern.complexity),
                 json.dumps(pattern.keywords),
                 pattern.typical_duration,
                 pattern.success_rate,
@@ -504,7 +517,7 @@ class TaskMemory:
         if query.complexity_levels:
             complexity_placeholders = ",".join("?" * len(query.complexity_levels))
             sql_parts.append(f"AND complexity IN ({complexity_placeholders})")
-            params.extend([c.value for c in query.complexity_levels])
+            params.extend([get_enum_value(c) for c in query.complexity_levels])
         
         if query.min_success_rate:
             sql_parts.append("AND success_rate >= ?")

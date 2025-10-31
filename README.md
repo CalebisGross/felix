@@ -67,11 +67,8 @@ For detailed structure, see [index.md](index.md).
 4. (Optional) Set up LM Studio for local LLM inference.
 
 ### Run Example
-```bash
-python exp/example_workflow.py "Evaluate Python for modern software development"
-```
 
-This runs a complete workflow with mock LLM responses, demonstrating agent spawning, task processing, memory storage, and results generation.
+See [QUICKSTART.md](QUICKSTART.md) for quick start examples using the CLI, GUI, or Python scripts.
 
 ## Installation
 
@@ -98,7 +95,7 @@ For full operational details and troubleshooting, see [User Manual](USER_MANUAL.
 ## Usage
 
 ### High-Level Workflow
-Felix operates through script-driven execution. Configure parameters via YAML files based on [optimal_parameters.md](exp/optimal_parameters.md), then run workflows using example scripts.
+Felix operates through script-driven execution. Configure parameters via YAML files (see [CONFIGURATION.md](docs/CONFIGURATION.md)), then run workflows using the CLI, GUI, or Python scripts.
 
 ### Basic Custom Workflow
 ```python
@@ -135,15 +132,57 @@ synthesis_result = central_post.synthesize_agent_outputs(task_description="Your 
 7. **Dynamic Adaptation**: Monitor confidence and spawn additional agents as needed
 8. **Result Generation**: Synthesize final outputs through helical progression
 
-For detailed workflow patterns, see [Workflow Steps](exp/workflow_steps.md).
+For detailed workflow patterns, see [DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md).
 
-### Benchmarking
-Run comprehensive benchmarks to validate H1-H3 hypotheses:
+### Testing & Benchmarking
+Run comprehensive tests to validate H1-H3 hypotheses:
 ```bash
-cd exp
-python benchmark_felix.py
+pytest tests/
 ```
-Outputs metrics to benchmark_results.csv, including expected gains of 20% (H1), 15% (H2), and 25% (H3).
+Tests include unit tests, integration tests, and hypothesis validation demonstrating expected gains of 20% (H1), 15% (H2), and 25% (H3). See [tests/README.md](tests/README.md) for details.
+
+## Command-Line Interface
+
+Felix provides a comprehensive CLI for running workflows, checking status, and managing the system without requiring the GUI. This makes Felix ideal for CI/CD integration, remote deployments, and automated workflows.
+
+### Available Commands
+
+```bash
+# Run a workflow
+python -m src.cli run "Your task here"
+python -m src.cli run "Explain quantum computing" --output result.md
+python -m src.cli run "Design a REST API" --max-steps 10 --web-search
+
+# Check system status (providers, databases, knowledge)
+python -m src.cli status
+
+# Test LLM connection and provider health
+python -m src.cli test-connection
+
+# Launch GUI from command line
+python -m src.cli gui
+
+# Initialize/reset databases
+python -m src.cli init
+```
+
+### CLI Options
+
+- `--output, -o FILE`: Save results to file (supports .txt, .md, .json formats)
+- `--max-steps N`: Maximum workflow steps (default: 10)
+- `--web-search`: Enable web search integration for the workflow
+- `--config PATH`: LLM configuration file (default: config/llm.yaml)
+- `--verbose, -v`: Enable verbose output with full stack traces
+
+### Use Cases
+
+- **CI/CD Integration**: Run Felix workflows in automated pipelines
+- **Remote Servers**: Execute tasks on headless servers without X11/display
+- **Scripting**: Integrate Felix into bash scripts and automation tools
+- **Quick Testing**: Rapidly test configurations and providers
+- **Batch Processing**: Process multiple tasks sequentially
+
+For complete CLI documentation, see [docs/CLI_GUIDE.md](docs/CLI_GUIDE.md).
 
 ## Architecture
 
@@ -151,24 +190,32 @@ Felix follows a modular architecture with clear component interactions:
 
 - **Core**: Helical geometry algorithms for agent positioning and adaptation
 - **Agents**: Specialized agent classes with LLM integration and dynamic spawning
-- **Communication**: Hub-spoke messaging system for efficient inter-agent coordination
-- **Memory**: Persistent storage with compression for knowledge retention
-- **LLM**: Local model integration with token budgeting
+- **Communication**: Hub-spoke messaging system (O(N) complexity) with specialized coordinators:
+  - `CentralPost`: Main coordination hub delegating to specialized subsystems
+  - `SynthesisEngine`: Intelligent synthesis of agent outputs
+  - `WebSearchCoordinator`: Confidence-based web search triggering
+  - `SystemCommandManager`: Command execution with trust and approval workflows
+  - `StreamingCoordinator`: Real-time token streaming
+  - `MemoryFacade`: Unified memory access layer
+  - `PerformanceMonitor`: Metrics tracking and analysis
+- **Memory**: Persistent storage with compression for knowledge retention and meta-learning
+- **LLM**: Multi-provider architecture with automatic fallback (LM Studio, Anthropic, Gemini)
+- **Knowledge Brain**: Autonomous document learning with 3-tier embeddings and knowledge graphs
 - **Pipeline**: Linear processing with chunking support
 
-Components interact through CentralPost as the coordination hub, with agents progressing along helical paths while sharing results and adapting based on confidence monitoring.
+Components interact through CentralPost as the coordination hub, with agents progressing along helical paths while sharing results and adapting based on confidence monitoring. The coordinator architecture enables efficient delegation of specialized concerns like synthesis, streaming, and command execution.
 
-For detailed architecture diagrams and data flows, see [Component Interactions](exp/component_interactions.md).
+For detailed architecture diagrams and data flows, see [ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-## Benchmarks
+## Testing & Validation
 
-Felix includes comprehensive benchmarking via `exp/benchmark_felix.py`, which tests components and validates hypotheses:
+Felix includes comprehensive testing to validate architectural hypotheses:
 
 - **H1 (20% gain)**: Helical progression enhances workload distribution through adaptive agent behavior
 - **H2 (15% gain)**: Hub-spoke communication optimizes resource allocation vs mesh networks
 - **H3 (25% gain)**: Memory compression reduces latency while maintaining attention focus
 
-Run benchmarks from the exp/ directory to generate CSV metrics. Results demonstrate functional verification with expected performance improvements across all hypotheses.
+Run validation tests with `pytest tests/` to verify expected performance improvements. See [tests/README.md](tests/README.md) for detailed test descriptions and results.
 
 ## GUI Interface
 
@@ -265,10 +312,14 @@ The system requires zero external dependencies thanks to the tiered fallback arc
 
 ## Documentation
 
+- **[Quick Start Guide](QUICKSTART.md)**: Get up and running in 10 minutes
+- **[CLI Guide](docs/CLI_GUIDE.md)**: Complete command-line interface reference
+- **[Configuration Reference](docs/CONFIGURATION.md)**: Complete configuration and tuning guide
+- **[Architecture Overview](docs/ARCHITECTURE.md)**: System architecture and design patterns
+- **[Developer Guide](docs/DEVELOPER_GUIDE.md)**: Development and extension guide
+- **[LLM Provider Guide](docs/LLM_PROVIDER_GUIDE.md)**: Multi-provider setup and custom providers
+- **[Coordinator Architecture](docs/COORDINATOR_ARCHITECTURE.md)**: Detailed coordinator documentation
 - **[User Manual](USER_MANUAL.md)**: Complete setup, configuration, and operational guide
-- **[Optimal Parameters](exp/optimal_parameters.md)**: Parameter tuning and trade-off analysis
-- **[Workflow Steps](exp/workflow_steps.md)**: Detailed workflow breakdown and patterns
-- **[Component Interactions](exp/component_interactions.md)**: Architecture and data flow diagrams
 - **[Index](index.md)**: Framework overview and project structure
 
 ## Contributing

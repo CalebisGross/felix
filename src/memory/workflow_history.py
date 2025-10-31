@@ -32,6 +32,8 @@ class WorkflowOutput:
     processing_time: float
     temperature: float
     metadata: Dict[str, Any]
+    parent_workflow_id: Optional[int] = None
+    conversation_thread_id: Optional[str] = None
 
 
 class WorkflowHistory:
@@ -262,7 +264,8 @@ class WorkflowHistory:
             query = """
                 SELECT workflow_id, task_input, status, created_at, completed_at,
                        final_synthesis, confidence, agents_count, tokens_used,
-                       max_tokens, processing_time, temperature, metadata
+                       max_tokens, processing_time, temperature, metadata,
+                       parent_workflow_id, conversation_thread_id
                 FROM workflow_outputs
             """
             params = []
@@ -295,7 +298,9 @@ class WorkflowHistory:
                     max_tokens=row[9],
                     processing_time=row[10],
                     temperature=row[11],
-                    metadata=metadata
+                    metadata=metadata,
+                    parent_workflow_id=row[13],
+                    conversation_thread_id=row[14]
                 )
                 outputs.append(output)
 
@@ -322,7 +327,8 @@ class WorkflowHistory:
             cursor.execute("""
                 SELECT workflow_id, task_input, status, created_at, completed_at,
                        final_synthesis, confidence, agents_count, tokens_used,
-                       max_tokens, processing_time, temperature, metadata
+                       max_tokens, processing_time, temperature, metadata,
+                       parent_workflow_id, conversation_thread_id
                 FROM workflow_outputs
                 WHERE workflow_id = ?
             """, (workflow_id,))
@@ -347,20 +353,23 @@ class WorkflowHistory:
                 max_tokens=row[9],
                 processing_time=row[10],
                 temperature=row[11],
-                metadata=metadata
+                metadata=metadata,
+                parent_workflow_id=row[13],
+                conversation_thread_id=row[14]
             )
 
         except sqlite3.Error as e:
             logger.error(f"Failed to get workflow {workflow_id}: {e}", exc_info=True)
             return None
 
-    def search_workflows(self, keyword: str, limit: int = 100) -> List[WorkflowOutput]:
+    def search_workflows(self, keyword: str, limit: int = 100, offset: int = 0) -> List[WorkflowOutput]:
         """
         Search workflows by keyword in task_input or final_synthesis.
 
         Args:
             keyword: Search keyword
             limit: Maximum number of results
+            offset: Offset for pagination
 
         Returns:
             List of matching WorkflowOutput objects
@@ -373,12 +382,13 @@ class WorkflowHistory:
             cursor.execute("""
                 SELECT workflow_id, task_input, status, created_at, completed_at,
                        final_synthesis, confidence, agents_count, tokens_used,
-                       max_tokens, processing_time, temperature, metadata
+                       max_tokens, processing_time, temperature, metadata,
+                       parent_workflow_id, conversation_thread_id
                 FROM workflow_outputs
                 WHERE task_input LIKE ? OR final_synthesis LIKE ?
                 ORDER BY created_at DESC
-                LIMIT ?
-            """, (search_pattern, search_pattern, limit))
+                LIMIT ? OFFSET ?
+            """, (search_pattern, search_pattern, limit, offset))
 
             rows = cursor.fetchall()
             conn.close()
@@ -400,7 +410,9 @@ class WorkflowHistory:
                     max_tokens=row[9],
                     processing_time=row[10],
                     temperature=row[11],
-                    metadata=metadata
+                    metadata=metadata,
+                    parent_workflow_id=row[13],
+                    conversation_thread_id=row[14]
                 )
                 outputs.append(output)
 
@@ -481,7 +493,8 @@ class WorkflowHistory:
             cursor.execute(f"""
                 SELECT workflow_id, task_input, status, created_at, completed_at,
                        final_synthesis, confidence, agents_count, tokens_used,
-                       max_tokens, processing_time, temperature, metadata
+                       max_tokens, processing_time, temperature, metadata,
+                       parent_workflow_id, conversation_thread_id
                 FROM workflow_outputs
                 WHERE workflow_id IN ({placeholders})
                 ORDER BY created_at ASC
@@ -507,7 +520,9 @@ class WorkflowHistory:
                     max_tokens=row[9],
                     processing_time=row[10],
                     temperature=row[11],
-                    metadata=metadata
+                    metadata=metadata,
+                    parent_workflow_id=row[13],
+                    conversation_thread_id=row[14]
                 )
                 outputs.append(output)
 

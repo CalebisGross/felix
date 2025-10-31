@@ -3,6 +3,11 @@
 # Core LLM Integration
 openai>=1.0.0
 httpx>=0.24.0
+PyYAML>=6.0  # For configuration files
+
+# Cloud LLM Providers (optional, install as needed)
+# anthropic>=0.25.0  # For Anthropic Claude support
+# google-generativeai>=0.3.0  # For Google Gemini support
 
 # Scientific Computing
 numpy>=1.24.0
@@ -10,12 +15,22 @@ scipy>=1.10.0
 
 # Web Search
 ddgs>=1.0.0
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
 
 # Optional: SearxNG support uses httpx (already included above)
 
 # GUI Dependencies (optional, usually included with Python)
 # tkinter is included with standard Python installation
 
-# Development/Testing (optional)
-# pytest>=7.0.0
-# pytest-asyncio>=0.21.0
+# Knowledge Brain Dependencies (optional)
+# PyPDF2>=3.0.0  # For PDF document reading
+# watchdog>=3.0.0  # For file system monitoring
+
+# Development/Testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-cov>=4.1.0
+pytest-timeout>=2.1.0
+ruff>=0.1.0  # For linting
+mypy>=1.5.0  # For type checking

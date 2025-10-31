@@ -2345,7 +2345,9 @@ class AgentFactory:
                  random_seed: Optional[int] = None, enable_dynamic_spawning: bool = True,
                  max_agents: int = 25, token_budget_limit: int = 10000,
                  web_search_client: Optional["WebSearchClient"] = None,
-                 max_web_queries: int = 3):
+                 max_web_queries: int = 3,
+                 agent_registry: Optional["AgentPluginRegistry"] = None,
+                 plugin_directories: Optional[List[str]] = None):
         """
         Initialize the agent factory.
 
@@ -2359,6 +2361,8 @@ class AgentFactory:
             token_budget_limit: Token budget limit for dynamic spawning
             web_search_client: Optional web search client for Research agents
             max_web_queries: Maximum web queries per research agent (default: 3)
+            agent_registry: Optional AgentPluginRegistry (creates default if None)
+            plugin_directories: Optional list of external plugin directories to load
         """
         self.helix = helix
         self.llm_client = llm_client
@@ -2368,7 +2372,24 @@ class AgentFactory:
         self.enable_dynamic_spawning = enable_dynamic_spawning
         self.web_search_client = web_search_client
         self.max_web_queries = max_web_queries
-        
+
+        # Initialize agent plugin registry
+        if agent_registry is not None:
+            self.agent_registry = agent_registry
+        else:
+            # Create and initialize default registry
+            from src.agents.agent_plugin_registry import get_global_registry
+            self.agent_registry = get_global_registry()
+
+        # Load external plugin directories if provided
+        if plugin_directories:
+            for directory in plugin_directories:
+                try:
+                    count = self.agent_registry.add_plugin_directory(directory)
+                    logger.info(f"Loaded {count} plugins from {directory}")
+                except Exception as e:
+                    logger.error(f"Failed to load plugins from {directory}: {e}")
+
         # Initialize dynamic spawning system if enabled
         if enable_dynamic_spawning:
             # Import here to avoid circular imports
@@ -2381,7 +2402,7 @@ class AgentFactory:
             )
         else:
             self.dynamic_spawner = None
-        
+
         if random_seed is not None:
             random.seed(random_seed)
     
@@ -2429,11 +2450,11 @@ class AgentFactory:
                           spawn_time_range: Tuple[float, float] = (0.5, 0.8)) -> "LLMAgent":
         """Create a critic agent with random spawn time in specified range."""
         from src.agents.specialized_agents import CriticAgent
-        
+
         spawn_time = random.uniform(*spawn_time_range)
         agent_id = f"dynamic_critic_{self._agent_counter:03d}"
         self._agent_counter += 1
-        
+
         return CriticAgent(
             agent_id=agent_id,
             spawn_time=spawn_time,
@@ -2442,6 +2463,124 @@ class AgentFactory:
             review_focus=review_focus,
             token_budget_manager=self.token_budget_manager,
             max_tokens=1200
+        )
+
+    def create_agent_by_type(self,
+                            agent_type: str,
+                            spawn_time_range: Optional[Tuple[float, float]] = None,
+                            complexity: str = "medium",
+                            **kwargs) -> "LLMAgent":
+        """
+        Create an agent of any registered type using the plugin registry.
+
+        This method enables spawning both built-in and custom agent types.
+        It automatically handles spawn time generation based on agent metadata
+        and task complexity.
+
+        Args:
+            agent_type: Type of agent to create (e.g., "research", "analysis", "code_review")
+            spawn_time_range: Optional spawn time range (uses plugin default if None)
+            complexity: Task complexity for spawn range lookup ("simple", "medium", "complex")
+            **kwargs: Additional parameters passed to the agent plugin
+
+        Returns:
+            Instance of the requested agent type
+
+        Raises:
+            AgentPluginError: If agent_type is not registered
+
+        Example:
+            ```python
+            # Create builtin research agent
+            research = factory.create_agent_by_type("research", domain="technical")
+
+            # Create custom code review agent
+            reviewer = factory.create_agent_by_type(
+                "code_review",
+                complexity="complex",
+                review_style="security-focused"
+            )
+            ```
+        """
+        # Get spawn range
+        if spawn_time_range is None:
+            spawn_time_range = self.agent_registry.get_spawn_range(agent_type, complexity)
+
+        # Generate random spawn time in range
+        spawn_time = random.uniform(*spawn_time_range)
+
+        # Generate unique agent ID
+        agent_id = f"dynamic_{agent_type}_{self._agent_counter:03d}"
+        self._agent_counter += 1
+
+        # Create agent using registry
+        return self.agent_registry.create_agent(
+            agent_type=agent_type,
+            agent_id=agent_id,
+            spawn_time=spawn_time,
+            helix=self.helix,
+            llm_client=self.llm_client,
+            token_budget_manager=self.token_budget_manager,
+            **kwargs
+        )
+
+    def list_available_agent_types(self) -> List[str]:
+        """
+        Get list of all available agent types (builtin + custom plugins).
+
+        Returns:
+            List of agent type identifiers
+
+        Example:
+            ```python
+            types = factory.list_available_agent_types()
+            # ['research', 'analysis', 'critic', 'code_review', ...]
+            ```
+        """
+        return self.agent_registry.list_agent_types()
+
+    def get_agent_metadata(self, agent_type: str) -> Optional[Dict[str, Any]]:
+        """
+        Get metadata for a specific agent type.
+
+        Args:
+            agent_type: Type identifier
+
+        Returns:
+            Dictionary with agent metadata (capabilities, spawn_range, etc.)
+        """
+        from dataclasses import asdict
+        metadata = self.agent_registry.get_metadata(agent_type)
+        return asdict(metadata) if metadata else None
+
+    def get_suitable_agents_for_task(self,
+                                     task_description: str,
+                                     task_complexity: str = "medium") -> List[str]:
+        """
+        Get list of agent types suitable for a given task.
+
+        This method filters agents based on task characteristics and returns
+        agent types sorted by priority.
+
+        Args:
+            task_description: Human-readable task description
+            task_complexity: Task complexity ("simple", "medium", "complex")
+
+        Returns:
+            List of agent types sorted by suitability (highest priority first)
+
+        Example:
+            ```python
+            agents = factory.get_suitable_agents_for_task(
+                "Review Python code for security vulnerabilities",
+                "complex"
+            )
+            # Returns: ["code_review", "security_auditor", "critic"]
+            ```
+        """
+        return self.agent_registry.get_agents_for_task(
+            task_description=task_description,
+            task_complexity=task_complexity
         )
     
     def assess_team_needs(self, processed_messages: List[Message], 
