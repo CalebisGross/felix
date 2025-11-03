@@ -241,6 +241,11 @@ class LLMAgent(Agent):
         self.influence_strength: Dict[str, float] = {}  # How much each agent influenced this one
         self.collaboration_history: List[Dict[str, Any]] = []  # History of collaborations
 
+        # Feedback integration for self-improvement
+        self.contribution_history: List[Dict[str, Any]] = []  # History of contribution evaluations
+        self.synthesis_integration_rate = 0.0  # Running average of how often contributions are used
+        self._total_feedback_received = 0  # Count of feedback messages received
+
     def get_adaptive_temperature(self, current_time: float) -> float:
         """
         Calculate temperature based on helix position.
@@ -673,7 +678,17 @@ class LLMAgent(Agent):
             # Add important instructions for using available knowledge
             knowledge_summary += "\nIMPORTANT: Use the knowledge provided above to answer the task if possible. "
             knowledge_summary += "Only request additional web search if the available knowledge is insufficient or outdated.\n"
-        
+
+        # NEW: Add existing concept definitions for terminology consistency
+        concepts_summary = ""
+        if hasattr(task, 'existing_concepts') and task.existing_concepts:
+            concepts_summary = "\n\n=== Existing Concept Definitions ===\n"
+            concepts_summary += "The following concepts have already been defined by other agents in this workflow.\n"
+            concepts_summary += "Please use these definitions consistently instead of redefining them:\n\n"
+            concepts_summary += task.existing_concepts
+            concepts_summary += "\n\nIMPORTANT: Reference these existing concepts when relevant. "
+            concepts_summary += "Only define new concepts if they are not already covered above.\n"
+
         # Generate prompt ID for optimization tracking
         prompt_id = f"{self.agent_type}_{prompt_context.value}_stage_{self.processing_stage}"
         
@@ -694,7 +709,7 @@ class LLMAgent(Agent):
             base_prompt = self.llm_client.create_agent_system_prompt(
                 agent_type=self.agent_type,
                 position_info=position_info,
-                task_context=f"{task.context}{context_summary}{knowledge_summary}"
+                task_context=f"{task.context}{context_summary}{knowledge_summary}{concepts_summary}"
             )
         
         # Calculate temperature for metadata
@@ -1319,17 +1334,110 @@ class LLMAgent(Agent):
     def receive_shared_context(self, message: Dict[str, Any]) -> None:
         """
         Receive and store shared context from other agents.
-        
+
         Args:
             message: Shared context message
         """
         self.received_messages.append(message)
-        
+
         # Extract relevant context
         if message.get("type") == "AGENT_RESULT":
             key = f"{message.get('agent_type', 'unknown')}_{message.get('agent_id', '')}"
             self.shared_context[key] = message.get("summary", "")
-    
+
+    def process_synthesis_feedback(self, feedback_message: Dict[str, Any]) -> None:
+        """
+        Process feedback from CentralPost about synthesis and contribution quality.
+
+        This implements the agent-side Feedback Integration Protocol, enabling
+        learning and adaptation based on how contributions were used in synthesis.
+
+        Args:
+            feedback_message: Message containing feedback from CentralPost
+                - For SYNTHESIS_FEEDBACK: synthesis results and quality
+                - For CONTRIBUTION_EVALUATION: usefulness score and calibration data
+        """
+        from src.communication.message_types import MessageType
+
+        message_type_str = feedback_message.get('type', '')
+
+        if message_type_str == MessageType.SYNTHESIS_FEEDBACK.value:
+            # Process synthesis feedback
+            synthesis_confidence = feedback_message.get('synthesis_confidence', 0.0)
+            agents_synthesized = feedback_message.get('agents_synthesized', 0)
+
+            logger.info(f"📥 {self.agent_id} received synthesis feedback: "
+                       f"confidence={synthesis_confidence:.2f}, agents={agents_synthesized}")
+
+        elif message_type_str == MessageType.CONTRIBUTION_EVALUATION.value:
+            # Process contribution evaluation - this is the critical learning signal
+            usefulness_score = feedback_message.get('usefulness_score', 0.0)
+            incorporated = feedback_message.get('incorporated_in_synthesis', False)
+            confidence_calibration = feedback_message.get('confidence_calibration', 0.0)
+            calibration_quality = feedback_message.get('calibration_quality', 'unknown')
+
+            # Record contribution in history
+            self.contribution_history.append({
+                'timestamp': time.time(),
+                'usefulness_score': usefulness_score,
+                'incorporated': incorporated,
+                'confidence_calibration': confidence_calibration,
+                'calibration_quality': calibration_quality
+            })
+
+            # Update running average of synthesis integration rate
+            self._total_feedback_received += 1
+            old_rate = self.synthesis_integration_rate
+            self.synthesis_integration_rate = (
+                (old_rate * (self._total_feedback_received - 1) + usefulness_score) /
+                self._total_feedback_received
+            )
+
+            # Log learning insights
+            logger.info(f"📊 {self.agent_id} contribution evaluation: "
+                       f"usefulness={usefulness_score:.2f}, "
+                       f"incorporated={'YES' if incorporated else 'NO'}, "
+                       f"calibration={confidence_calibration:+.2f} ({calibration_quality})")
+
+            logger.info(f"   Integration rate: {old_rate:.2f} → {self.synthesis_integration_rate:.2f}")
+
+            # Adapt behavior based on feedback
+            self._adapt_based_on_feedback(usefulness_score, confidence_calibration, calibration_quality)
+
+    def _adapt_based_on_feedback(self, usefulness_score: float,
+                                 confidence_calibration: float,
+                                 calibration_quality: str) -> None:
+        """
+        Adapt agent behavior based on synthesis feedback.
+
+        Args:
+            usefulness_score: How useful the contribution was (0.0-1.0)
+            confidence_calibration: Synthesis confidence - agent confidence
+            calibration_quality: 'good' or 'needs_adjustment'
+        """
+        # Adjust future confidence calculations if calibration is poor
+        if calibration_quality == 'needs_adjustment':
+            if confidence_calibration > 0:
+                # Agent was under-confident, boost future confidence slightly
+                logger.debug(f"   {self.agent_id}: Under-confident by {abs(confidence_calibration):.2f}, "
+                           "will be slightly bolder")
+            else:
+                # Agent was over-confident, reduce future confidence
+                logger.debug(f"   {self.agent_id}: Over-confident by {abs(confidence_calibration):.2f}, "
+                           "will be more cautious")
+
+        # If consistently low usefulness, agent might need to adjust approach
+        if len(self.contribution_history) >= 3:
+            recent_usefulness = [c['usefulness_score'] for c in self.contribution_history[-3:]]
+            avg_recent = sum(recent_usefulness) / len(recent_usefulness)
+
+            if avg_recent < 0.3:
+                logger.warning(f"⚠️  {self.agent_id}: Low recent usefulness ({avg_recent:.2f}), "
+                             "may need to adjust approach")
+            elif avg_recent > 0.7:
+                logger.info(f"✨ {self.agent_id}: High recent usefulness ({avg_recent:.2f}), "
+                          "current approach working well!")
+
     def influence_agent_behavior(self, other_agent: "LLMAgent", influence_type: str, strength: float) -> None:
         """
         Influence another agent's behavior based on collaboration.

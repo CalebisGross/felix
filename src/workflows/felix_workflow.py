@@ -865,6 +865,12 @@ def run_felix_workflow(felix_system, task_input: str,
                             logger.info(f"  Agents synthesized: {synthesis_result['agents_synthesized']}")
                             logger.info(f"  Tokens used: {synthesis_result['tokens_used']} / {synthesis_result['max_tokens']}")
 
+                            # NEW: Broadcast synthesis feedback to agents for learning
+                            central_post.broadcast_synthesis_feedback(
+                                synthesis_result=synthesis_result,
+                                task_description=task_input
+                            )
+
                             if progress_callback:
                                 progress_callback(f"Synthesis complete!", 100.0)
                             break  # Exit after successful synthesis
@@ -906,6 +912,12 @@ def run_felix_workflow(felix_system, task_input: str,
                 )
                 results["centralpost_synthesis"] = synthesis_result
                 logger.info(f"✓ Final CentralPost synthesis complete")
+
+                # NEW: Broadcast synthesis feedback to agents for learning
+                central_post.broadcast_synthesis_feedback(
+                    synthesis_result=synthesis_result,
+                    task_description=task_input
+                )
             except Exception as e:
                 logger.error(f"✗ CentralPost synthesis failed: {e}")
                 # Fallback to highest confidence agent output

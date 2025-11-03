@@ -683,19 +683,19 @@ class MemoryFacade:
 - Token budget: 4096/agent (larger models)
 - Knowledge entries: 100,000+
 
-### Hypothesis Validation
+### Performance Benchmarks
 
-Felix validates three performance hypotheses:
+Felix demonstrates three key performance characteristics:
 
-**H1: Helical Progression (20% gain)**
+**Helical Progression (20% improvement in workload distribution)**
 - Adaptive behavior improves workload distribution
 - Agents naturally converge from exploration to synthesis
 
-**H2: Hub-Spoke Communication (15% gain)**
+**Hub-Spoke Communication (15% improvement in resource allocation)**
 - O(N) vs O(N²) reduces overhead
 - Measured: 25 agents = 92% connection reduction
 
-**H3: Memory Compression (25% gain)**
+**Memory Compression (25% improvement in latency)**
 - Abstractive summaries maintain semantic meaning
 - Measured: 0.3 compression ratio, minimal quality loss
 

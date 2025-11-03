@@ -7,7 +7,7 @@ implementing the hub of the spoke-based communication model from thefelix.md.
 Mathematical Foundation:
 - Spoke communication: O(N) message complexity vs O(N²) mesh topology
 - Maximum communication distance: R_top (helix outer radius)
-- Performance metrics for Hypothesis H2 validation and statistical analysis
+- Performance metrics for efficiency benchmarking and statistical analysis
 
 Key Features:
 - Agent registration and connection management
@@ -15,7 +15,7 @@ Key Features:
 - Performance metrics collection (throughput, latency, overhead ratios)
 - Scalability up to 133 agents (matching OpenSCAD model parameters)
 
-Implementation supports rigorous testing of Hypothesis H2 communication efficiency claims.
+Implementation supports rigorous performance testing and communication efficiency measurement.
 """
 
 import time
@@ -460,7 +460,7 @@ class CentralPost:
         self._processed_messages: List[Message] = []
         self._async_processors: List[asyncio.Task] = []
         
-        # Performance metrics (for Hypothesis H2)
+        # Performance metrics (for efficiency benchmarking)
         self._metrics_enabled = enable_metrics
         self._start_time = time.time()
         self._total_messages_processed = 0
@@ -1111,6 +1111,129 @@ class CentralPost:
         return self.synthesis_engine.synthesize_agent_outputs(
             task_description, max_messages, task_complexity
         )
+
+    def broadcast_synthesis_feedback(self, synthesis_result: Dict[str, Any],
+                                     task_description: str) -> None:
+        """
+        Broadcast synthesis feedback back to agents for learning and improvement.
+
+        This implements the Feedback Integration Protocol, sending performance
+        feedback to each agent about how their contributions were used in the
+        final synthesis. Enables agents to learn and adapt.
+
+        Args:
+            synthesis_result: The completed synthesis result from synthesize_agent_outputs()
+            task_description: Original task description for context
+        """
+        if not synthesis_result or 'synthesis_content' not in synthesis_result:
+            logger.warning("Cannot broadcast feedback - invalid synthesis result")
+            return
+
+        synthesis_content = synthesis_result['synthesis_content']
+        synthesis_confidence = synthesis_result.get('confidence', 0.0)
+        agents_synthesized = synthesis_result.get('agents_synthesized', 0)
+
+        # Get recent agent messages (same messages used in synthesis)
+        recent_messages = self._processed_messages[-synthesis_result.get('agents_synthesized', 20):]
+
+        logger.info(f"🔄 Broadcasting synthesis feedback to {len(recent_messages)} agents")
+
+        # Evaluate each agent's contribution
+        for message in recent_messages:
+            if message.message_type != MessageType.STATUS_UPDATE:
+                continue
+
+            agent_id = message.sender_id
+            agent_content = message.content.get('result', '')
+            agent_confidence = message.content.get('confidence', 0.0)
+
+            # Calculate contribution evaluation metrics
+            usefulness_score = self._evaluate_contribution_usefulness(
+                agent_content, synthesis_content
+            )
+
+            # Calibration feedback: how did agent confidence compare to synthesis outcome?
+            confidence_calibration = synthesis_confidence - agent_confidence
+
+            # Send SYNTHESIS_FEEDBACK message
+            feedback_message = Message(
+                sender_id="central_post",
+                message_type=MessageType.SYNTHESIS_FEEDBACK,
+                content={
+                    'synthesis_confidence': synthesis_confidence,
+                    'synthesis_summary': synthesis_content[:500],  # First 500 chars
+                    'agents_synthesized': agents_synthesized,
+                    'task_description': task_description
+                },
+                timestamp=time.time()
+            )
+
+            # Send CONTRIBUTION_EVALUATION message
+            evaluation_message = Message(
+                sender_id="central_post",
+                message_type=MessageType.CONTRIBUTION_EVALUATION,
+                content={
+                    'usefulness_score': usefulness_score,
+                    'incorporated_in_synthesis': usefulness_score > 0.3,
+                    'agent_confidence': agent_confidence,
+                    'synthesis_confidence': synthesis_confidence,
+                    'confidence_calibration': confidence_calibration,
+                    'calibration_quality': 'good' if abs(confidence_calibration) < 0.2 else 'needs_adjustment'
+                },
+                timestamp=time.time()
+            )
+
+            # Queue feedback messages for the agent
+            self._message_queue.put(feedback_message)
+            self._message_queue.put(evaluation_message)
+
+            logger.debug(f"  → Feedback sent to {agent_id}: usefulness={usefulness_score:.2f}, calibration={confidence_calibration:+.2f}")
+
+    def _evaluate_contribution_usefulness(self, agent_content: str,
+                                         synthesis_content: str) -> float:
+        """
+        Evaluate how useful an agent's contribution was to the final synthesis.
+
+        Uses simple heuristics to estimate if agent content appears in synthesis:
+        - Shared key phrases (3+ word sequences)
+        - Concept overlap
+
+        Args:
+            agent_content: Agent's output content
+            synthesis_content: Final synthesis content
+
+        Returns:
+            Usefulness score from 0.0 (not used) to 1.0 (heavily used)
+        """
+        if not agent_content or not synthesis_content:
+            return 0.0
+
+        # Convert to lowercase for comparison
+        agent_lower = agent_content.lower()
+        synthesis_lower = synthesis_content.lower()
+
+        # Extract significant phrases (3+ words) from agent content
+        agent_words = agent_lower.split()
+        matches = 0
+        total_phrases = 0
+
+        # Check for 3-word phrase matches
+        for i in range(len(agent_words) - 2):
+            phrase = ' '.join(agent_words[i:i+3])
+            if len(phrase) > 15:  # Only meaningful phrases
+                total_phrases += 1
+                if phrase in synthesis_lower:
+                    matches += 1
+
+        if total_phrases == 0:
+            # Fallback: simple word overlap
+            agent_significant_words = {w for w in agent_words if len(w) > 4}
+            synthesis_words = set(synthesis_lower.split())
+            overlap = len(agent_significant_words & synthesis_words)
+            return min(1.0, overlap / max(len(agent_significant_words), 1) * 2)
+
+        # Return phrase match ratio
+        return min(1.0, matches / total_phrases)
 
     def get_action_results(self) -> List['CommandResult']:
         """
@@ -1774,7 +1897,7 @@ class CentralPost:
 
         return awareness_context
 
-    # Performance metrics methods (for Hypothesis H2)
+    # Performance metrics methods (for efficiency benchmarking)
     
     def get_current_time(self) -> float:
         """Get current timestamp for performance measurements."""
@@ -1804,7 +1927,7 @@ class CentralPost:
 
     def record_overhead_ratio(self, overhead_ratio: float) -> None:
         """
-        Record overhead ratio for hypothesis validation.
+        Record overhead ratio for performance benchmarking.
 
         Args:
             overhead_ratio: Communication overhead / processing time ratio

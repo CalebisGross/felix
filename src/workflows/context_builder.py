@@ -36,7 +36,7 @@ class CollaborativeContextBuilder:
     builds upon the work of previous agents rather than working in isolation.
     """
 
-    def __init__(self, central_post, knowledge_store=None, context_compressor=None):
+    def __init__(self, central_post, knowledge_store=None, context_compressor=None, workflow_id: Optional[str] = None):
         """
         Initialize collaborative context builder.
 
@@ -44,6 +44,7 @@ class CollaborativeContextBuilder:
             central_post: CentralPost instance for message retrieval and memory access
             knowledge_store: DEPRECATED - Access through central_post.memory_facade instead
             context_compressor: Optional ContextCompressor (fallback to memory_facade if None)
+            workflow_id: Optional workflow ID for concept registry
         """
         self.central_post = central_post
 
@@ -62,6 +63,15 @@ class CollaborativeContextBuilder:
         # Track context building statistics
         self.contexts_built = 0
         self.total_compression_ratio = 0.0
+
+        # NEW: Concept registry for terminology consistency
+        from src.workflows.concept_registry import ConceptRegistry
+        workflow_id = workflow_id or f"workflow_{id(self)}"
+        self.concept_registry = ConceptRegistry(workflow_id)
+
+        # NEW: Context relevance evaluator for filtering irrelevant facts
+        from src.workflows.context_relevance import ContextRelevanceEvaluator
+        self.relevance_evaluator = ContextRelevanceEvaluator()
 
     @staticmethod
     def estimate_tokens(text: str) -> int:
@@ -453,6 +463,16 @@ class CollaborativeContextBuilder:
                     # Note: Meta-learning boost already applied optimal ranking
                     knowledge_entries = sorted(knowledge_entries, key=lambda ke: (ke.domain != "web_search", ke.created_at), reverse=False)
 
+                    # NEW: Filter by contextual relevance to avoid irrelevant facts
+                    pre_filter_count = len(knowledge_entries)
+                    knowledge_entries = self.relevance_evaluator.filter_by_relevance(
+                        knowledge_entries,
+                        original_task,
+                        threshold=0.5  # Keep items with >50% relevance
+                    )
+                    if len(knowledge_entries) < pre_filter_count:
+                        logger.info(f"  🎯 Relevance filtering: {len(knowledge_entries)}/{pre_filter_count} entries kept")
+
                     # === TOKEN BUDGET SAFETY: Trim knowledge entries if needed ===
                     # Reserve token budget for knowledge entries (max 30% of available context)
                     knowledge_token_budget = int(max_context_tokens * 0.3)
@@ -539,12 +559,97 @@ class CollaborativeContextBuilder:
 
         return enriched
 
+    def check_concept_before_use(self, concept_name: str, agent_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Check if a concept has already been defined before agent uses it.
+
+        Args:
+            concept_name: Concept name to check
+            agent_id: Agent ID requesting the check
+
+        Returns:
+            Dictionary with concept info if exists, None otherwise
+        """
+        concept = self.concept_registry.get_concept(concept_name)
+        if concept:
+            logger.debug(f"  ℹ️  {agent_id} checking concept '{concept_name}': "
+                        f"Found (defined by {concept.source_agent})")
+            return {
+                'exists': True,
+                'definition': concept.definition,
+                'source_agent': concept.source_agent,
+                'confidence': concept.confidence
+            }
+        return None
+
+    def register_agent_concept(self, concept_name: str, definition: str,
+                               agent_id: str, confidence: float = 0.7) -> bool:
+        """
+        Register a concept defined by an agent.
+
+        Args:
+            concept_name: Concept name
+            definition: Concept definition
+            agent_id: Agent defining the concept
+            confidence: Agent's confidence in definition
+
+        Returns:
+            True if newly registered, False if duplicate
+        """
+        return self.concept_registry.register_concept(
+            name=concept_name,
+            definition=definition,
+            source_agent=agent_id,
+            confidence=confidence
+        )
+
+    def get_existing_concepts_for_prompt(self, max_concepts: int = 10) -> str:
+        """
+        Get formatted string of existing concepts for agent prompts.
+
+        Args:
+            max_concepts: Maximum number of concepts to include
+
+        Returns:
+            Formatted string of concepts
+        """
+        all_concepts = self.concept_registry.get_all_concepts()
+
+        if not all_concepts:
+            return "No concepts defined yet in this workflow."
+
+        # Sort by usage count (most used first)
+        sorted_concepts = sorted(all_concepts, key=lambda c: c.usage_count, reverse=True)
+        top_concepts = sorted_concepts[:max_concepts]
+
+        concept_lines = []
+        for concept in top_concepts:
+            concept_lines.append(
+                f"  - **{concept.name}**: {concept.definition[:150]}... "
+                f"(defined by {concept.source_agent})"
+            )
+
+        return "\n".join(concept_lines)
+
+    def export_concept_registry(self, filepath: str = "analysis/improvement_registry.md") -> None:
+        """
+        Export concept registry to markdown file.
+
+        Args:
+            filepath: Path to output file
+        """
+        self.concept_registry.export_to_markdown(filepath)
+
     def get_statistics(self) -> Dict[str, Any]:
         """Get context building statistics."""
         avg_compression = (self.total_compression_ratio / self.contexts_built
                           if self.contexts_built > 0 else 0.0)
 
+        # Include concept registry stats
+        registry_summary = self.concept_registry.get_summary()
+
         return {
             "contexts_built": self.contexts_built,
-            "average_compression_ratio": avg_compression
+            "average_compression_ratio": avg_compression,
+            "concept_registry": registry_summary
         }

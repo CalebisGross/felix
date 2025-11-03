@@ -444,6 +444,14 @@ Your response (15-30 words, direct answer only):"""
             knowledge_summary += "\nIMPORTANT: Use the knowledge provided above to answer the task if possible. "
             knowledge_summary += "Only request additional web search if the available knowledge is insufficient or outdated.\n"
 
+            # NEW: Add contextual relevance awareness
+            knowledge_summary += "\n🎯 CRITICAL - CONTEXTUAL RELEVANCE:\n"
+            knowledge_summary += "- Distinguish between FACTUAL ACCURACY and CONTEXTUAL RELEVANCE\n"
+            knowledge_summary += "- A fact can be TRUE but IRRELEVANT to this specific task\n"
+            knowledge_summary += "- Focus ONLY on information that helps solve THIS SPECIFIC TASK\n"
+            knowledge_summary += "- Do NOT include accurate facts that don't relate to the task objectives\n"
+            knowledge_summary += "- Example: If asked about system improvements, time/location facts are irrelevant\n\n"
+
         base_prompt += knowledge_summary
 
         # Add footer
@@ -841,6 +849,146 @@ Be thorough but constructive - the goal is to improve the final output quality.
             enhanced_prompt = base_prompt
         
         return enhanced_prompt, stage_token_budget
+
+    def evaluate_reasoning_process(self, agent_output: Dict[str, Any],
+                                   agent_metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        Evaluate the reasoning process quality of another agent's output.
+
+        This extends CriticAgent beyond content evaluation to assess HOW agents reasoned,
+        not just WHAT they produced. Implements meta-cognitive evaluation for self-improvement.
+
+        Args:
+            agent_output: Agent's output including result and metadata
+            agent_metadata: Optional metadata about agent's reasoning process
+
+        Returns:
+            Dictionary with reasoning evaluation:
+                - reasoning_quality_score: 0.0-1.0
+                - logical_coherence: 0.0-1.0
+                - evidence_quality: 0.0-1.0
+                - methodology_appropriateness: 0.0-1.0
+                - identified_issues: List[str]
+                - improvement_recommendations: List[str]
+                - re_evaluation_needed: bool
+        """
+        result = agent_output.get('result', '')
+        confidence = agent_output.get('confidence', 0.5)
+        agent_id = agent_output.get('agent_id', 'unknown')
+
+        # Initialize evaluation
+        issues = []
+        recommendations = []
+        scores = {'logical_coherence': 0.5, 'evidence_quality': 0.5, 'methodology': 0.5}
+
+        # 1. Evaluate logical coherence
+        if self._has_logical_fallacies(result):
+            issues.append("Contains potential logical fallacies")
+            scores['logical_coherence'] = 0.4
+            recommendations.append("Review reasoning chain for logical consistency")
+        else:
+            scores['logical_coherence'] = 0.8
+
+        # 2. Evaluate evidence quality
+        if self._has_weak_evidence(result):
+            issues.append("Evidence appears weak or unsupported")
+            scores['evidence_quality'] = 0.4
+            recommendations.append("Strengthen claims with more reliable evidence")
+        else:
+            scores['evidence_quality'] = 0.8
+
+        # 3. Evaluate methodology appropriateness
+        if agent_metadata:
+            agent_type = agent_metadata.get('agent_type', 'unknown')
+            if not self._methodology_appropriate(result, agent_type):
+                issues.append(f"Methodology not well-suited for {agent_type} agent")
+                scores['methodology'] = 0.4
+                recommendations.append(f"Consider approaches more aligned with {agent_type} role")
+            else:
+                scores['methodology'] = 0.8
+        else:
+            # No metadata, default moderate score
+            scores['methodology'] = 0.6
+
+        # 4. Check reasoning depth
+        if len(result.split()) < 50:
+            issues.append("Reasoning appears shallow - insufficient depth")
+            recommendations.append("Provide more detailed reasoning and analysis")
+            # Penalize all scores slightly
+            for key in scores:
+                scores[key] *= 0.9
+
+        # 5. Check for over/under confidence
+        avg_score = sum(scores.values()) / len(scores)
+        confidence_gap = abs(confidence - avg_score)
+        if confidence_gap > 0.3:
+            if confidence > avg_score:
+                issues.append(f"Agent appears overconfident (confidence={confidence:.2f} vs quality={avg_score:.2f})")
+                recommendations.append("Calibrate confidence based on reasoning quality")
+            else:
+                issues.append(f"Agent appears underconfident (confidence={confidence:.2f} vs quality={avg_score:.2f})")
+                recommendations.append("Increase confidence when reasoning is solid")
+
+        # Calculate overall reasoning quality score
+        reasoning_quality = sum(scores.values()) / len(scores)
+
+        # Determine if re-evaluation is needed
+        re_evaluation_needed = reasoning_quality < 0.5 or len(issues) >= 3
+
+        logger.info(f"🧠 Reasoning evaluation for {agent_id}:")
+        logger.info(f"   Quality: {reasoning_quality:.2f}, Coherence: {scores['logical_coherence']:.2f}, "
+                   f"Evidence: {scores['evidence_quality']:.2f}, Methodology: {scores['methodology']:.2f}")
+        if issues:
+            logger.info(f"   Issues: {', '.join(issues)}")
+        if re_evaluation_needed:
+            logger.warning(f"   ⚠️  Re-evaluation recommended for {agent_id}")
+
+        return {
+            'reasoning_quality_score': reasoning_quality,
+            'logical_coherence': scores['logical_coherence'],
+            'evidence_quality': scores['evidence_quality'],
+            'methodology_appropriateness': scores['methodology'],
+            'identified_issues': issues,
+            'improvement_recommendations': recommendations,
+            're_evaluation_needed': re_evaluation_needed,
+            'agent_id': agent_id
+        }
+
+    def _has_logical_fallacies(self, text: str) -> bool:
+        """Check for common logical fallacies in reasoning."""
+        fallacy_indicators = [
+            'everyone knows', 'obviously', 'clearly', 'it goes without saying',
+            'all experts agree', 'no one would disagree', 'always', 'never'
+        ]
+        text_lower = text.lower()
+        return any(indicator in text_lower for indicator in fallacy_indicators)
+
+    def _has_weak_evidence(self, text: str) -> bool:
+        """Check if evidence appears weak or unsupported."""
+        weak_indicators = [
+            'i think', 'i believe', 'probably', 'maybe', 'might be',
+            'could be', 'seems like', 'appears to'
+        ]
+        text_lower = text.lower()
+        # Count weak indicators
+        weak_count = sum(1 for indicator in weak_indicators if indicator in text_lower)
+        # High proportion of weak language suggests weak evidence
+        return weak_count > 3
+
+    def _methodology_appropriate(self, text: str, agent_type: str) -> bool:
+        """Check if reasoning methodology is appropriate for agent type."""
+        if agent_type == 'research':
+            # Research should explore multiple perspectives
+            return 'perspective' in text.lower() or 'source' in text.lower()
+        elif agent_type == 'analysis':
+            # Analysis should break things down
+            return 'because' in text.lower() or 'therefore' in text.lower()
+        elif agent_type == 'critic':
+            # Critics should identify issues
+            return 'issue' in text.lower() or 'problem' in text.lower() or 'improve' in text.lower()
+        else:
+            # Default: accept methodology
+            return True
 
 
 def create_specialized_team(helix: HelixGeometry, llm_client: LMStudioClient,

@@ -33,6 +33,10 @@ class MessageType(Enum):
     SYSTEM_ACTION_START = "system_action_start"  # Command execution started (for Terminal tab)
     SYSTEM_ACTION_OUTPUT = "system_action_output"  # Real-time command output line (for Terminal tab)
     SYSTEM_ACTION_COMPLETE = "system_action_complete"  # Command execution completed (for Terminal tab)
+    # Feedback integration message types for agent learning
+    SYNTHESIS_FEEDBACK = "synthesis_feedback"  # Share synthesis results back to agents
+    CONTRIBUTION_EVALUATION = "contribution_evaluation"  # Tell agents how useful their work was
+    IMPROVEMENT_REQUEST = "improvement_request"  # Request specific agent refinements
 
 
 @dataclass

@@ -1,14 +1,14 @@
 """
 Performance Monitor for the Felix Framework.
 
-Handles performance metrics collection and analysis for hypothesis validation,
+Handles performance metrics collection and analysis for performance benchmarking,
 tracking message throughput, communication overhead, and scaling performance.
 
 Key Features:
 - Message processing throughput calculation
 - Communication overhead measurement
 - Scaling metrics (agent count vs processing time)
-- H2 hypothesis validation (O(N) vs O(N²) communication)
+- Communication efficiency benchmarking (O(N) vs O(N²) comparison)
 - Performance summary generation
 - Async processing metrics
 
@@ -34,7 +34,7 @@ class PerformanceMonitor:
     - Record scaling performance (agent count vs time)
     - Calculate average overhead ratios
     - Generate comprehensive performance summaries
-    - Support H1/H2/H3 hypothesis validation
+    - Support performance benchmarking and analysis
     """
 
     def __init__(self, metrics_enabled: bool = True):
@@ -51,7 +51,7 @@ class PerformanceMonitor:
         self._total_messages_processed: int = 0
         self._processing_times: List[float] = []
 
-        # Communication overhead metrics (H2 validation)
+        # Communication overhead metrics (efficiency benchmarking)
         self._overhead_ratios: List[float] = []
 
         # Scaling metrics (agent count → processing time)
@@ -121,7 +121,7 @@ class PerformanceMonitor:
 
     def record_overhead_ratio(self, overhead_ratio: float) -> None:
         """
-        Record overhead ratio for hypothesis validation.
+        Record overhead ratio for performance benchmarking.
 
         Args:
             overhead_ratio: Communication overhead / processing time ratio
@@ -134,7 +134,7 @@ class PerformanceMonitor:
         Get average overhead ratio across all measurements.
 
         Returns:
-            Average overhead ratio (for H2 validation)
+            Average overhead ratio (for efficiency benchmarking)
         """
         if not self._overhead_ratios:
             return 0.0

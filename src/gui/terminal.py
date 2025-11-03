@@ -118,12 +118,17 @@ class CommandDetailsDialog(tk.Toplevel):
             "Context": self.execution_details.get('context', 'No context provided')
         }, multiline=['Command', 'Context'])
 
+        # Extract values that may be None from database
+        duration = self.execution_details.get('duration')
+        output_size = self.execution_details.get('output_size')
+        exit_code = self.execution_details.get('exit_code')
+
         self._add_section(scrollable_frame, "Execution Results", {
-            "Exit Code": self.execution_details.get('exit_code', 'N/A'),
-            "Duration": f"{self.execution_details.get('duration', 0):.3f}s",
+            "Exit Code": exit_code if exit_code is not None else 'N/A',
+            "Duration": f"{duration:.3f}s" if duration is not None else "Running...",
             "Success": "Yes" if success else "No" if success is False else "Pending",
             "Error Category": self.execution_details.get('error_category', 'None'),
-            "Output Size": f"{self.execution_details.get('output_size', 0):,} bytes"
+            "Output Size": f"{output_size:,} bytes" if output_size is not None else "N/A"
         })
 
         # Output sections with scrolled text
