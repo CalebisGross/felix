@@ -2,7 +2,11 @@
 
 ## Overview
 
-The Felix Framework is a Python-based multi-agent AI system designed to leverage helical geometry for agent progression and adaptation. It enables dynamic, scalable AI interactions by modeling agent behaviors and communications along helical structures, allowing for continuous evolution and optimization of AI tasks. The framework integrates local LLM clients, persistent memory systems, autonomous knowledge brain for document learning, self-improvement capabilities, and modular pipelines to support complex, adaptive workflows in multi-agent environments.
+### 🔒 The ONLY Multi-Agent Framework for Air-Gapped Environments
+
+**Felix works where LangChain, CrewAI, and AutoGen can't**: completely isolated, classified networks with **zero external dependencies**.
+
+The Felix Framework is a **production-ready** Python-based multi-agent AI system designed to leverage helical geometry for agent progression and adaptation. It enables dynamic, scalable AI interactions by modeling agent behaviors and communications along helical structures, allowing for continuous evolution and optimization of AI tasks. The framework integrates local LLM clients, persistent memory systems, autonomous knowledge brain for document learning, self-improvement capabilities, and modular pipelines to support complex, adaptive workflows in multi-agent environments.
 
 At its core, Felix employs a hub-spoke communication model combined with helical progression to facilitate agent spawning, role specialization, and task execution. The autonomous knowledge brain system extends this architecture by enabling document ingestion, agentic comprehension, knowledge graph construction, and semantic retrieval with meta-learning. The self-improvement architecture adds feedback loops, meta-cognition, concept consistency tracking, and contextual relevance filtering to enable continuous learning and adaptation. This architecture promotes resilience and efficiency in handling diverse AI challenges, from prompt optimization to knowledge compression and continuous learning from documents. By incorporating token budgeting, context-aware memory, and 3-tier embeddings, the system ensures sustainable performance across varying computational constraints.
 

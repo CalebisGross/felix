@@ -340,6 +340,87 @@ class TestRouterAdapter:
         assert len(chunks) > 0
         assert response.content == "Mock streaming response"
 
+    def test_router_adapter_streaming_with_all_parameters(self, mock_llm_provider):
+        """Test adapter accepts all LMStudioClient-compatible parameters."""
+        from src.llm.llm_router import LLMRouter
+        from src.llm.router_adapter import RouterAdapter
+        from src.llm.lm_studio_client import StreamingChunk
+
+        router = LLMRouter(primary_provider=mock_llm_provider)
+        adapter = RouterAdapter(router)
+
+        chunks = []
+
+        def callback(chunk):
+            chunks.append(chunk)
+
+        # Should not raise TypeError with batch_interval, callback, token_controller
+        response = adapter.complete_streaming(
+            agent_id="test-agent",
+            system_prompt="Test",
+            user_prompt="Hello",
+            temperature=0.7,
+            callback=callback,  # Use 'callback' parameter
+            batch_interval=0.1,  # Should be accepted
+            token_controller=None  # Should be accepted
+        )
+
+        # Should call callback with StreamingChunk objects
+        assert len(chunks) > 0
+        assert response.content == "Mock streaming response"
+
+        # Validate all chunks are StreamingChunk objects
+        for chunk in chunks:
+            assert isinstance(chunk, StreamingChunk), f"Expected StreamingChunk, got {type(chunk)}"
+            assert hasattr(chunk, 'content'), "StreamingChunk missing 'content' attribute"
+            assert hasattr(chunk, 'accumulated'), "StreamingChunk missing 'accumulated' attribute"
+            assert hasattr(chunk, 'tokens_so_far'), "StreamingChunk missing 'tokens_so_far' attribute"
+            assert hasattr(chunk, 'agent_id'), "StreamingChunk missing 'agent_id' attribute"
+            assert hasattr(chunk, 'timestamp'), "StreamingChunk missing 'timestamp' attribute"
+
+        # Verify accumulated text grows with each chunk
+        for i in range(1, len(chunks)):
+            assert chunks[i].accumulated.startswith(chunks[i-1].accumulated), \
+                f"Accumulated text should grow: chunk {i-1}='{chunks[i-1].accumulated}' vs chunk {i}='{chunks[i].accumulated}'"
+
+        # Verify tokens_so_far increases
+        for i in range(1, len(chunks)):
+            assert chunks[i].tokens_so_far > chunks[i-1].tokens_so_far, \
+                "tokens_so_far should increase with each chunk"
+
+        # Verify final accumulated matches response content
+        assert chunks[-1].accumulated == response.content, \
+            "Final accumulated text should match response content"
+
+    def test_router_adapter_streaming_with_chunk_callback(self, mock_llm_provider):
+        """Test adapter also accepts legacy chunk_callback parameter."""
+        from src.llm.llm_router import LLMRouter
+        from src.llm.router_adapter import RouterAdapter
+        from src.llm.lm_studio_client import StreamingChunk
+
+        router = LLMRouter(primary_provider=mock_llm_provider)
+        adapter = RouterAdapter(router)
+
+        chunks = []
+
+        def callback(chunk):
+            chunks.append(chunk)
+
+        # Should work with chunk_callback (legacy parameter name)
+        response = adapter.complete_streaming(
+            agent_id="test-agent",
+            system_prompt="Test",
+            user_prompt="Hello",
+            temperature=0.7,
+            chunk_callback=callback,  # Use legacy parameter name
+            batch_interval=0.2
+        )
+
+        # Should still produce StreamingChunk objects
+        assert len(chunks) > 0
+        for chunk in chunks:
+            assert isinstance(chunk, StreamingChunk)
+
     def test_router_adapter_test_connection(self, mock_llm_provider):
         """Test adapter connection testing."""
         from src.llm.llm_router import LLMRouter

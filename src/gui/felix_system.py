@@ -82,6 +82,7 @@ class FelixConfig:
     verbose_llm_logging: bool = True  # Log detailed LLM requests/responses
     enable_streaming: bool = True  # Enable incremental token streaming for real-time communication
     streaming_batch_interval: float = 0.1  # Send partial updates every 100ms
+    auto_approve_system_actions: bool = False  # Auto-approve system commands without blocking (for CLI mode)
 
     # Web search settings
     web_search_enabled: bool = False  # Enable web search for CentralPost (confidence-based)
@@ -410,7 +411,8 @@ class FelixSystem:
                 web_search_confidence_threshold=self.config.web_search_confidence_threshold,
                 web_search_min_samples=self.config.web_search_min_samples,
                 web_search_cooldown=self.config.web_search_cooldown,
-                knowledge_store=self.knowledge_store  # CRITICAL: Share the same knowledge_store instance!
+                knowledge_store=self.knowledge_store,  # CRITICAL: Share the same knowledge_store instance!
+                config=self.config  # Pass config for auto-approval and other settings
             )
             logger.info("Central post initialized with synthesis capability and shared knowledge store")
 

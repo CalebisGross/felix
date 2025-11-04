@@ -148,11 +148,18 @@ async def workflow_stream(
     manager = get_connection_manager()
 
     # Verify API key if authentication is enabled
-    # Note: API key passed as query parameter for WebSocket
-    # TODO: Implement proper WebSocket authentication
-    if api_key:
-        # Simplified auth check - in production, validate properly
-        pass
+    # Note: API key passed as query parameter for WebSocket connections
+    try:
+        # Use the same verify_api_key dependency as REST endpoints
+        # This checks FELIX_API_KEY environment variable
+        verify_api_key(api_key)
+    except HTTPException as e:
+        # Authentication failed - close connection with policy violation code
+        await websocket.close(
+            code=status.WS_1008_POLICY_VIOLATION,
+            reason=f"Authentication failed: {e.detail}"
+        )
+        return
 
     # Check if workflow exists
     if workflow_id not in workflows_db:

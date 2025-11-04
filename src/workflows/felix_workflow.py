@@ -255,6 +255,34 @@ def run_felix_workflow(felix_system, task_input: str,
                     logger.warning("  Install: pip install ddgs")
                     logger.warning("  Enable in Settings → Web Search Configuration")
 
+        # Fast path for greetings - respond immediately without agents
+        import re
+        if re.match(r'^\s*(hello|hi|hey|greetings?|howdy|yo)\s*[!.?]*\s*$', task_input.lower().strip()):
+            logger.info("=" * 60)
+            logger.info("GREETING DETECTED - Fast path (zero agents)")
+            logger.info("=" * 60)
+
+            greeting_response = "Hello! How can I help you today?"
+
+            return {
+                "status": "completed",
+                "task": task_input,
+                "task_input": task_input,
+                "workflow_id": workflow_id,
+                "task_complexity": task_complexity,
+                "centralpost_synthesis": {
+                    "synthesis_content": greeting_response,
+                    "confidence": 1.0,
+                    "complexity": task_complexity
+                },
+                "agents_spawned": [],
+                "llm_responses": [],
+                "steps_executed": 0,
+                "processing_time": time.time() - workflow_start_time,
+                "knowledge_entries": [],
+                "knowledge_entry_ids": []
+            }
+
         # Track results
         results = {
             "task": task_input,

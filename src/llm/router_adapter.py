@@ -6,13 +6,14 @@ backward compatibility with existing code.
 """
 
 import logging
-from typing import Optional, Callable
+import time
+from typing import Optional, Callable, Any, Union
 
 from src.llm.llm_router import LLMRouter
 from src.llm.base_provider import LLMRequest, ProviderError
 
-# Import the original LLMResponse from lm_studio_client for compatibility
-from src.llm.lm_studio_client import LLMResponse as LMStudioResponse
+# Import the original LLMResponse (aliased as LMStudioResponse) and StreamingChunk from lm_studio_client for compatibility
+from src.llm.lm_studio_client import LLMResponse as LMStudioResponse, StreamingChunk
 
 logger = logging.getLogger('felix_workflows')
 
@@ -85,7 +86,10 @@ class RouterAdapter:
     def complete_streaming(self, agent_id: str, system_prompt: str, user_prompt: str,
                           temperature: float = 0.7, max_tokens: Optional[int] = None,
                           model: str = "local-model",
-                          chunk_callback: Optional[Callable[[str], None]] = None) -> LMStudioResponse:
+                          chunk_callback: Optional[Callable] = None,
+                          callback: Optional[Callable] = None,
+                          batch_interval: float = 0.1,
+                          token_controller: Optional[Any] = None) -> LMStudioResponse:
         """
         Complete a prompt with streaming (compatible with LMStudioClient interface).
 
@@ -96,11 +100,61 @@ class RouterAdapter:
             temperature: Sampling temperature
             max_tokens: Maximum tokens to generate
             model: Model identifier
-            chunk_callback: Callback for streaming chunks
+            chunk_callback: Legacy callback parameter (accepts StreamingChunk)
+            callback: Primary callback parameter (accepts StreamingChunk)
+            batch_interval: Time batching interval (accepted for compatibility, handled by providers)
+            token_controller: Token budget controller (accepted for compatibility, not enforced)
 
         Returns:
             LMStudioResponse (compatible format)
+
+        Note:
+            batch_interval and token_controller are accepted for backward compatibility
+            but are not enforced at the router level. Providers handle batching internally.
         """
+        # Use whichever callback was provided (prefer 'callback' over 'chunk_callback')
+        user_callback = callback or chunk_callback
+
+        # State for accumulation and token tracking
+        accumulated_text = ""
+        chunk_count = 0
+
+        def streaming_wrapper(chunk: Union[str, StreamingChunk]) -> None:
+            """
+            Wrap provider callback to handle both strings and StreamingChunk objects.
+
+            This maintains compatibility with LLMAgent which expects StreamingChunk objects
+            with .content, .accumulated, and .tokens_so_far attributes.
+
+            Handles both:
+            - String chunks from providers that return simple strings
+            - StreamingChunk objects from providers (like LMStudioClient) that return rich objects
+            """
+            nonlocal accumulated_text, chunk_count
+
+            # Handle both string chunks and StreamingChunk objects
+            if isinstance(chunk, StreamingChunk):
+                # Provider sent a StreamingChunk - extract data directly
+                chunk_str = chunk.content
+                accumulated_text = chunk.accumulated  # Use provider's accumulated value
+                chunk_count = chunk.tokens_so_far     # Use provider's token count
+            else:
+                # Provider sent a plain string - accumulate manually
+                chunk_str = chunk
+                accumulated_text += chunk_str
+                chunk_count += 1
+
+            # Call user callback with StreamingChunk object if provided
+            if user_callback:
+                streaming_chunk = StreamingChunk(
+                    content=chunk_str,
+                    accumulated=accumulated_text,
+                    tokens_so_far=chunk_count,
+                    agent_id=agent_id,
+                    timestamp=time.time()
+                )
+                user_callback(streaming_chunk)
+
         # Create request in new format
         request = LLMRequest(
             system_prompt=system_prompt,
@@ -113,8 +167,8 @@ class RouterAdapter:
         )
 
         try:
-            # Route through router with streaming
-            response = self.router.complete_streaming(request, chunk_callback or (lambda x: None))
+            # Route through router with wrapped streaming callback
+            response = self.router.complete_streaming(request, streaming_wrapper)
 
             # Convert to LMStudioResponse format for compatibility
             return LMStudioResponse(

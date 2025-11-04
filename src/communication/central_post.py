@@ -425,7 +425,8 @@ class CentralPost:
                  web_search_confidence_threshold: float = 0.7,
                  web_search_min_samples: int = 1,
                  web_search_cooldown: float = 10.0,
-                 knowledge_store: Optional["KnowledgeStore"] = None):
+                 knowledge_store: Optional["KnowledgeStore"] = None,
+                 config: Optional[Any] = None):
         """
         Initialize central post with configuration parameters.
 
@@ -440,12 +441,14 @@ class CentralPost:
             web_search_min_samples: Minimum confidence scores before checking average (default: 1)
             web_search_cooldown: Seconds between web searches to prevent spam (default: 10.0)
             knowledge_store: Optional shared KnowledgeStore instance (if None, creates new one)
+            config: Optional FelixConfig for system-wide settings (auto-approval, etc.)
         """
         self.max_agents = max_agents
         self.enable_metrics = enable_metrics
         self.enable_memory = enable_memory
         self.llm_client = llm_client  # For CentralPost synthesis
         self.web_search_client = web_search_client  # For Research agents
+        self.config = config  # Store config for passing to subsystems
         
         # Connection management
         self._registered_agents: Dict[str, str] = {}  # agent_id -> connection_id
@@ -551,7 +554,8 @@ class CentralPost:
             command_history=self.command_history,
             approval_manager=self.approval_manager,
             agent_registry=self.agent_registry,
-            message_queue_callback=self.queue_message
+            message_queue_callback=self.queue_message,
+            config=config  # Pass config for auto-approval flag (CLI mode)
         )
 
         # 5. Web Search Coordinator

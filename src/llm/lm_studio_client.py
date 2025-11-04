@@ -207,15 +207,14 @@ class LMStudioClient:
         self.debug_mode = debug_mode
         self.verbose_logging = verbose_logging
 
-        # DEBUG: Confirm initialization
-        print(f"DEBUG: LMStudioClient created, verbose_logging={verbose_logging}")
-
         # Ensure logger is configured
-        logger.setLevel(logging.INFO)
+        logger.setLevel(logging.DEBUG if debug_mode else logging.INFO)
         logger.propagate = True
 
         # Log initialization with verbose setting
         logger.info(f"LMStudioClient initialized: base_url={base_url}, verbose_logging={verbose_logging}")
+        if debug_mode:
+            logger.debug(f"Debug mode enabled for LMStudioClient")
 
         # Sync client
         self.client = OpenAI(

@@ -54,6 +54,7 @@ outputs/
 *_workflow_results_*.txt
 felix_synthesis_*.md
 temp/
+sales/
 
 # Knowledge sources (user data directory)
 knowledge_sources/*

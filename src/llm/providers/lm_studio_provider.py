@@ -126,7 +126,7 @@ class LMStudioProvider(BaseLLMProvider):
                 temperature=request.temperature,
                 max_tokens=request.max_tokens,
                 model=request.model or self.default_model,
-                chunk_callback=callback  # Pass callback directly
+                callback=callback  # Pass callback directly
             )
 
             response_time = time.time() - start_time

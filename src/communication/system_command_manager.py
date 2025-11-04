@@ -55,7 +55,8 @@ class SystemCommandManager:
                  command_history: CommandHistory,
                  approval_manager: ApprovalManager,
                  agent_registry: Any,  # AgentRegistry reference
-                 message_queue_callback: Callable[[Message], None]):
+                 message_queue_callback: Callable[[Message], None],
+                 config: Any = None):  # Felix configuration for auto-approval
         """
         Initialize System Command Manager.
 
@@ -66,6 +67,7 @@ class SystemCommandManager:
             approval_manager: Approval workflow management
             agent_registry: AgentRegistry for agent info lookup
             message_queue_callback: Callback to queue messages (central_post.queue_message)
+            config: Optional FelixConfig for checking auto-approval settings
         """
         self.system_executor = system_executor
         self.trust_manager = trust_manager
@@ -73,6 +75,7 @@ class SystemCommandManager:
         self.approval_manager = approval_manager
         self.agent_registry = agent_registry
         self._queue_message = message_queue_callback
+        self.config = config  # Store config for auto-approval checks
 
         # Action tracking
         self._action_results: Dict[str, CommandResult] = {}
@@ -235,6 +238,34 @@ class SystemCommandManager:
 
             return action_id
 
+        # 2.5. Check for global auto-approval flag (CLI mode)
+        if self._should_auto_approve():
+            logger.info(f"⚡ CLI mode: auto-approving REVIEW command without blocking")
+
+            # Execute immediately as if it were a SAFE command
+            result = self._execute_command_with_streaming(
+                action_id=action_id,
+                command=command,
+                agent_id=agent_id,
+                context=context,
+                workflow_id=workflow_id,
+                trust_level=trust_level,
+                approved_by="cli_auto_approve"
+            )
+
+            # Cache in workflow deduplication
+            if workflow_id:
+                command_hash = self.system_executor.compute_command_hash(command)
+                if workflow_id not in self._executed_commands:
+                    self._executed_commands[workflow_id] = {}
+                self._executed_commands[workflow_id][command_hash] = result
+
+            logger.info(f"📤 Auto-approved command result (CLI mode):")
+            logger.info(f"   Success: {result.success}")
+            logger.info(f"   Exit code: {result.exit_code}")
+
+            return action_id
+
         # 3. Request user approval via ApprovalManager
         approval_id = self.approval_manager.request_approval(
             command=command,
@@ -258,6 +289,17 @@ class SystemCommandManager:
         self._broadcast_approval_needed(action_id, approval_id, agent_id, command, context)
 
         return action_id
+
+    def _should_auto_approve(self) -> bool:
+        """
+        Check if auto-approval is enabled via config.
+
+        Returns:
+            True if auto_approve_system_actions config flag is set (CLI mode), False otherwise
+        """
+        if self.config and hasattr(self.config, 'auto_approve_system_actions'):
+            return self.config.auto_approve_system_actions
+        return False
 
     def _execute_command_with_streaming(self, action_id: str, command: str, agent_id: str,
                                        context: str, workflow_id: Optional[str],

@@ -50,7 +50,18 @@ router = APIRouter(
 # Thread pool for running sync Felix code in async context
 executor = ThreadPoolExecutor(max_workers=4)
 
-# In-memory workflow storage (TODO: Use database for production)
+# Workflow storage
+# NOTE: Using in-memory storage for simplicity and low latency
+# For production deployments with multiple API instances, consider:
+# - felix_workflow_history.db (already tracks completed workflows)
+# - Redis for distributed caching
+# - PostgreSQL for persistent workflow state
+#
+# Current approach is acceptable for:
+# - Single-instance deployments (Docker, air-gapped environments)
+# - Development and testing
+# - Workflows that complete within server uptime
+#
 # workflow_id -> workflow_data
 workflows_db: Dict[str, Dict[str, Any]] = {}
 

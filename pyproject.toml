@@ -1,0 +1,96 @@
+[build-system]
+requires = ["setuptools>=45", "wheel", "setuptools_scm[toml]>=6.2"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "felix-framework"
+version = "1.0.0"
+description = "Multi-agent AI framework with helical geometry coordination and zero-dependency air-gapped operation"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "Felix Framework", email = "contact@felix-framework.io"}
+]
+keywords = ["ai", "agents", "multi-agent", "llm", "air-gapped", "on-premise", "helical-geometry", "knowledge-graph"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+]
+
+dependencies = [
+    "openai>=1.0.0",
+    "httpx>=0.24.0",
+    "PyYAML>=6.0",
+    "numpy>=1.24.0",
+    "scipy>=1.10.0",
+    "ddgs>=1.0.0",
+    "beautifulsoup4>=4.12.0",
+    "lxml>=4.9.0",
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+]
+
+[project.optional-dependencies]
+api = [
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "pydantic>=2.4.0",
+]
+knowledge = [
+    "PyPDF2>=3.0.0",
+    "watchdog>=3.0.0",
+]
+dev = [
+    "pytest-cov>=4.1.0",
+    "pytest-timeout>=2.1.0",
+    "ruff>=0.1.0",
+    "mypy>=1.5.0",
+]
+all = [
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "pydantic>=2.4.0",
+    "PyPDF2>=3.0.0",
+    "watchdog>=3.0.0",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/yourusername/felix"
+"Bug Tracker" = "https://github.com/yourusername/felix/issues"
+"Documentation" = "https://github.com/yourusername/felix/blob/main/README.md"
+
+[project.scripts]
+felix = "src.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "."}
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+exclude = ["tests*", "case_studies*", "sales*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py38"
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"

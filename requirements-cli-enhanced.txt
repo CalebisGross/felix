@@ -1,0 +1,27 @@
+# Felix Conversational CLI - Enhanced UX Dependencies
+#
+# These dependencies provide advanced terminal features for the Felix CLI chat mode:
+# - Rich input handling with keyboard shortcuts
+# - Command history and auto-completion
+# - Beautiful terminal formatting
+# - Fast JSON operations
+#
+# Install with: pip install -r requirements-cli-enhanced.txt
+#
+# Note: Felix CLI will work without these (with basic functionality),
+# but these packages significantly improve the user experience.
+
+# Rich terminal input handling
+# Provides: Keyboard shortcuts, command history, multiline input, vim mode
+prompt_toolkit>=3.0.43
+
+# Beautiful terminal formatting
+# Provides: Markdown rendering, progress bars, tables, syntax highlighting
+rich>=13.7.0
+
+# Fast JSON operations
+# Provides: 2-3x faster JSON serialization for session export/import
+orjson>=3.9.10
+
+# Syntax highlighting for code blocks (used by rich)
+pygments>=2.17.2

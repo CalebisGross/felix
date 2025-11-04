@@ -468,7 +468,7 @@ class CollaborativeContextBuilder:
                     knowledge_entries = self.relevance_evaluator.filter_by_relevance(
                         knowledge_entries,
                         original_task,
-                        threshold=0.5  # Keep items with >50% relevance
+                        threshold=0.3  # Keep items with >30% relevance (lowered to be more permissive)
                     )
                     if len(knowledge_entries) < pre_filter_count:
                         logger.info(f"  🎯 Relevance filtering: {len(knowledge_entries)}/{pre_filter_count} entries kept")

@@ -19,65 +19,59 @@ from typing import Optional
 
 def cmd_run(args):
     """Run a Felix workflow from command line."""
-    from src.core.helix_geometry import HelixGeometry
-    from src.communication.central_post import CentralPost, AgentFactory
-    from src.llm.router_adapter import create_router_adapter
-    from src.workflows.felix_workflow import execute_linear_workflow_optimized
+    from src.gui.felix_system import FelixSystem, FelixConfig
+    from src.workflows.felix_workflow import run_felix_workflow
 
     print(f"🚀 Felix Workflow")
     print(f"Task: {args.task}")
     print("=" * 60)
 
-    # Initialize components
-    try:
-        helix = HelixGeometry(
-            top_radius=3.0,
-            bottom_radius=0.5,
-            height=8.0,
-            turns=2
-        )
+    # Create Felix configuration from CLI arguments
+    config = FelixConfig(
+        # Disable features not needed for CLI
+        enable_streaming=True,  # Enable streaming for faster LLM response
+        enable_spoke_topology=True,  # Enable full topology for proper agent management
+        enable_memory=True,  # Enable memory for persistence
+        enable_compression=True,  # Enable context compression
+        enable_knowledge_brain=False,  # Disable knowledge brain for CLI speed
+        knowledge_daemon_enabled=False,  # No background daemon for CLI
 
-        llm_client = create_router_adapter(args.config)
-        central_post = CentralPost(helix)
-        agent_factory = AgentFactory(central_post, helix, llm_client)
+        # Web search configuration
+        web_search_enabled=args.web_search,
+
+        # Workflow configuration from args
+        workflow_max_steps_simple=3,
+        workflow_max_steps_medium=5,
+        workflow_max_steps_complex=args.max_steps,
+        workflow_simple_threshold=0.8,
+        workflow_medium_threshold=0.6,
+
+        # Agent and token configuration
+        max_agents=25,
+        base_token_budget=2500,
+
+        # LLM configuration (will use config/llm.yaml)
+        verbose_llm_logging=args.verbose
+    )
+
+    # Initialize Felix system
+    felix_system = FelixSystem(config)
+
+    try:
+        print("Initializing Felix system...")
+        if not felix_system.start():
+            print("❌ Failed to start Felix system")
+            print("Make sure at least one LLM provider is configured.")
+            return 1
 
         print("✓ Felix system initialized\n")
 
-    except Exception as e:
-        print(f"❌ Initialization failed: {e}")
-        print("Make sure at least one LLM provider is configured.")
-        return 1
+        # Run workflow
+        print("🤖 Running workflow...\n")
 
-    # Create simple system object
-    class SimpleSystem:
-        def __init__(self):
-            self.helix = helix
-            self.central_post = central_post
-            self.agent_factory = agent_factory
-            self.lm_client = llm_client
-
-            class Config:
-                workflow_max_steps = args.max_steps
-                enable_web_search = args.web_search
-                workflow_simple_threshold = 0.8
-                workflow_medium_threshold = 0.6
-                workflow_max_steps_simple = 3
-                workflow_max_steps_medium = 5
-                workflow_max_steps_complex = 10
-                confidence_threshold = 0.80
-
-            self.config = Config()
-            self.task_memory = None
-
-    system = SimpleSystem()
-
-    # Run workflow
-    print("🤖 Running workflow...\n")
-
-    try:
-        result = execute_linear_workflow_optimized(
+        result = run_felix_workflow(
+            felix_system=felix_system,
             task_input=args.task,
-            felix_system=system,
             max_steps_override=args.max_steps
         )
 
@@ -125,6 +119,12 @@ def cmd_run(args):
         if args.verbose:
             traceback.print_exc()
         return 1
+
+    finally:
+        # Always cleanup Felix system
+        if felix_system.running:
+            print("\n🛑 Shutting down Felix system...")
+            felix_system.stop()
 
 
 def cmd_status(args):
@@ -264,6 +264,341 @@ def cmd_init(args):
         return 1
 
 
+def cmd_chat(args):
+    """Start conversational CLI interface."""
+    from src.gui.felix_system import FelixSystem, FelixConfig
+    from src.cli_chat import run_chat, run_single_query
+    from src.cli_chat.session_manager import SessionManager
+
+    # Check for print mode or piped input
+    is_piped = not sys.stdin.isatty()
+    is_print_mode = args.print_mode or is_piped
+
+    # Get query from argument or stdin
+    query = None
+    if is_print_mode:
+        if args.query:
+            query = args.query
+        elif is_piped:
+            query = sys.stdin.read().strip()
+        else:
+            print("Error: Print mode (-p) requires a query argument or piped input")
+            return 1
+
+        if not query:
+            print("Error: Empty query")
+            return 1
+
+    # Print header only in interactive mode
+    if not is_print_mode:
+        print("🚀 Felix Conversational CLI")
+        print("=" * 60)
+
+    # Determine session ID (only for interactive mode)
+    session_id = None
+    if not is_print_mode:
+        session_id = args.resume
+
+        # Handle -c / --continue flag
+        if args.continue_last:
+            manager = SessionManager()
+            last_session = manager.get_last_session()
+
+            if last_session:
+                session_id = last_session
+                print(f"Continuing last session: {session_id}")
+            else:
+                print("No previous sessions found. Starting new session...")
+
+    # Create Felix configuration
+    config = FelixConfig(
+        enable_streaming=True,  # Enable streaming for faster LLM response
+        enable_spoke_topology=True,
+        enable_memory=True,
+        enable_compression=True,
+        enable_knowledge_brain=args.knowledge_brain,
+        knowledge_daemon_enabled=False,
+        web_search_enabled=args.web_search,
+        auto_approve_system_actions=True,  # CLI mode: auto-approve commands without blocking
+        max_agents=25,
+        base_token_budget=2500,
+        verbose_llm_logging=args.verbose
+    )
+
+    # Initialize Felix system
+    felix_system = FelixSystem(config)
+
+    try:
+        if not is_print_mode:
+            print("Initializing Felix system...")
+
+        if not felix_system.start():
+            if not is_print_mode:
+                print("❌ Failed to start Felix system")
+                print("Make sure at least one LLM provider is configured.")
+            return 1
+
+        if not is_print_mode:
+            print("✓ Felix system initialized\n")
+
+        # Run in appropriate mode
+        if is_print_mode:
+            # Print mode: single query, output result, exit
+            result = run_single_query(
+                query=query,
+                felix_system=felix_system,
+                enable_nl=not args.no_nl,
+                verbose=args.verbose
+            )
+            print(result)
+        else:
+            # Interactive mode: full chat REPL
+            run_chat(
+                felix_system=felix_system,
+                session_id=session_id,
+                enable_nl=not args.no_nl,
+                verbose=args.verbose
+            )
+
+        return 0
+
+    except KeyboardInterrupt:
+        print("\n\n⚠️  Interrupted by user")
+        return 130
+
+    except Exception as e:
+        print(f"❌ Chat failed: {e}")
+        if args.verbose:
+            import traceback
+            traceback.print_exc()
+        return 1
+
+    finally:
+        # Always cleanup Felix system
+        if felix_system.running:
+            print("\n🛑 Shutting down Felix system...")
+            felix_system.stop()
+
+
+def cmd_sessions(args):
+    """Manage chat sessions."""
+    from src.cli_chat.session_manager import SessionManager
+    from src.cli_chat.formatters import OutputFormatter
+
+    manager = SessionManager()
+    formatter = OutputFormatter()
+
+    if args.action == 'list':
+        # List sessions
+        sessions = manager.list_sessions(limit=args.limit)
+
+        if not sessions:
+            print("No chat sessions found")
+            return 0
+
+        formatter.print_session_list([s.to_dict() for s in sessions])
+
+    elif args.action == 'recent':
+        # List recent sessions (alias for list)
+        sessions = manager.list_sessions(limit=args.limit)
+
+        if not sessions:
+            print("No recent chat sessions found")
+            return 0
+
+        print(f"Recent sessions (last {args.limit}):")
+        print("=" * 80)
+        for session in sessions:
+            title_str = f" - {session.title}" if session.title else ""
+            tags_str = f" {session.tags}" if session.tags else ""
+            print(f"{session.session_id}: {session.last_active.strftime('%Y-%m-%d %H:%M')}{title_str}{tags_str}")
+
+    elif args.action == 'today':
+        # List today's sessions
+        sessions = manager.get_sessions_today()
+
+        if not sessions:
+            print("No sessions active today")
+            return 0
+
+        print(f"Sessions active today:")
+        print("=" * 80)
+        for session in sessions:
+            title_str = f" - {session.title}" if session.title else ""
+            tags_str = f" {session.tags}" if session.tags else ""
+            print(f"{session.session_id}: {session.last_active.strftime('%H:%M')}{title_str}{tags_str}")
+
+    elif args.action == 'show':
+        # Show session details
+        if not args.session_id:
+            print("Error: session_id required for 'show' action")
+            return 1
+
+        session = manager.get_session(args.session_id)
+        if not session:
+            print(f"Session not found: {args.session_id}")
+            return 1
+
+        # Print session info
+        print(f"\nSession: {session.session_id}")
+        print(f"Created: {session.created_at}")
+        print(f"Last active: {session.last_active}")
+        print(f"Messages: {session.message_count}")
+        if session.title:
+            print(f"Title: {session.title}")
+        if session.tags:
+            print(f"Tags: {', '.join(session.tags)}")
+        print()
+
+        # Print messages
+        messages = manager.get_messages(args.session_id, limit=args.limit)
+        for msg in messages:
+            role_label = f"[{msg.role}]"
+            print(f"\n{role_label} {msg.timestamp}")
+            print(msg.content[:200] + "..." if len(msg.content) > 200 else msg.content)
+
+    elif args.action == 'search':
+        # Search sessions
+        if not args.query:
+            print("Error: query required for 'search' action")
+            return 1
+
+        sessions = manager.search_sessions(args.query, limit=args.limit)
+
+        if not sessions:
+            print(f"No sessions found matching '{args.query}'")
+            return 0
+
+        print(f"Sessions matching '{args.query}':")
+        print("=" * 80)
+        for session in sessions:
+            title_str = f" - {session.title}" if session.title else ""
+            tags_str = f" {session.tags}" if session.tags else ""
+            print(f"{session.session_id}: {session.last_active.strftime('%Y-%m-%d %H:%M')}{title_str}{tags_str}")
+
+    elif args.action == 'rename':
+        # Rename session (set title)
+        if not args.session_id:
+            print("Error: session_id required for 'rename' action")
+            return 1
+
+        if not args.title:
+            print("Error: title required for 'rename' action")
+            return 1
+
+        session = manager.get_session(args.session_id)
+        if not session:
+            print(f"Session not found: {args.session_id}")
+            return 1
+
+        manager.set_title(args.session_id, args.title)
+        print(f"✓ Session {args.session_id} renamed to: {args.title}")
+
+    elif args.action == 'tag':
+        # Add tags to session
+        if not args.session_id:
+            print("Error: session_id required for 'tag' action")
+            return 1
+
+        if not args.tags:
+            print("Error: at least one tag required for 'tag' action")
+            return 1
+
+        session = manager.get_session(args.session_id)
+        if not session:
+            print(f"Session not found: {args.session_id}")
+            return 1
+
+        manager.add_tags(args.session_id, args.tags)
+        print(f"✓ Added tags to session {args.session_id}: {', '.join(args.tags)}")
+
+    elif args.action == 'untag':
+        # Remove tags from session
+        if not args.session_id:
+            print("Error: session_id required for 'untag' action")
+            return 1
+
+        if not args.tags:
+            print("Error: at least one tag required for 'untag' action")
+            return 1
+
+        session = manager.get_session(args.session_id)
+        if not session:
+            print(f"Session not found: {args.session_id}")
+            return 1
+
+        manager.remove_tags(args.session_id, args.tags)
+        print(f"✓ Removed tags from session {args.session_id}: {', '.join(args.tags)}")
+
+    elif args.action == 'export':
+        # Export session to JSON
+        if not args.session_id:
+            print("Error: session_id required for 'export' action")
+            return 1
+
+        session = manager.get_session(args.session_id)
+        if not session:
+            print(f"Session not found: {args.session_id}")
+            return 1
+
+        data = manager.export_session(args.session_id)
+
+        output_file = args.output or f"session_{args.session_id}.json"
+
+        with open(output_file, 'w') as f:
+            json.dump(data, f, indent=2)
+
+        print(f"✓ Session {args.session_id} exported to: {output_file}")
+
+    elif args.action == 'import':
+        # Import session from JSON
+        if not args.input_file:
+            print("Error: input file required for 'import' action")
+            return 1
+
+        try:
+            with open(args.input_file, 'r') as f:
+                data = json.load(f)
+
+            new_session_id = manager.import_session(data)
+
+            if new_session_id:
+                print(f"✓ Session imported with ID: {new_session_id}")
+            else:
+                print("❌ Failed to import session (invalid format)")
+                return 1
+
+        except FileNotFoundError:
+            print(f"Error: File not found: {args.input_file}")
+            return 1
+        except json.JSONDecodeError:
+            print(f"Error: Invalid JSON in file: {args.input_file}")
+            return 1
+
+    elif args.action == 'delete':
+        # Delete session
+        if not args.session_id:
+            print("Error: session_id required for 'delete' action")
+            return 1
+
+        session = manager.get_session(args.session_id)
+        if not session:
+            print(f"Session not found: {args.session_id}")
+            return 1
+
+        # Confirm deletion
+        if not args.force:
+            response = input(f"Delete session {args.session_id}? (y/N): ")
+            if response.lower() != 'y':
+                print("Cancelled")
+                return 0
+
+        manager.delete_session(args.session_id)
+        print(f"✓ Session {args.session_id} deleted")
+
+    return 0
+
+
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -271,11 +606,37 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  # One-off workflow execution
   felix run "Explain quantum computing"
   felix run "Design a REST API" --max-steps 10 --output result.md
-  felix status
-  felix test-connection
-  felix gui
+
+  # Interactive chat mode
+  felix chat                                    # Start new chat session
+  felix chat -c                                 # Continue last session
+  felix chat --resume abc123                    # Resume specific session
+
+  # Print mode (non-interactive, single query)
+  felix chat -p "What is helical geometry?"     # Single query execution
+  echo "Analyze this" | felix chat              # Piped input (auto print mode)
+  felix chat "Quick question" -p                # Can also put query first
+
+  # Session management
+  felix sessions list                           # List all sessions
+  felix sessions recent                         # List recent sessions
+  felix sessions today                          # List today's sessions
+  felix sessions show abc123                    # Show session details
+  felix sessions search "keyword"               # Search sessions by keyword
+  felix sessions rename abc123 --title "New"    # Rename a session
+  felix sessions tag abc123 --tags work urgent  # Add tags to session
+  felix sessions untag abc123 --tags urgent     # Remove tags from session
+  felix sessions export abc123 -o session.json  # Export session to JSON
+  felix sessions import session.json            # Import session from JSON
+  felix sessions delete abc123                  # Delete a session
+
+  # System commands
+  felix status                                  # Check system status
+  felix test-connection                         # Test LLM providers
+  felix gui                                     # Launch GUI
         """
     )
 
@@ -318,6 +679,43 @@ Examples:
     # Init command
     init_parser = subparsers.add_parser('init', help='Initialize databases')
     init_parser.set_defaults(func=cmd_init)
+
+    # Chat command
+    chat_parser = subparsers.add_parser('chat', help='Start conversational CLI')
+    chat_parser.add_argument('query', nargs='?', help='Query for print mode (single execution)')
+    chat_parser.add_argument('--resume', help='Resume an existing session by ID')
+    chat_parser.add_argument('-c', '--continue', dest='continue_last', action='store_true',
+                            help='Continue last active session')
+    chat_parser.add_argument('-p', '--print', dest='print_mode', action='store_true',
+                            help='Print mode: execute single query and exit (non-interactive)')
+    chat_parser.add_argument('--no-nl', action='store_true',
+                            help='Disable natural language mode (explicit commands only)')
+    chat_parser.add_argument('--knowledge-brain', action='store_true',
+                            help='Enable knowledge brain')
+    chat_parser.add_argument('--web-search', action='store_true',
+                            help='Enable web search')
+    chat_parser.add_argument('--verbose', '-v', action='store_true',
+                            help='Verbose output')
+    chat_parser.set_defaults(func=cmd_chat)
+
+    # Sessions command
+    sessions_parser = subparsers.add_parser('sessions', help='Manage chat sessions')
+    sessions_parser.add_argument('action',
+                                choices=['list', 'recent', 'today', 'show', 'search',
+                                        'rename', 'tag', 'untag', 'export', 'import', 'delete'],
+                                help='Action to perform')
+    sessions_parser.add_argument('session_id', nargs='?',
+                                help='Session ID (required for show/delete/rename/tag/untag/export)')
+    sessions_parser.add_argument('--query', help='Search query (for search action)')
+    sessions_parser.add_argument('--title', help='New title (for rename action)')
+    sessions_parser.add_argument('--tags', nargs='+', help='Tags (for tag/untag actions)')
+    sessions_parser.add_argument('--output', '-o', help='Output file (for export action)')
+    sessions_parser.add_argument('--input-file', help='Input file (for import action)')
+    sessions_parser.add_argument('--limit', type=int, default=20,
+                                help='Limit number of items shown')
+    sessions_parser.add_argument('--force', '-f', action='store_true',
+                                help='Force delete without confirmation')
+    sessions_parser.set_defaults(func=cmd_sessions)
 
     # Parse arguments
     args = parser.parse_args()

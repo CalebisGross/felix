@@ -94,6 +94,9 @@ class SynthesisEngine:
             r'\bwhen\s+(did|is|was)\b',
             r'\bhow\s+many\b.*\b(now|current|today)',
             r'\blatest\s+(news|update)\b',
+            # Greetings and trivial social queries
+            r'^\s*(hello|hi|hey|greetings?|howdy|yo)\s*[!.?]*\s*$',
+            r'^\s*good\s+(morning|afternoon|evening|night|day)\s*[!.?]*\s*$',
         ]
 
         # Check for simple factual patterns

@@ -13,10 +13,12 @@ Environment Variables:
     FELIX_LM_PORT: LM Studio port (default: 1234)
     FELIX_MAX_AGENTS: Maximum concurrent agents (default: 10)
     FELIX_ENABLE_KNOWLEDGE_BRAIN: Enable knowledge brain (default: false)
+    FELIX_CORS_ORIGINS: Comma-separated allowed origins (default: http://localhost:3000,http://localhost:8080)
 """
 
 import logging
 import time
+import os
 from contextlib import asynccontextmanager
 from typing import Dict, Any
 
@@ -103,10 +105,22 @@ app = FastAPI(
 # Middleware
 # ============================================================================
 
-# CORS middleware
+# CORS middleware - configure via FELIX_CORS_ORIGINS environment variable
+# Default: Allow common development origins
+# Production: Set FELIX_CORS_ORIGINS="https://yourdomain.com,https://app.yourdomain.com"
+cors_origins_str = os.getenv("FELIX_CORS_ORIGINS", "http://localhost:3000,http://localhost:8080,http://localhost:5173")
+cors_origins = [origin.strip() for origin in cors_origins_str.split(",") if origin.strip()]
+
+# Allow all origins only if explicitly set to "*"
+if cors_origins_str == "*":
+    cors_origins = ["*"]
+    logger.warning("CORS configured to allow ALL origins - not recommended for production")
+else:
+    logger.info(f"CORS configured for origins: {cors_origins}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # TODO: Configure for production
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

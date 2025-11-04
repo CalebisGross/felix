@@ -80,6 +80,51 @@ The CLI provides full Felix functionality without requiring the GUI, making it i
 
 See [docs/CLI_GUIDE.md](docs/CLI_GUIDE.md) for complete CLI documentation.
 
+### Conversational CLI (Felix Chat)
+
+The Felix conversational CLI ([src/cli_chat/](src/cli_chat/)) provides an interactive chat interface with **proper multi-agent integration**:
+
+```bash
+# Interactive chat with session management
+felix chat                      # New session
+felix chat -c                   # Continue last session
+felix chat --resume abc123      # Resume specific session
+
+# Print mode for scripting
+felix chat -p "Your question"
+echo "input" | felix chat
+```
+
+**Proper Architecture Integration:**
+
+The conversational CLI uses `CLIWorkflowOrchestrator` to ensure **proper integration** with Felix's multi-agent system:
+
+- ✅ **CollaborativeContextBuilder**: Enriches context with relevant knowledge, applies token budgets, filters by relevance
+- ✅ **ConceptRegistry**: Maintains terminology consistency across conversation (session-scoped, not workflow-scoped)
+- ✅ **Knowledge Recording**: Records which knowledge is helpful for meta-learning boost
+- ✅ **Synthesis Feedback**: Broadcasts feedback for agent self-improvement and confidence calibration
+- ✅ **Workflow-Session Continuity**: Links messages to workflows via `workflow_id`, enables conversation threading with `parent_workflow_id`
+
+**Key Components:**
+- `FelixChat` ([src/cli_chat/chat.py](src/cli_chat/chat.py)): Main interface with prompt_toolkit for keyboard shortcuts and history
+- `CLIWorkflowOrchestrator` ([src/cli_chat/cli_workflow_orchestrator.py](src/cli_chat/cli_workflow_orchestrator.py)): Bridges CLI and multi-agent system
+- `SessionManager` ([src/cli_chat/session_manager.py](src/cli_chat/session_manager.py)): SQLite persistence with titles, tags, import/export
+- `RichOutputFormatter` ([src/cli_chat/formatters.py](src/cli_chat/formatters.py)): Beautiful terminal formatting (graceful fallback)
+- `CustomCommandLoader` ([src/cli_chat/custom_commands.py](src/cli_chat/custom_commands.py)): User-defined commands from `.felix/commands/`
+- `FelixCompleter` ([src/cli_chat/completers.py](src/cli_chat/completers.py)): Tab completion for commands and file paths
+
+**Enhanced Features:**
+- Session management (titles, tags, search, import/export)
+- Special prefixes: `!command`, `@file`, `#note`
+- Rich markdown rendering and syntax highlighting
+- Custom slash commands with YAML frontmatter
+- Tab auto-completion for commands and paths
+- Keyboard shortcuts (Ctrl+R history search, Ctrl+L clear, etc.)
+
+See [docs/CLI_PHASE1_FEATURES.md](docs/CLI_PHASE1_FEATURES.md), [docs/CLI_PHASE2_FEATURES.md](docs/CLI_PHASE2_FEATURES.md), and [docs/CLI_ARCHITECTURE_FIXES.md](docs/CLI_ARCHITECTURE_FIXES.md) for complete documentation.
+
+**IMPORTANT:** The CLI **must** use `CLIWorkflowOrchestrator` (not direct `run_felix_workflow()` calls) to properly integrate with Felix's multi-agent architecture. Direct workflow calls bypass helical progression, context building, knowledge recording, and self-improvement systems.
+
 ### LM Studio Setup (Optional for real LLM integration)
 - Start LM Studio server with a loaded model on default port 1234
 - The framework will automatically connect when using GUI or setting up LLMAgent with LMStudioClient

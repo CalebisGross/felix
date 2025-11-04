@@ -59,7 +59,8 @@ class ContextRelevanceEvaluator:
 
         # Check for keyword overlap
         matched_keywords = task_keywords & fact_keywords
-        overlap_ratio = len(matched_keywords) / max(len(task_keywords), 1)
+        # Cap denominator to prevent over-penalizing complex queries with many keywords
+        overlap_ratio = len(matched_keywords) / max(min(len(task_keywords), 10), 1)
 
         # Check if fact matches irrelevant patterns
         irrelevance_penalty = self._check_irrelevant_patterns(fact.lower(), task_context.lower())
@@ -141,7 +142,12 @@ class ContextRelevanceEvaluator:
         for item in items:
             # Extract content from item
             if hasattr(item, 'content'):
-                content = str(item.content)
+                content_raw = item.content
+                if isinstance(content_raw, dict):
+                    # Extract actual content from nested dict
+                    content = str(content_raw.get('result', content_raw.get('content', str(content_raw))))
+                else:
+                    content = str(content_raw)
             elif isinstance(item, dict):
                 content = str(item.get('content', item.get('result', str(item))))
             else:
@@ -152,14 +158,14 @@ class ContextRelevanceEvaluator:
 
             if relevance.score >= threshold:
                 filtered.append(item)
-                logger.debug(f"  ✓ Relevant ({relevance.score:.2f}): {content[:80]}...")
+                logger.info(f"  ✓ Relevant ({relevance.score:.2f}): {content[:80]}...")
             else:
-                logger.debug(f"  ✗ Filtered out ({relevance.score:.2f}): {content[:80]}...")
+                logger.info(f"  ✗ Filtered out ({relevance.score:.2f}): {content[:80]}...")
 
         logger.info(f"Relevance filtering: {len(filtered)}/{len(items)} items kept (threshold={threshold})")
         return filtered
 
-    def _extract_keywords(self, text: str, min_length: int = 4) -> set:
+    def _extract_keywords(self, text: str, min_length: int = 3) -> set:
         """
         Extract significant keywords from text.
 
@@ -232,7 +238,12 @@ class ContextRelevanceEvaluator:
         for i, item in enumerate(items, 1):
             # Extract content
             if hasattr(item, 'content'):
-                content = str(item.content)[:100]
+                content_raw = item.content
+                if isinstance(content_raw, dict):
+                    # Extract actual content from nested dict
+                    content = str(content_raw.get('result', content_raw.get('content', str(content_raw))))[:100]
+                else:
+                    content = str(content_raw)[:100]
             elif isinstance(item, dict):
                 content = str(item.get('content', str(item)))[:100]
             else:

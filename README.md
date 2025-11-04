@@ -1,6 +1,25 @@
 # Felix Framework
 
 ![Python](https://img.shields.io/badge/Python-3.8%2B-blue)
+![License](https://img.shields.io/badge/License-MIT-green)
+![Status](https://img.shields.io/badge/Status-Production--Ready-blue)
+
+## 🔒 The ONLY Multi-Agent Framework for Air-Gapped Environments
+
+**Felix works where LangChain, CrewAI, and AutoGen can't:** completely isolated, classified networks with **zero external dependencies**.
+
+**Critical Difference:**
+- ❌ **LangChain** requires vector databases (Pinecone, Weaviate, Chroma) - needs cloud
+- ❌ **CrewAI** requires external vector DB infrastructure - needs internet
+- ❌ **Microsoft AutoGen** optimized for Azure - cloud-first
+- ❌ **AutoGPT** requires OpenAI API - needs internet
+- ✅ **Felix** uses 3-tier fallback (LM Studio → TF-IDF → SQLite FTS5) - **works completely offline**
+
+**Perfect for:** Defense contractors, government agencies, healthcare (HIPAA), finance (SOX), any organization requiring complete data isolation.
+
+**[See competitive analysis](case_studies/competitive_intelligence/competitive_analysis_FULL.md) | [Request POC](sales/poc_proposal_template.md)**
+
+---
 
 ## Overview
 
@@ -72,25 +91,80 @@ See [QUICKSTART.md](QUICKSTART.md) for quick start examples using the CLI, GUI, 
 
 ## Installation
 
-### Detailed Setup Steps
-1. Ensure Python 3.8+ is installed on your system.
-2. Clone the repository and navigate to the project directory.
-3. Create a virtual environment:
+### Option 1: Docker (Recommended for Production)
+
+**Fastest deployment - works in minutes:**
+
+```bash
+# Clone repository
+git clone <repository-url>
+cd felix
+
+# Start with Docker Compose
+docker-compose up -d
+
+# Access API at http://localhost:8000
+# View API docs at http://localhost:8000/docs
+```
+
+**Air-gapped networks:**
+- Build image offline: `docker build -t felix-framework .`
+- Transfer image to isolated network
+- Run without internet access: `docker run -p 8000:8000 felix-framework`
+
+### Option 2: pip Install (Coming Soon)
+
+```bash
+pip install felix-framework
+
+# Run CLI
+felix run "Your task here"
+
+# Start API server
+felix api --port 8000
+```
+
+### Option 3: From Source (Development)
+
+1. Clone the repository:
+   ```bash
+   git clone <repository-url>
+   cd felix
+   ```
+
+2. Create virtual environment:
    ```bash
    python3 -m venv .venv
-   source .venv/bin/activate
+   source .venv/bin/activate  # Linux/Mac
    ```
-4. Install required dependencies:
+
+3. Install dependencies:
    ```bash
+   pip install -e .  # Installs from setup.py
+   # OR manually:
    pip install openai httpx numpy scipy ddgs beautifulsoup4 lxml
    ```
-   Additional packages (sqlite3, asyncio) are typically included with Python.
-   - `ddgs`: DuckDuckGo search integration
-   - `beautifulsoup4` & `lxml`: Web page parsing for search results
-5. (Optional) Download and configure LM Studio server for local LLM integration.
-6. Databases auto-initialize on first run (felix_memory.db, felix_knowledge.db).
 
-For full operational details and troubleshooting, see [User Manual](USER_MANUAL.md).
+4. (Optional) Install additional features:
+   ```bash
+   pip install -e .[api]       # REST API support
+   pip install -e .[knowledge] # PDF reading, file watching
+   pip install -e .[all]       # Everything
+   ```
+
+5. (Optional) Set up local LLM (LM Studio recommended)
+
+6. Databases auto-initialize on first run
+
+### Deployment Options
+
+**Development:** Python virtual environment (Option 3)
+**Production:** Docker (Option 1)
+**CI/CD:** Docker + automated builds
+**Air-Gapped:** Docker image transferred offline
+**Quick Testing:** pip install (Option 2)
+
+For full operational details, see [User Manual](USER_MANUAL.md).
 
 ## Usage
 
