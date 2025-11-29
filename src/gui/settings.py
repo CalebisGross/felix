@@ -83,8 +83,8 @@ class SettingsFrame(ttk.Frame):
         current_row = self._create_section(current_row, "Agent Configuration")
         current_row = self._create_int_field(current_row, "max_agents", "Max Agents:", 25,
                                               "Maximum team size (1-133)")
-        current_row = self._create_int_field(current_row, "base_token_budget", "Base Token Budget:", 2500,
-                                              "Base tokens per agent")
+        current_row = self._create_int_field(current_row, "base_token_budget", "Base Token Budget:", 20000,
+                                              "Base tokens per agent (for 50K context window)")
         current_row += 1
 
         # Dynamic Spawning Section
@@ -95,8 +95,8 @@ class SettingsFrame(ttk.Frame):
                                                 "High volatility triggers stabilizing agents")
         current_row = self._create_float_field(current_row, "time_window_minutes", "Time Window (min):", 5.0,
                                                 "Window for trend analysis")
-        current_row = self._create_int_field(current_row, "token_budget_limit", "Token Budget Limit:", 10000,
-                                              "Total tokens across all agents")
+        current_row = self._create_int_field(current_row, "token_budget_limit", "Token Budget Limit:", 45000,
+                                              "Max tokens per context (for 50K window)")
         current_row += 1
 
         # Memory Settings Section
@@ -595,11 +595,11 @@ class SettingsFrame(ttk.Frame):
                 "helix_height": "8.0",
                 "helix_turns": "2.0",
                 "max_agents": "25",
-                "base_token_budget": "2500",
+                "base_token_budget": "20000",
                 "confidence_threshold": "0.8",
                 "volatility_threshold": "0.15",
                 "time_window_minutes": "5.0",
-                "token_budget_limit": "10000",
+                "token_budget_limit": "45000",
                 "memory_db_path": "felix_memory.db",
                 "knowledge_db_path": "felix_knowledge.db",
                 "compression_target_length": "100",

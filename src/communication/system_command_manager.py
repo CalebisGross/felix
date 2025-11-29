@@ -95,7 +95,8 @@ class SystemCommandManager:
         logger.info("✓ SystemCommandManager initialized")
 
     def request_system_action(self, agent_id: str, command: str,
-                             context: str = "", workflow_id: Optional[str] = None) -> str:
+                             context: str = "", workflow_id: Optional[str] = None,
+                             cwd: Optional["Path"] = None) -> str:
         """
         Agent requests system action (command execution).
 
@@ -104,6 +105,7 @@ class SystemCommandManager:
             command: Command to execute
             context: Context/reason for command
             workflow_id: Associated workflow ID
+            cwd: Working directory for command execution
 
         Returns:
             action_id for tracking the request
@@ -111,6 +113,8 @@ class SystemCommandManager:
         logger.info(f"System action requested by {agent_id}: {command}")
         if context:
             logger.info(f"  Context: {context}")
+        if cwd:
+            logger.info(f"  Working directory: {cwd}")
 
         # Generate action ID
         self._action_id_counter += 1
@@ -123,15 +127,16 @@ class SystemCommandManager:
         logger.info(f"  Action ID: {action_id}")
 
         if trust_level == TrustLevel.BLOCKED:
-            return self._handle_blocked_command(action_id, agent_id, command)
+            return self._handle_blocked_command(action_id, agent_id, command, cwd)
 
         elif trust_level == TrustLevel.SAFE:
-            return self._handle_safe_command(action_id, agent_id, command, context, workflow_id, trust_level)
+            return self._handle_safe_command(action_id, agent_id, command, context, workflow_id, trust_level, cwd)
 
         else:  # TrustLevel.REVIEW
-            return self._handle_review_command(action_id, agent_id, command, context, workflow_id, trust_level)
+            return self._handle_review_command(action_id, agent_id, command, context, workflow_id, trust_level, cwd)
 
-    def _handle_blocked_command(self, action_id: str, agent_id: str, command: str) -> str:
+    def _handle_blocked_command(self, action_id: str, agent_id: str, command: str,
+                               cwd: Optional["Path"] = None) -> str:
         """Handle BLOCKED commands - deny immediately."""
         logger.warning(f"✗ Command BLOCKED: {command}")
 
@@ -147,7 +152,7 @@ class SystemCommandManager:
             duration=0.0,
             success=False,
             error_category=None,
-            cwd=str(self.system_executor.default_cwd),
+            cwd=str(cwd if cwd else self.system_executor.default_cwd),
             venv_active=False
         )
         self._action_results[action_id] = result
@@ -156,7 +161,7 @@ class SystemCommandManager:
 
     def _handle_safe_command(self, action_id: str, agent_id: str, command: str,
                             context: str, workflow_id: Optional[str],
-                            trust_level: TrustLevel) -> str:
+                            trust_level: TrustLevel, cwd: Optional["Path"] = None) -> str:
         """Handle SAFE commands - execute immediately with streaming."""
         logger.info(f"✓ Executing SAFE command immediately (streaming)")
 
@@ -168,8 +173,18 @@ class SystemCommandManager:
             context=context,
             workflow_id=workflow_id,
             trust_level=trust_level,
-            approved_by="auto"
+            approved_by="auto",
+            cwd=cwd
         )
+
+        # CRITICAL FIX: Cache in workflow deduplication for context builder retrieval
+        # This ensures subsequent agents can retrieve command results via get_workflow_executed_commands()
+        if workflow_id:
+            command_hash = self.system_executor.compute_command_hash(command)
+            if workflow_id not in self._executed_commands:
+                self._executed_commands[workflow_id] = {}
+            self._executed_commands[workflow_id][command_hash] = result
+            logger.debug(f"  ✓ Cached SAFE command result for workflow {workflow_id}")
 
         # Log command output for visibility
         logger.info(f"📤 Command result broadcast:")
@@ -185,7 +200,7 @@ class SystemCommandManager:
 
     def _handle_review_command(self, action_id: str, agent_id: str, command: str,
                               context: str, workflow_id: Optional[str],
-                              trust_level: TrustLevel) -> str:
+                              trust_level: TrustLevel, cwd: Optional["Path"] = None) -> str:
         """Handle REVIEW commands - check deduplication, auto-approval, or request approval."""
         logger.info(f"⚠ Command requires APPROVAL")
 
@@ -212,7 +227,7 @@ class SystemCommandManager:
 
                 # Force manual approval request (skip deduplication and auto-approval)
                 return self._request_approval(action_id, agent_id, command, context,
-                                             workflow_id, trust_level)
+                                             workflow_id, trust_level, cwd)
 
         # 1. Check for command deduplication within workflow
         if workflow_id:
@@ -247,7 +262,8 @@ class SystemCommandManager:
                 context=context,
                 workflow_id=workflow_id,
                 trust_level=trust_level,
-                approved_by="auto_rule"
+                approved_by="auto_rule",
+                cwd=cwd
             )
 
             # Cache in workflow deduplication
@@ -278,7 +294,8 @@ class SystemCommandManager:
                 context=context,
                 workflow_id=workflow_id,
                 trust_level=trust_level,
-                approved_by="auto_approve"
+                approved_by="auto_approve",
+                cwd=cwd
             )
 
             # Cache in workflow deduplication
@@ -323,7 +340,8 @@ class SystemCommandManager:
                     context=context,
                     workflow_id=workflow_id,
                     trust_level=trust_level,
-                    approved_by="cli_user"
+                    approved_by="cli_user",
+                    cwd=cwd
                 )
 
                 # Cache result
@@ -412,11 +430,15 @@ class SystemCommandManager:
 
     def _execute_command_with_streaming(self, action_id: str, command: str, agent_id: str,
                                        context: str, workflow_id: Optional[str],
-                                       trust_level: TrustLevel, approved_by: str) -> CommandResult:
+                                       trust_level: TrustLevel, approved_by: str,
+                                       cwd: Optional["Path"] = None) -> CommandResult:
         """
         Execute command with streaming output - single consolidated implementation.
 
         This method replaces 3 duplicate patterns that existed for SAFE/auto-approved/user-approved commands.
+
+        Args:
+            cwd: Working directory for command execution
 
         Returns:
             CommandResult from execution
@@ -444,11 +466,13 @@ class SystemCommandManager:
         def output_callback(line: str, stream_type: str):
             self._broadcast_command_output(action_id, execution_id, line, stream_type)
 
-        # Execute with streaming
+        # Execute with streaming, passing working directory
+        from pathlib import Path
         result = self.system_executor.execute_command_streaming(
             command=command,
             context=context,
-            output_callback=output_callback
+            output_callback=output_callback,
+            cwd=cwd if cwd else None
         )
 
         # Update database with final result
@@ -873,6 +897,8 @@ class SystemCommandManager:
     def _broadcast_action_result(self, action_id: str, agent_id: str,
                                  command: str, result: CommandResult) -> None:
         """Broadcast action result back to requesting agent."""
+        # CRITICAL FIX: Include full stdout/stderr, not just preview
+        # Agents need complete output for file reading and other commands
         result_message = Message(
             sender_id="central_post",
             message_type=MessageType.SYSTEM_ACTION_RESULT,
@@ -882,8 +908,8 @@ class SystemCommandManager:
                 'command': command,
                 'success': result.success,
                 'exit_code': result.exit_code,
-                'stdout': result.stdout[:500],  # Preview
-                'stderr': result.stderr[:500],
+                'stdout': result.stdout,  # Full output (was [:500])
+                'stderr': result.stderr,  # Full error output (was [:500])
                 'duration': result.duration,
                 'error_category': result.error_category.value if result.error_category else None
             },

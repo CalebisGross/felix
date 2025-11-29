@@ -200,22 +200,37 @@ class LLMAgent(Agent):
             self.temperature_range = temperature_range
         
         if max_tokens is None:
+            # Generous defaults for 50K context window
             if agent_type == "research":
-                self.max_tokens = 1000  # Expanded for comprehensive research findings
+                self.max_tokens = 16000  # Large for file reading and exploration
             elif agent_type == "analysis":
-                self.max_tokens = 1000  # Expanded for detailed structured analysis
+                self.max_tokens = 16000  # Large for detailed analysis
             elif agent_type == "synthesis":
                 self.max_tokens = 20000  # Very large for comprehensive final output
             elif agent_type == "critic":
-                self.max_tokens = 1000  # Expanded for thorough critique
+                self.max_tokens = 16000  # Large for thorough critique
             else:
-                self.max_tokens = 1000  # Default fallback
+                self.max_tokens = 16000  # Default fallback
         else:
             self.max_tokens = max_tokens
             
         self.token_budget_manager = token_budget_manager
         self.prompt_optimizer = prompt_optimizer
-        
+
+        # Initialize PromptPipeline for unified prompt construction
+        from src.prompts.prompt_pipeline import PromptPipeline
+        self.prompt_pipeline = PromptPipeline(
+            prompt_manager=prompt_manager,
+            enable_verbose_logging=False  # Can be enabled for debugging
+        )
+        logger.debug(f"Agent {agent_id} initialized with PromptPipeline")
+
+        # Log prompt optimization status
+        if self.prompt_optimizer:
+            logger.debug(f"Agent {agent_id} initialized with PromptOptimizer - metrics recording enabled")
+        else:
+            logger.debug(f"Agent {agent_id} initialized without PromptOptimizer - metrics recording disabled")
+
         # Initialize token budget if manager provided
         if self.token_budget_manager:
             self.token_budget_manager.initialize_agent_budget(agent_id, agent_type, self.max_tokens)
@@ -246,6 +261,7 @@ class LLMAgent(Agent):
         self.contribution_history: List[Dict[str, Any]] = []  # History of contribution evaluations
         self.synthesis_integration_rate = 0.0  # Running average of how often contributions are used
         self._total_feedback_received = 0  # Count of feedback messages received
+        self._confidence_calibration_offset = 0.0  # Adaptive offset for confidence calibration
 
     def get_adaptive_temperature(self, current_time: float) -> float:
         """
@@ -335,7 +351,12 @@ class LLMAgent(Agent):
             collaborative_bonus = self._calculate_collaborative_bonus(task, current_time) * 0.15
 
         total_confidence = base_confidence + content_bonus + stage_bonus + consistency_bonus + collaborative_bonus
-        
+
+        # Apply calibration offset from feedback learning (Phase 4 - Self-Improvement)
+        # This makes agents self-correct: over-confident agents get negative offset,
+        # under-confident agents get positive offset
+        calibrated_confidence = total_confidence + self._confidence_calibration_offset
+
         # Store debug info for potential display
         self._last_confidence_breakdown = {
             "base_confidence": base_confidence,
@@ -343,12 +364,13 @@ class LLMAgent(Agent):
             "stage_bonus": stage_bonus,
             "consistency_bonus": consistency_bonus,
             "collaborative_bonus": collaborative_bonus,
-            "total_before_cap": total_confidence,
+            "calibration_offset": self._confidence_calibration_offset,
+            "total_before_cap": calibrated_confidence,
             "max_confidence": max_confidence,
-            "final_confidence": min(max(total_confidence, 0.0), max_confidence)
+            "final_confidence": min(max(calibrated_confidence, 0.0), max_confidence)
         }
-        
-        return min(max(total_confidence, 0.0), max_confidence)
+
+        return min(max(calibrated_confidence, 0.0), max_confidence)
     
     def _analyze_content_quality(self, content: str) -> float:
         """
@@ -613,6 +635,64 @@ class LLMAgent(Agent):
             if self._progress >= checkpoint:
                 self._last_checkpoint_processed = i
 
+    @staticmethod
+    def format_knowledge_summary(task: LLMTask, include_relevance_guidance: bool = True) -> str:
+        """
+        Format knowledge entries for inclusion in agent prompts.
+
+        Shared utility to eliminate duplication between LLMAgent and specialized agents.
+
+        Args:
+            task: LLMTask containing knowledge_entries
+            include_relevance_guidance: Include contextual relevance instructions (default: True)
+
+        Returns:
+            Formatted knowledge summary string (empty if no knowledge)
+        """
+        knowledge_summary = ""
+        if not hasattr(task, 'knowledge_entries') or not task.knowledge_entries or len(task.knowledge_entries) == 0:
+            return knowledge_summary
+
+        knowledge_summary = "\n\nRelevant Knowledge from Memory:\n"
+        for entry in task.knowledge_entries:
+            # Extract key information from knowledge entry
+            if hasattr(entry, 'content'):
+                # Extract 'result' key from dictionary if present (web search results)
+                if isinstance(entry.content, dict):
+                    content_str = entry.content.get('result', str(entry.content))
+                else:
+                    content_str = str(entry.content)
+            else:
+                content_str = str(entry)
+
+            confidence = entry.confidence_level.value if hasattr(entry, 'confidence_level') else "unknown"
+            source = entry.source_agent if hasattr(entry, 'source_agent') else "system"
+            domain = entry.domain if hasattr(entry, 'domain') else "unknown"
+
+            # Use longer truncation for web_search domain (detailed factual data)
+            max_chars = 400 if domain == "web_search" else 200
+            if len(content_str) > max_chars:
+                content_str = content_str[:max_chars-3] + "..."
+
+            # Add emoji prefix for web search entries
+            prefix = "🌐" if domain == "web_search" else "📝"
+            knowledge_summary += f"{prefix} [{source}, conf: {confidence}]: {content_str}\n"
+
+        # Add important instructions for using available knowledge
+        knowledge_summary += "\nIMPORTANT: Use the knowledge provided above to answer the task if possible. "
+        knowledge_summary += "Only request additional web search if the available knowledge is insufficient or outdated.\n"
+
+        # Add contextual relevance guidance for research agents
+        if include_relevance_guidance:
+            knowledge_summary += "\n🎯 CRITICAL - CONTEXTUAL RELEVANCE:\n"
+            knowledge_summary += "- Distinguish between FACTUAL ACCURACY and CONTEXTUAL RELEVANCE\n"
+            knowledge_summary += "- A fact can be TRUE but IRRELEVANT to this specific task\n"
+            knowledge_summary += "- Focus ONLY on information that helps solve THIS SPECIFIC TASK\n"
+            knowledge_summary += "- Do NOT include accurate facts that don't relate to the task objectives\n"
+            knowledge_summary += "- Example: If asked about system improvements, time/location facts are irrelevant\n\n"
+
+        return knowledge_summary
+
     def _build_strict_rules(self, task: LLMTask) -> List[str]:
         """
         Build strict rules based on available context to prevent agent comprehension failures.
@@ -680,166 +760,39 @@ This acknowledgment ensures you've reviewed available resources before respondin
     def create_position_aware_prompt(self, task: LLMTask, current_time: float) -> tuple[str, int]:
         """
         Create system prompt that adapts to agent's helix position with token budget.
-        Enhanced with prompt optimization that learns from performance metrics.
-        
+
+        Now delegates to PromptPipeline for unified, traceable prompt construction.
+
         Args:
             task: Task to process
             current_time: Current simulation time
-            
+
         Returns:
             Tuple of (position-aware system prompt, token budget for this stage)
         """
+        # Get position information
         position_info = self.get_position_info(current_time)
         depth_ratio = position_info.get("depth_ratio", 0.0)
-        
-        # Determine prompt context based on agent type and position
-        prompt_context = self._get_prompt_context(depth_ratio)
-        
-        # Get token allocation if budget manager is available
-        token_allocation = None
+
+        # Calculate token budget for this stage
         stage_token_budget = self.max_tokens  # Default fallback
-        
         if self.token_budget_manager:
             token_allocation = self.token_budget_manager.calculate_stage_allocation(
                 self.agent_id, depth_ratio, self.processing_stage + 1
             )
             stage_token_budget = token_allocation.stage_budget
-        
-        # Add shared context from other agents
-        context_summary = ""
-        if self.shared_context:
-            context_summary = "\n\nShared Context from Other Agents:\n"
-            for key, value in self.shared_context.items():
-                context_summary += f"- {key}: {value}\n"
 
-        # Add knowledge entries if available
-        knowledge_summary = ""
-        if task.knowledge_entries and len(task.knowledge_entries) > 0:
-            knowledge_summary = "\n\nRelevant Knowledge from Memory:\n"
-            for entry in task.knowledge_entries:
-                # Extract key information from knowledge entry
-                if hasattr(entry, 'content'):
-                    # Extract 'result' key from dictionary if present (web search results)
-                    if isinstance(entry.content, dict):
-                        content_str = entry.content.get('result', str(entry.content))
-                    else:
-                        content_str = str(entry.content)
-                else:
-                    content_str = str(entry)
+        # Delegate to PromptPipeline for unified prompt construction
+        result = self.prompt_pipeline.build_agent_prompt(
+            task=task,
+            agent=self,
+            position_info=position_info,
+            current_time=current_time
+        )
 
-                confidence = entry.confidence_level.value if hasattr(entry, 'confidence_level') else "unknown"
-                source = entry.source_agent if hasattr(entry, 'source_agent') else "system"
-                domain = entry.domain if hasattr(entry, 'domain') else "unknown"
-
-                # Use longer truncation for web_search domain (detailed factual data)
-                max_chars = 400 if domain == "web_search" else 200
-                if len(content_str) > max_chars:
-                    content_str = content_str[:max_chars-3] + "..."
-
-                # Add emoji prefix for web search entries
-                prefix = "🌐" if domain == "web_search" else "📝"
-                knowledge_summary += f"{prefix} [{source}, conf: {confidence}]: {content_str}\n"
-
-            # Add important instructions for using available knowledge
-            knowledge_summary += "\nIMPORTANT: Use the knowledge provided above to answer the task if possible. "
-            knowledge_summary += "Only request additional web search if the available knowledge is insufficient or outdated.\n"
-
-        # NEW: Add existing concept definitions for terminology consistency
-        concepts_summary = ""
-        if hasattr(task, 'existing_concepts') and task.existing_concepts:
-            concepts_summary = "\n\n=== Existing Concept Definitions ===\n"
-            concepts_summary += "The following concepts have already been defined by other agents in this workflow.\n"
-            concepts_summary += "Please use these definitions consistently instead of redefining them:\n\n"
-            concepts_summary += task.existing_concepts
-            concepts_summary += "\n\nIMPORTANT: Reference these existing concepts when relevant. "
-            concepts_summary += "Only define new concepts if they are not already covered above.\n"
-
-        # Generate prompt ID for optimization tracking
-        prompt_id = f"{self.agent_type}_{prompt_context.value}_stage_{self.processing_stage}"
-        
-        # Check if we have an optimized prompt available
-        optimized_prompt = None
-        if self.prompt_optimizer:
-            recommendations = self.prompt_optimizer.get_optimization_recommendations(prompt_context)
-            if recommendations.get("best_prompts"):
-                best_prompt = recommendations["best_prompts"][0]
-                if best_prompt[1] > 0.7:  # High performance threshold
-                    optimized_prompt = best_prompt[0]
-                    logger.debug(f"Using optimized prompt for {prompt_id} (score: {best_prompt[1]:.3f})")
-        
-        # Create base system prompt
-        if optimized_prompt:
-            base_prompt = optimized_prompt
-        else:
-            # CRITICAL: Include conditional tool instructions if available
-            tool_instructions = ""
-            if hasattr(task, 'tool_instructions') and task.tool_instructions:
-                tool_instructions = f"\n\n{task.tool_instructions}"
-                logger.debug(f"Including tool instructions in prompt ({len(task.tool_instructions)} chars)")
-
-            base_prompt = self.llm_client.create_agent_system_prompt(
-                agent_type=self.agent_type,
-                position_info=position_info,
-                task_context=f"{task.context}{context_summary}{knowledge_summary}{concepts_summary}{tool_instructions}"
-            )
-
-        # NEW: Inject Context Awareness Protocol (Hybrid Imperative Prompting)
-        # This forces agents to comprehend and use available context instead of ignoring it
-        protocol_section = ""
-
-        # Step 1: Add context inventory if available
-        if hasattr(task, 'context_inventory') and task.context_inventory:
-            protocol_section += "\n\n" + task.context_inventory + "\n"
-
-        # Step 2: Add strict rules based on available resources
-        strict_rules = self._build_strict_rules(task)
-        if strict_rules:
-            protocol_section += "\n🚨 STRICT RULES (FOLLOW THESE CAREFULLY):\n"
-            for i, rule in enumerate(strict_rules, 1):
-                protocol_section += f"  {i}. {rule}\n"
-
-        # Step 3: Add mandatory response format
-        protocol_section += self._build_response_format()
-
-        # Inject protocol into base prompt
-        if protocol_section:
-            base_prompt = base_prompt + protocol_section
-            logger.debug(f"Injected context awareness protocol ({len(protocol_section)} chars)")
-
-        # Calculate temperature for metadata
-        temperature = self.get_adaptive_temperature(current_time)
-
-        # Build metadata section
-        metadata_parts = ["\n\n=== Processing Parameters ==="]
-
-        # Add temperature guidance
-        if temperature < 0.3:
-            temp_guidance = "PRECISE mode (low creativity): Focus on accuracy and specific details"
-        elif temperature < 0.5:
-            temp_guidance = "BALANCED mode: Mix precision with moderate exploration"
-        elif temperature < 0.7:
-            temp_guidance = "EXPLORATORY mode: Consider diverse perspectives and connections"
-        else:
-            temp_guidance = "CREATIVE mode (high creativity): Generate novel insights and broad exploration"
-
-        metadata_parts.append(f"Temperature: {temperature:.2f} - {temp_guidance}")
-
-        # Add token budget information
-        if token_allocation:
-            metadata_parts.append(f"Token Budget: {stage_token_budget} tokens (remaining: {token_allocation.remaining_budget})")
-            metadata_parts.append(f"Compression Target: {token_allocation.compression_ratio:.0%}")
-            metadata_parts.append(f"Output Guidance: {token_allocation.style_guidance}")
-        else:
-            metadata_parts.append(f"Token Budget: {stage_token_budget} tokens")
-
-        # Add position information
-        metadata_parts.append(f"Helix Position: {depth_ratio:.1%} depth (stage {self.processing_stage + 1})")
-
-        # Combine everything
-        metadata_section = "\n".join(metadata_parts)
-        enhanced_prompt = base_prompt + metadata_section
-
-        return enhanced_prompt, stage_token_budget
+        # Return system prompt and token budget
+        # Note: result also contains user_prompt if collaborative context exists
+        return result.system_prompt, stage_token_budget
     
     def _get_prompt_context(self, depth_ratio: float) -> PromptContext:
         """
@@ -903,7 +856,9 @@ This acknowledgment ensures you've reviewed available resources before respondin
         optimization_result = self.prompt_optimizer.record_prompt_execution(
             prompt_id, prompt_text, metrics
         )
-        
+
+        logger.debug(f"Recorded prompt metrics for {self.agent_id}: {prompt_id} (confidence: {metrics.confidence:.2f})")
+
         if optimization_result.get("optimization_triggered"):
             logger.info(f"Prompt optimization triggered for {prompt_id}")
 
@@ -935,9 +890,11 @@ This acknowledgment ensures you've reviewed available resources before respondin
             prev_response = entry.get('response', '')
             prev_confidence = entry.get('confidence', 0.0)
 
-            # Truncate very long responses but allow more detail with higher token budgets
-            if len(prev_response) > 1000:
-                prev_response = prev_response[:1000] + "..."
+            # Truncate very long responses - allow generous limits with 40K+ context
+            # System actions (file reads) need full content; regular agent responses can be shorter
+            max_response_len = 20000 if prev_agent_type == 'system_action' else 5000
+            if len(prev_response) > max_response_len:
+                prev_response = prev_response[:max_response_len] + "..."
 
             context_parts.append(
                 f"\n{i}. {prev_agent_type.upper()} Agent (confidence: {prev_confidence:.2f}):\n{prev_response}"
@@ -1126,6 +1083,19 @@ This acknowledgment ensures you've reviewed available resources before respondin
             LLM processing result
         """
         start_time = time.perf_counter()
+
+        # DEFENSIVE LOGGING: Track task attributes at entry point
+        logger.info(f"🔍 PROCESS_TASK_WITH_LLM called for agent {self.agent_id}")
+        logger.info(f"   Task ID: {task.task_id if hasattr(task, 'task_id') else 'unknown'}")
+        logger.info(f"   Has tool_instructions: {hasattr(task, 'tool_instructions')}")
+        if hasattr(task, 'tool_instructions'):
+            logger.info(f"   Tool instructions length: {len(task.tool_instructions) if task.tool_instructions else 0} chars")
+        logger.info(f"   Has context_inventory: {hasattr(task, 'context_inventory')}")
+        if hasattr(task, 'context_inventory'):
+            logger.info(f"   Context inventory length: {len(task.context_inventory) if task.context_inventory else 0} chars")
+        logger.info(f"   Has context_history: {hasattr(task, 'context_history')}")
+        if hasattr(task, 'context_history') and task.context_history:
+            logger.info(f"   Context history entries: {len(task.context_history)}")
 
         # Get position-aware prompts, token budget, and temperature
         system_prompt, stage_token_budget = self.create_position_aware_prompt(task, current_time)
@@ -1504,21 +1474,34 @@ This acknowledgment ensures you've reviewed available resources before respondin
         """
         Adapt agent behavior based on synthesis feedback.
 
+        This method implements actual confidence calibration by updating
+        the _confidence_calibration_offset using exponential moving average.
+
         Args:
             usefulness_score: How useful the contribution was (0.0-1.0)
             confidence_calibration: Synthesis confidence - agent confidence
             calibration_quality: 'good' or 'needs_adjustment'
         """
-        # Adjust future confidence calculations if calibration is poor
+        # Update confidence calibration offset using exponential moving average
+        # This makes agents self-correct: over-confident agents get negative offset,
+        # under-confident agents get positive offset
+        alpha = 0.3  # Learning rate - higher = faster adaptation, more volatile
+        old_offset = self._confidence_calibration_offset
+        self._confidence_calibration_offset = (
+            (1 - alpha) * self._confidence_calibration_offset +
+            alpha * confidence_calibration
+        )
+
+        # Log the calibration adjustment
         if calibration_quality == 'needs_adjustment':
             if confidence_calibration > 0:
-                # Agent was under-confident, boost future confidence slightly
+                # Agent was under-confident, boost future confidence
                 logger.debug(f"   {self.agent_id}: Under-confident by {abs(confidence_calibration):.2f}, "
-                           "will be slightly bolder")
+                           f"offset adjusted: {old_offset:.3f} → {self._confidence_calibration_offset:.3f}")
             else:
                 # Agent was over-confident, reduce future confidence
                 logger.debug(f"   {self.agent_id}: Over-confident by {abs(confidence_calibration):.2f}, "
-                           "will be more cautious")
+                           f"offset adjusted: {old_offset:.3f} → {self._confidence_calibration_offset:.3f}")
 
         # If consistently low usefulness, agent might need to adjust approach
         if len(self.contribution_history) >= 3:

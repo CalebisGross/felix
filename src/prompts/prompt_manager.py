@@ -210,24 +210,37 @@ class PromptManager:
 
     def _get_from_yaml(self, prompt_key: str) -> Optional[PromptTemplate]:
         """Get default prompt from YAML."""
+        # DEBUG: Trace YAML lookup
+        logger.debug(f"🐛 DEBUG _get_from_yaml: Looking up key '{prompt_key}'")
+        logger.debug(f"🐛 DEBUG _get_from_yaml: _yaml_data is {'loaded' if self._yaml_data else 'EMPTY/NONE'}")
+
         if not self._yaml_data:
+            logger.debug(f"🐛 DEBUG _get_from_yaml: YAML data is empty, returning None")
             return None
 
         # Parse prompt_key like "research_exploration_normal"
         parts = prompt_key.split('_')
         if len(parts) < 2:
+            logger.debug(f"🐛 DEBUG _get_from_yaml: Key has < 2 parts, returning None")
             return None
 
         agent_type = parts[0]  # "research", "analysis", "critic", etc.
         sub_key = '_'.join(parts[1:])  # "exploration_normal", etc.
+        logger.debug(f"🐛 DEBUG _get_from_yaml: Parsed as agent_type='{agent_type}', sub_key='{sub_key}'")
 
         # Navigate YAML structure
         if agent_type not in self._yaml_data:
+            available_types = list(self._yaml_data.keys()) if self._yaml_data else []
+            logger.debug(f"🐛 DEBUG _get_from_yaml: agent_type '{agent_type}' NOT in YAML. Available: {available_types}")
             return None
 
         agent_prompts = self._yaml_data[agent_type]
         if sub_key not in agent_prompts:
+            available_subkeys = list(agent_prompts.keys()) if isinstance(agent_prompts, dict) else []
+            logger.debug(f"🐛 DEBUG _get_from_yaml: sub_key '{sub_key}' NOT in {agent_type}. Available: {available_subkeys}")
             return None
+
+        logger.debug(f"🐛 DEBUG _get_from_yaml: Found {agent_type}.{sub_key} in YAML!")
 
         prompt_data = agent_prompts[sub_key]
         if isinstance(prompt_data, dict) and 'template' in prompt_data:

@@ -35,10 +35,42 @@ class RouterAdapter:
         """
         self.router = router
         self.verbose_logging = False
+        self._connection_verified = False
+
+        # Background processing control (for priority between background tasks and user interactions)
+        import threading
+        self._background_processing = threading.Event()
+        self._background_processing.set()  # Initially not paused
+        self._sync_semaphore = threading.Semaphore(2)  # Max 2 concurrent sync requests
+
+    def signal_user_activity(self, active: bool = True) -> None:
+        """
+        Signal that user is actively using the system.
+
+        When user activity is signaled, background processing (like Knowledge Brain
+        batch processing) will pause to give priority to user-initiated requests.
+
+        Args:
+            active: True to pause background processing, False to resume
+        """
+        if active:
+            self._background_processing.clear()  # Pause background tasks
+            logger.debug("User activity signaled - background processing paused")
+        else:
+            self._background_processing.set()  # Resume background tasks
+            logger.debug("User activity ended - background processing resumed")
+
+        # Also signal to underlying LMStudioClient if available
+        try:
+            provider = self.router.get_primary_provider()
+            if hasattr(provider, 'client') and hasattr(provider.client, 'signal_user_activity'):
+                provider.client.signal_user_activity(active)
+        except Exception:
+            pass  # Silently ignore if not available
 
     def complete(self, agent_id: str, system_prompt: str, user_prompt: str,
                 temperature: float = 0.7, max_tokens: Optional[int] = None,
-                model: str = "local-model") -> LMStudioResponse:
+                model: str = "local-model", is_background: bool = False) -> LMStudioResponse:
         """
         Complete a prompt (compatible with LMStudioClient interface).
 
@@ -49,39 +81,48 @@ class RouterAdapter:
             temperature: Sampling temperature
             max_tokens: Maximum tokens to generate
             model: Model identifier
+            is_background: If True, this is a background task that should yield
+                          to user-initiated requests (e.g., Knowledge Brain batch processing)
 
         Returns:
             LMStudioResponse (compatible format)
         """
-        # Create request in new format
-        request = LLMRequest(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            stream=False,
-            agent_id=agent_id,
-            model=model
-        )
+        # Background tasks wait for user activity to finish before proceeding
+        if is_background:
+            # Wait up to 5 seconds for user activity to stop, then proceed anyway
+            self._background_processing.wait(timeout=5.0)
 
-        try:
-            # Route through router
-            response = self.router.complete(request)
-
-            # Convert to LMStudioResponse format for compatibility
-            return LMStudioResponse(
-                content=response.content,
-                tokens_used=response.tokens_used,
-                response_time=response.response_time,
-                model=response.model,
+        # Acquire semaphore to limit concurrent sync requests
+        with self._sync_semaphore:
+            # Create request in new format
+            request = LLMRequest(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
                 temperature=temperature,
+                max_tokens=max_tokens,
+                stream=False,
                 agent_id=agent_id,
-                timestamp=0.0  # Not tracked in new format
+                model=model
             )
 
-        except ProviderError as e:
-            logger.error(f"Router completion failed for {agent_id}: {e}")
-            raise RuntimeError(f"LLM completion failed: {e}")
+            try:
+                # Route through router
+                response = self.router.complete(request)
+
+                # Convert to LMStudioResponse format for compatibility
+                return LMStudioResponse(
+                    content=response.content,
+                    tokens_used=response.tokens_used,
+                    response_time=response.response_time,
+                    model=response.model,
+                    temperature=temperature,
+                    agent_id=agent_id,
+                    timestamp=0.0  # Not tracked in new format
+                )
+
+            except ProviderError as e:
+                logger.error(f"Router completion failed for {agent_id}: {e}")
+                raise RuntimeError(f"LLM completion failed: {e}")
 
     def complete_streaming(self, agent_id: str, system_prompt: str, user_prompt: str,
                           temperature: float = 0.7, max_tokens: Optional[int] = None,
@@ -189,10 +230,34 @@ class RouterAdapter:
         """Test connection to LLM provider(s)."""
         try:
             # Test primary provider
-            return self.router.get_primary_provider().test_connection()
+            result = self.router.get_primary_provider().test_connection()
+            self._connection_verified = result
+            return result
         except Exception as e:
             logger.error(f"Connection test failed: {e}")
+            self._connection_verified = False
             return False
+
+    def ensure_connection(self) -> None:
+        """Ensure connection to LLM provider or raise exception."""
+        if not self._connection_verified and not self.test_connection():
+            raise RuntimeError("Cannot connect to LLM provider. Check configuration.")
+
+    def generate_embedding(self, text: str, model: str = "local-model"):
+        """
+        Generate embedding - delegates to LM Studio provider if available.
+
+        Note: Embeddings are only supported with LM Studio provider.
+        Returns None if not using LM Studio.
+        """
+        try:
+            provider = self.router.get_primary_provider()
+            # Check if this is an LM Studio provider with embedding support
+            if hasattr(provider, 'client') and hasattr(provider.client, 'generate_embedding'):
+                return provider.client.generate_embedding(text, model)
+        except Exception as e:
+            logger.debug(f"Embedding generation not available: {e}")
+        return None
 
     def get_statistics(self) -> dict:
         """Get router statistics."""

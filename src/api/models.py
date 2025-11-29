@@ -33,7 +33,7 @@ class SystemConfig(BaseModel):
     helix_height: float = 8.0
     helix_turns: int = 2
     max_agents: int = 10
-    base_token_budget: int = 2500
+    base_token_budget: int = 20000  # Generous budget for 50K context window
     enable_knowledge_brain: bool = False
     verbose_llm_logging: bool = False
 

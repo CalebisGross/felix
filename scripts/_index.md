@@ -7,6 +7,23 @@ Utility scripts for database migration, maintenance, setup automation, and devel
 
 ### [migrate_databases.py](migrate_databases.py)
 Database migration and schema evolution script.
+
+### [migrate_tool_instructions.py](migrate_tool_instructions.py)
+Migration script to convert static tool instructions to knowledge store entries.
+- **Purpose**: Extracts tool-specific instructions from the static `AGENT_TOOLS_HEADER` and stores them as retrievable knowledge entries
+- **Pattern**: Enables "subconscious memory" where agents only receive instructions for tools they need
+- **Tool Categories**: `web_search`, `file_operations`, `system_commands`
+- **Usage**:
+  ```bash
+  # Run once to migrate tool instructions
+  python scripts/migrate_tool_instructions.py
+  ```
+- **Integration**: Works with `SynthesisEngine.classify_tool_requirements()` and conditional tool memory system
+- **Referenced in**: CLAUDE.md as required migration for Conditional Tool Memory feature
+
+---
+
+### [migrate_databases.py](migrate_databases.py) (continued)
 - **Purpose**: Safely migrate Felix databases to new schema versions
 - **What it does**:
   - Backs up existing databases before migration

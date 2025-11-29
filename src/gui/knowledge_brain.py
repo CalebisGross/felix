@@ -873,6 +873,10 @@ class KnowledgeBrainFrame(ttk.Frame):
         progress_text = ""
 
         try:
+            # Check if knowledge_store is available
+            if self.knowledge_store is None:
+                return
+
             import sqlite3
 
             conn = sqlite3.connect(self.knowledge_store.storage_path)
@@ -1466,6 +1470,10 @@ class KnowledgeBrainFrame(ttk.Frame):
     def _refresh_activity(self):
         """Refresh activity log with daemon logs and apply filtering."""
         try:
+            # Check if knowledge_store is available
+            if self.knowledge_store is None:
+                return
+
             import sqlite3
 
             # Get filter selection
@@ -1479,17 +1487,17 @@ class KnowledgeBrainFrame(ttk.Frame):
 
             # Get recently completed documents
             cursor = conn.execute("""
-                SELECT file_path, processed_at, ingestion_status
+                SELECT file_path, ingestion_completed, ingestion_status
                 FROM document_sources
-                WHERE processed_at IS NOT NULL
-                ORDER BY processed_at DESC
+                WHERE ingestion_completed IS NOT NULL
+                ORDER BY ingestion_completed DESC
                 LIMIT 20
             """)
 
             for row in cursor.fetchall():
-                file_path, processed_at, status = row
+                file_path, ingestion_completed, status = row
                 filename = file_path.split('/')[-1] if '/' in file_path else file_path
-                timestamp = datetime.fromtimestamp(processed_at).strftime('%H:%M:%S')
+                timestamp = datetime.fromtimestamp(ingestion_completed).strftime('%H:%M:%S')
 
                 if status == 'completed':
                     level = "INFO"

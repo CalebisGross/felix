@@ -61,6 +61,28 @@ Agent prompt templates and system messages.
 
 ### [trust_rules.yaml](trust_rules.yaml)
 Trust levels and approval rules for system command execution.
+
+### [tool_requirements_patterns.yaml](tool_requirements_patterns.yaml)
+Pattern definitions for classifying which tools tasks require.
+- **Purpose**: Used by `SynthesisEngine.classify_tool_requirements()` for conditional tool memory
+- **Categories**: `file_operations`, `web_search`, `system_commands`
+- **Pattern syntax**: Case-insensitive Python regex
+- **File operations patterns**: File reading, writing, discovery, path detection
+- **Web search patterns**: Current/real-time information, explicit search requests
+- **System command patterns**: Package management, process control, system operations
+- **Integration**: Determines which tool instructions agents receive (reduces token usage by 40-60%)
+
+### [task_complexity_patterns.yaml](task_complexity_patterns.yaml)
+Pattern definitions for classifying task complexity levels.
+- **Purpose**: Used by `SynthesisEngine.classify_task_complexity()` for prompt optimization
+- **Complexity levels**: `simple_factual`, `medium`, `complex` (default)
+- **Pattern syntax**: Case-insensitive Python regex, checked in priority order
+- **Simple factual**: Time/date queries, file content display, greetings
+- **Medium**: Explanations, comparisons, how-to questions, file analysis
+- **Complex**: Default for unmatched patterns (research, multi-step tasks)
+- **Integration**: Controls verbosity constraints, stage skipping, and token allocation in `PromptPipeline`
+
+### [trust_rules.yaml](trust_rules.yaml) (continued)
 - **Trust levels**: Safe, monitored, restricted, dangerous
 - **Command patterns**: Regex patterns for command classification
 - **Approval requirements**: Auto-execute, user approval, admin approval

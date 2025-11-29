@@ -24,6 +24,7 @@ from src.memory.context_compression import ContextCompressor, CompressionConfig,
 from src.agents import ResearchAgent, AnalysisAgent, CriticAgent, PromptOptimizer
 from src.agents.system_agent import SystemAgent
 from src.agents.agent import AgentState
+from src.prompts.prompt_manager import PromptManager
 
 # Knowledge Brain imports
 try:
@@ -62,7 +63,7 @@ class FelixConfig:
 
     # System limits
     max_agents: int = 25  # Increased from 15 to allow sufficient agents for collaboration
-    base_token_budget: int = 2500
+    base_token_budget: int = 20000  # Generous budget for 50K context window
 
     # Memory
     memory_db_path: str = "felix_memory.db"
@@ -103,6 +104,10 @@ class FelixConfig:
     workflow_max_steps_complex: int = 20  # Max steps for complex tasks (confidence < 0.50)
     workflow_simple_threshold: float = 0.75  # Confidence threshold for simple tasks
     workflow_medium_threshold: float = 0.50  # Confidence threshold for medium tasks
+
+    # Agent reasoning configuration (multi-step intelligent discovery)
+    agent_reasoning_max_iterations: int = 5  # Max reasoning iterations per agent
+    agent_reasoning_confidence_threshold: float = 0.85  # Stop reasoning when confidence >= this
 
     # Learning system configuration
     enable_learning: bool = True  # Enable adaptive learning systems
@@ -396,6 +401,10 @@ class FelixSystem:
             elif self.config.enable_knowledge_brain and not KNOWLEDGE_BRAIN_AVAILABLE:
                 logger.warning("Knowledge Brain enabled but dependencies not available")
 
+            # Initialize prompt manager
+            self.prompt_manager = PromptManager()
+            logger.info("Prompt manager initialized")
+
             # Initialize prompt optimizer
             self.prompt_optimizer = PromptOptimizer()
             logger.info("Prompt optimizer initialized")
@@ -413,7 +422,8 @@ class FelixSystem:
                 web_search_cooldown=self.config.web_search_cooldown,
                 knowledge_store=self.knowledge_store,  # CRITICAL: Share the same knowledge_store instance!
                 config=self.config,  # Pass config for auto-approval and other settings
-                gui_mode=True  # Enable GUI mode to use approval dialogs instead of CLI prompts
+                gui_mode=True,  # Enable GUI mode to use approval dialogs instead of CLI prompts
+                prompt_manager=self.prompt_manager  # Pass prompt manager for synthesis prompts
             )
             logger.info("Central post initialized with synthesis capability and shared knowledge store (GUI mode enabled)")
 
@@ -431,9 +441,11 @@ class FelixSystem:
                 max_agents=self.config.max_agents,
                 token_budget_limit=self.config.base_token_budget * self.config.max_agents,
                 web_search_client=self.web_search_client,
-                max_web_queries=self.config.web_search_max_queries
+                max_web_queries=self.config.web_search_max_queries,
+                prompt_manager=self.prompt_manager,
+                prompt_optimizer=self.prompt_optimizer
             )
-            logger.info("Agent factory initialized")
+            logger.info("Agent factory initialized with prompt manager and optimizer")
 
             self.running = True
             logger.info("Felix system started successfully")
@@ -611,6 +623,30 @@ class FelixSystem:
                 description=task_description,
                 context="User-initiated task from GUI"
             )
+
+            # Classify task complexity for prompt selection
+            if self.central_post and self.central_post.synthesis_engine:
+                try:
+                    task_complexity = self.central_post.synthesis_engine.classify_task_complexity(task_description)
+                    # Defensive check: handle both LLMTask objects and dict representations
+                    if hasattr(task, 'metadata'):
+                        task.metadata['complexity'] = task_complexity
+                    elif isinstance(task, dict):
+                        if 'metadata' not in task:
+                            task['metadata'] = {}
+                        task['metadata']['complexity'] = task_complexity
+                    logger.debug(f"Task complexity: {task_complexity}")
+                except Exception as e:
+                    logger.warning(f"Failed to classify task complexity: {e}")
+
+            # TODO: GUI code path should use enriched context with tool instructions
+            # Currently this bypasses CollaborativeContextBuilder and tool instruction injection
+            # This means GUI-spawned agents won't have access to file operations, web search, etc.
+            # For proper tool support, this should:
+            # 1. Classify tool requirements using central_post.synthesis_engine.classify_tool_requirements()
+            # 2. Build enriched context (requires context_builder instance)
+            # 3. Apply tool_instructions and context_inventory to task
+            # See felix_workflow.py lines 473-487 for reference implementation
 
             # Spawn agent if not already spawned
             if agent.state == AgentState.WAITING:

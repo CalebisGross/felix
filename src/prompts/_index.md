@@ -9,6 +9,31 @@ Agent prompt template management providing centralized storage, retrieval, versi
 Centralized prompt storage and retrieval system.
 - **`PromptManager`**: Manages prompt templates, variables, and versioning
 
+### [prompt_pipeline.py](prompt_pipeline.py)
+Unified prompt construction pipeline with explicit stages and comprehensive logging.
+- **`PromptPipeline`**: Single owner for all prompt construction with traceable flow
+- **`PromptStageResult`**: Result from a single pipeline stage
+- **`PromptBuildResult`**: Complete result from pipeline execution
+- **`REASONING_PROTOCOL`**: Multi-step discovery protocol for agent reasoning state signaling
+
+**Pipeline Stages** (executed in order):
+1. Load base prompt (PromptManager or fallback)
+2. Inject tool instructions (conditional based on task)
+3. Inject knowledge context (formatted from memory)
+4. Inject existing concepts (from concept registry)
+5. Apply Context Awareness Protocol (inventory + rules)
+6. Add collaborative context (previous agent outputs)
+6.5. Add verbosity constraints (based on task complexity)
+6.6. Add reasoning protocol (for multi-step tasks)
+7. Add metadata (tokens, temperature, position)
+8. Build user prompt
+
+**Features**:
+- Task complexity-aware stage skipping (SIMPLE_FACTUAL tasks skip irrelevant stages)
+- Priority ordering for prompt conflict resolution
+- Prompt effectiveness logging and metrics
+- Signal-to-noise optimization
+
 ## Key Concepts
 
 ### Prompt Templates

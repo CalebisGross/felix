@@ -13,7 +13,6 @@ Key Features:
 - Agent registration and connection management
 - FIFO message queuing with guaranteed ordering
 - Performance metrics collection (throughput, latency, overhead ratios)
-- Scalability up to 133 agents (matching OpenSCAD model parameters)
 
 Implementation supports rigorous performance testing and communication efficiency measurement.
 """
@@ -427,7 +426,8 @@ class CentralPost:
                  web_search_cooldown: float = 10.0,
                  knowledge_store: Optional["KnowledgeStore"] = None,
                  config: Optional[Any] = None,
-                 gui_mode: bool = False):
+                 gui_mode: bool = False,
+                 prompt_manager: Optional["PromptManager"] = None):
         """
         Initialize central post with configuration parameters.
 
@@ -444,6 +444,7 @@ class CentralPost:
             knowledge_store: Optional shared KnowledgeStore instance (if None, creates new one)
             config: Optional FelixConfig for system-wide settings (auto-approval, etc.)
             gui_mode: Whether running in GUI mode (prevents CLI approval prompts)
+            prompt_manager: Optional prompt manager for synthesis prompts
         """
         self.max_agents = max_agents
         self.enable_metrics = enable_metrics
@@ -452,6 +453,13 @@ class CentralPost:
         self.web_search_client = web_search_client  # For Research agents
         self.config = config  # Store config for passing to subsystems
         self.gui_mode = gui_mode  # Store GUI mode flag for passing to subsystems
+        self.prompt_manager = prompt_manager  # For synthesis prompts
+
+        # Project root directory for command execution
+        # Commands with relative paths will execute from this directory
+        from pathlib import Path
+        self.project_root = Path(__file__).parent.parent.parent.resolve()
+        logger.debug(f"CentralPost project_root: {self.project_root}")
         
         # Connection management
         self._registered_agents: Dict[str, str] = {}  # agent_id -> connection_id
@@ -577,7 +585,8 @@ class CentralPost:
         # 6. Synthesis Engine
         self.synthesis_engine = SynthesisEngine(
             llm_client=llm_client,
-            get_recent_messages_callback=self.get_recent_messages
+            get_recent_messages_callback=self.get_recent_messages,
+            prompt_manager=self.prompt_manager
         )
 
         logger.info("✓ CentralPost initialized with 6 extracted components")
@@ -1017,6 +1026,20 @@ class CentralPost:
             for command in matches:
                 command = command.strip()
 
+                # CRITICAL FIX: Strip surrounding quotes if agent wrapped the entire command
+                # Fixes: "SYSTEM_ACTION_NEEDED: head -n 50 file" results in command"
+                # This causes shell errors: /bin/sh: Syntax error: Unterminated quoted string
+                if len(command) >= 2:
+                    # Handle matched quotes (both opening and closing)
+                    if (command[0] == '"' and command[-1] == '"') or \
+                       (command[0] == "'" and command[-1] == "'"):
+                        command = command[1:-1].strip()
+                        logger.debug(f"Stripped surrounding quotes from command")
+                    # Handle trailing quote only (opening quote lost in regex capture)
+                    elif command.endswith('"') or command.endswith("'"):
+                        command = command.rstrip('"').rstrip("'").strip()
+                        logger.debug(f"Stripped trailing quote from command")
+
                 # Skip nested WEB_SEARCH_NEEDED patterns (validation gap fix)
                 if command.startswith('WEB_SEARCH_NEEDED:'):
                     logger.warning(f"⚠️ Agent {agent_id} nested WEB_SEARCH_NEEDED inside SYSTEM_ACTION_NEEDED")
@@ -1058,11 +1081,13 @@ class CentralPost:
 
                 # Request system action through normal flow
                 # This will handle trust classification, approval workflow, execution
+                # Pass project_root as working directory for command execution
                 action_id = self.request_system_action(
                     agent_id=agent_id,
                     command=command,
                     context=context,
-                    workflow_id=self._current_workflow_id
+                    workflow_id=self._current_workflow_id,
+                    cwd=self.project_root
                 )
 
                 logger.info(f"  Action ID: {action_id}")
@@ -1076,6 +1101,22 @@ class CentralPost:
                         logger.info(f"✓ System action completed successfully")
                         logger.info(f"   Command: {command}")
                         logger.info(f"   Output: {result.stdout[:200] if result.stdout else '(no output)'}")
+
+                        # CRITICAL FIX: Store command output as knowledge entry
+                        # This allows agents to retrieve the result via context builder
+                        if result.stdout:
+                            try:
+                                output_content = f"Command: {command}\n\nOutput:\n{result.stdout}"
+                                knowledge_id = self.store_agent_result_as_knowledge(
+                                    agent_id=agent_id,
+                                    content=output_content,
+                                    confidence=1.0,
+                                    domain="system_action"
+                                )
+                                logger.info(f"  ✓ Stored command output as knowledge entry #{knowledge_id}")
+                                logger.info(f"    Agents can now retrieve this result via context builder")
+                            except Exception as store_error:
+                                logger.error(f"  ⚠️ Failed to store command output as knowledge: {store_error}")
                     else:
                         logger.warning(f"⚠️ System action failed or denied")
                         logger.warning(f"   Command: {command}")
@@ -1090,13 +1131,80 @@ class CentralPost:
         except Exception as e:
             logger.error(f"Agent system action request failed: {e}", exc_info=True)
 
+    def _handle_extension_request_detection(self, message: Message) -> None:
+        """
+        Detect and handle NEED_MORE_PROCESSING: pattern in agent response.
+
+        Phase 3.1: Agents can request additional processing time if they reach
+        a checkpoint but confidence is still low. This enables dynamic checkpoint
+        injection to allow workflows to iterate until solved.
+
+        Args:
+            message: Message potentially containing extension request
+        """
+        try:
+            import re
+
+            content = message.content.get('content', '')
+            agent_id = message.sender_id
+
+            # Extract reason from NEED_MORE_PROCESSING: pattern
+            pattern = r'NEED_MORE_PROCESSING:\s*([^\n]+)'
+            matches = re.findall(pattern, content, re.IGNORECASE)
+
+            if not matches:
+                return
+
+            reason = matches[0].strip()
+
+            logger.info("=" * 60)
+            logger.info(f"🔄 AGENT PROCESSING EXTENSION REQUEST")
+            logger.info("=" * 60)
+            logger.info(f"Requesting Agent: {agent_id}")
+            logger.info(f"Reason: {reason}")
+            logger.info("")
+
+            # Store extension request for workflow to handle
+            if not hasattr(self, '_extension_requests'):
+                self._extension_requests = []
+
+            self._extension_requests.append({
+                'agent_id': agent_id,
+                'reason': reason,
+                'timestamp': message.timestamp
+            })
+
+            logger.info(f"  ✓ Extension request recorded ({len(self._extension_requests)} total)")
+            logger.info(f"  ℹ Workflow will evaluate if additional steps should be added")
+            logger.info("=" * 60)
+
+        except Exception as e:
+            logger.error(f"Extension request detection failed: {e}", exc_info=True)
+
+    def get_extension_requests(self) -> List[Dict[str, Any]]:
+        """
+        Get all pending extension requests from agents.
+
+        Returns:
+            List of extension request dictionaries
+        """
+        if not hasattr(self, '_extension_requests'):
+            self._extension_requests = []
+        return self._extension_requests
+
+    def clear_extension_requests(self):
+        """Clear all extension requests (called after workflow processes them)."""
+        self._extension_requests = []
+
 
     # ============================================================================
     # CENTRALPOST SYNTHESIS (Felix Architecture: CentralPost is Smart)
     # ============================================================================
 
     def synthesize_agent_outputs(self, task_description: str, max_messages: int = 20,
-                                 task_complexity: str = "COMPLEX") -> Dict[str, Any]:
+                                 task_complexity: str = "COMPLEX",
+                                 reasoning_evals: Optional[Dict[str, Dict[str, Any]]] = None,
+                                 coverage_report: Optional[Any] = None) -> Dict[str, Any]:
         """
         Synthesize final output from all agent communications.
 
@@ -1108,11 +1216,18 @@ class CentralPost:
             task_description: Original task description
             max_messages: Maximum number of agent messages to include in synthesis
             task_complexity: Task complexity ("SIMPLE_FACTUAL", "MEDIUM", or "COMPLEX")
+            reasoning_evals: Optional dict mapping agent_id to reasoning evaluation results
+                from CriticAgent.evaluate_reasoning_process(). Used to weight agent
+                contributions - agents with low reasoning_quality_score have reduced
+                influence on synthesis confidence.
+            coverage_report: Optional CoverageReport from KnowledgeCoverageAnalyzer.
+                Used to compute meta-confidence and generate epistemic caveats.
 
         Returns:
             Dict containing:
                 - synthesis_content: Final synthesized output text
                 - confidence: Synthesis confidence score (0.0-1.0)
+                - meta_confidence: Coverage-adjusted confidence (Phase 7)
                 - temperature: Temperature used for synthesis
                 - tokens_used: Number of tokens used
                 - max_tokens: Token budget allocated
@@ -1123,11 +1238,14 @@ class CentralPost:
             RuntimeError: If no LLM client available for synthesis
         """
         return self.synthesis_engine.synthesize_agent_outputs(
-            task_description, max_messages, task_complexity
+            task_description, max_messages, task_complexity, reasoning_evals, coverage_report
         )
 
     def broadcast_synthesis_feedback(self, synthesis_result: Dict[str, Any],
-                                     task_description: str) -> None:
+                                     task_description: str,
+                                     workflow_id: Optional[str] = None,
+                                     task_type: Optional[str] = None,
+                                     knowledge_entry_ids: Optional[List[str]] = None) -> None:
         """
         Broadcast synthesis feedback back to agents for learning and improvement.
 
@@ -1135,9 +1253,14 @@ class CentralPost:
         feedback to each agent about how their contributions were used in the
         final synthesis. Enables agents to learn and adapt.
 
+        Also records knowledge usage with usefulness scores for meta-learning boost.
+
         Args:
             synthesis_result: The completed synthesis result from synthesize_agent_outputs()
             task_description: Original task description for context
+            workflow_id: Optional workflow ID for knowledge usage tracking
+            task_type: Optional classified task type for meta-learning differentiation
+            knowledge_entry_ids: Optional list of knowledge entry IDs used in this workflow
         """
         if not synthesis_result or 'synthesis_content' not in synthesis_result:
             logger.warning("Cannot broadcast feedback - invalid synthesis result")
@@ -1202,6 +1325,23 @@ class CentralPost:
             self._message_queue.put(evaluation_message)
 
             logger.debug(f"  → Feedback sent to {agent_id}: usefulness={usefulness_score:.2f}, calibration={confidence_calibration:+.2f}")
+
+        # Record knowledge usage with synthesis-derived usefulness scores for meta-learning
+        if knowledge_entry_ids and workflow_id and self.knowledge_store:
+            # Use synthesis confidence as proxy for overall usefulness
+            useful_score = synthesis_confidence
+
+            try:
+                self.knowledge_store.record_knowledge_usage(
+                    workflow_id=workflow_id,
+                    knowledge_ids=knowledge_entry_ids,
+                    task_type=task_type or 'general_task',
+                    useful_score=useful_score
+                )
+                logger.info(f"  ✓ Recorded meta-learning usage for {len(knowledge_entry_ids)} knowledge entries "
+                           f"(useful_score={useful_score:.2f}, task_type={task_type})")
+            except Exception as e:
+                logger.warning(f"  ⚠ Failed to record knowledge usage for meta-learning: {e}")
 
     def _evaluate_contribution_usefulness(self, agent_content: str,
                                          synthesis_content: str) -> float:
@@ -1301,8 +1441,28 @@ class CentralPost:
         elif message.message_type == MessageType.SYSTEM_ACTION_REQUEST:
             self._handle_system_action_request(message)
         elif message.message_type == MessageType.SYSTEM_ACTION_RESULT:
-            # System action results are informational broadcasts, just log for debugging
+            # CRITICAL FIX: Store system action results as knowledge entries
+            # This ensures agents can retrieve command outputs via context builder
+            command = message.content.get('command', '')
+            stdout = message.content.get('stdout', '')
+            success = message.content.get('success', False)
+            agent_id = message.sender_id if message.sender_id else 'system'
+
             logger.debug(f"System action result message processed: {message.content.get('action_id')}")
+
+            # Store successful command outputs as retrievable knowledge
+            if success and stdout:
+                try:
+                    output_content = f"Command: {command}\n\nOutput:\n{stdout}"
+                    knowledge_id = self.store_agent_result_as_knowledge(
+                        agent_id=agent_id,
+                        content=output_content,
+                        confidence=1.0,
+                        domain="system_action"
+                    )
+                    logger.debug(f"  ✓ Stored system action result as knowledge entry #{knowledge_id}")
+                except Exception as store_error:
+                    logger.warning(f"  ⚠️ Failed to store system action result as knowledge: {store_error}")
 
     async def _handle_message_async(self, message: Message) -> None:
         """
@@ -1464,9 +1624,14 @@ class CentralPost:
         if isinstance(content, str) and 'SYSTEM_ACTION_NEEDED:' in content:
             logger.info(f"🖥️ Detected SYSTEM_ACTION_NEEDED pattern from {message.sender_id}")
             self._handle_system_action_detection(message)
-        else:
-            if isinstance(content, str):
-                logger.debug(f"  No SYSTEM_ACTION_NEEDED pattern found in content")
+
+        # Phase 3.1: Check if agent is requesting processing extension
+        if isinstance(content, str) and 'NEED_MORE_PROCESSING:' in content:
+            logger.info(f"🔄 Detected NEED_MORE_PROCESSING pattern from {message.sender_id}")
+            self._handle_extension_request_detection(message)
+
+        if isinstance(content, str) and 'SYSTEM_ACTION_NEEDED:' not in content and 'NEED_MORE_PROCESSING:' not in content:
+            logger.debug(f"  No special patterns found in content")
 
         # Continue with normal status tracking
         pass
@@ -2233,7 +2398,8 @@ class CentralPost:
     # ===========================================================================
 
     def request_system_action(self, agent_id: str, command: str,
-                             context: str = "", workflow_id: Optional[str] = None) -> str:
+                             context: str = "", workflow_id: Optional[str] = None,
+                             cwd: Optional["Path"] = None) -> str:
         """
         Agent requests system action (command execution).
 
@@ -2242,12 +2408,17 @@ class CentralPost:
             command: Command to execute
             context: Context/reason for command
             workflow_id: Associated workflow ID
+            cwd: Working directory for command execution (defaults to project root)
 
         Returns:
             action_id for tracking the request
         """
+        from pathlib import Path
+        # Use provided cwd or fall back to project root
+        working_dir = cwd if cwd is not None else self.project_root
+
         return self.system_command_manager.request_system_action(
-            agent_id, command, context, workflow_id
+            agent_id, command, context, workflow_id, cwd=working_dir
         )
 
     def get_action_result(self, action_id: str) -> Optional[CommandResult]:
@@ -2546,11 +2717,13 @@ class AgentFactory:
     def __init__(self, helix: "HelixGeometry", llm_client: "LMStudioClient",
                  token_budget_manager: Optional["TokenBudgetManager"] = None,
                  random_seed: Optional[int] = None, enable_dynamic_spawning: bool = True,
-                 max_agents: int = 25, token_budget_limit: int = 10000,
+                 max_agents: int = 25, token_budget_limit: int = 45000,
                  web_search_client: Optional["WebSearchClient"] = None,
                  max_web_queries: int = 3,
                  agent_registry: Optional["AgentPluginRegistry"] = None,
-                 plugin_directories: Optional[List[str]] = None):
+                 plugin_directories: Optional[List[str]] = None,
+                 prompt_manager: Optional["PromptManager"] = None,
+                 prompt_optimizer: Optional["PromptOptimizer"] = None):
         """
         Initialize the agent factory.
 
@@ -2566,6 +2739,8 @@ class AgentFactory:
             max_web_queries: Maximum web queries per research agent (default: 3)
             agent_registry: Optional AgentPluginRegistry (creates default if None)
             plugin_directories: Optional list of external plugin directories to load
+            prompt_manager: Optional prompt manager for custom prompt templates
+            prompt_optimizer: Optional prompt optimizer for learning and optimization
         """
         self.helix = helix
         self.llm_client = llm_client
@@ -2575,6 +2750,8 @@ class AgentFactory:
         self.enable_dynamic_spawning = enable_dynamic_spawning
         self.web_search_client = web_search_client
         self.max_web_queries = max_web_queries
+        self.prompt_manager = prompt_manager
+        self.prompt_optimizer = prompt_optimizer
 
         # Initialize agent plugin registry
         if agent_registry is not None:
@@ -2625,9 +2802,11 @@ class AgentFactory:
             llm_client=self.llm_client,
             research_domain=domain,
             token_budget_manager=self.token_budget_manager,
-            max_tokens=1200,
+            max_tokens=16000,
             web_search_client=self.web_search_client,
-            max_web_queries=self.max_web_queries
+            max_web_queries=self.max_web_queries,
+            prompt_manager=self.prompt_manager,
+            prompt_optimizer=self.prompt_optimizer
         )
     
     def create_analysis_agent(self, analysis_type: str = "general",
@@ -2646,9 +2825,11 @@ class AgentFactory:
             llm_client=self.llm_client,
             analysis_type=analysis_type,
             token_budget_manager=self.token_budget_manager,
-            max_tokens=1200
+            max_tokens=16000,
+            prompt_manager=self.prompt_manager,
+            prompt_optimizer=self.prompt_optimizer
         )
-    
+
     def create_critic_agent(self, review_focus: str = "general",
                           spawn_time_range: Tuple[float, float] = (0.5, 0.8)) -> "LLMAgent":
         """Create a critic agent with random spawn time in specified range."""
@@ -2665,7 +2846,9 @@ class AgentFactory:
             llm_client=self.llm_client,
             review_focus=review_focus,
             token_budget_manager=self.token_budget_manager,
-            max_tokens=1200
+            max_tokens=16000,
+            prompt_manager=self.prompt_manager,
+            prompt_optimizer=self.prompt_optimizer
         )
 
     def create_agent_by_type(self,
@@ -2717,6 +2900,7 @@ class AgentFactory:
         self._agent_counter += 1
 
         # Create agent using registry
+        # CRITICAL: Pass prompt_manager and prompt_optimizer to ensure agents get proper prompts
         return self.agent_registry.create_agent(
             agent_type=agent_type,
             agent_id=agent_id,
@@ -2724,6 +2908,8 @@ class AgentFactory:
             helix=self.helix,
             llm_client=self.llm_client,
             token_budget_manager=self.token_budget_manager,
+            prompt_manager=self.prompt_manager,
+            prompt_optimizer=self.prompt_optimizer,
             **kwargs
         )
 

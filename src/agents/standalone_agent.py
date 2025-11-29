@@ -47,7 +47,8 @@ class StandaloneAgent:
                  mode: str,
                  llm_client,
                  temperature: float = 0.7,
-                 max_tokens: int = 1500):
+                 max_tokens: int = 1500,
+                 is_background: bool = True):
         """
         Initialize standalone agent.
 
@@ -57,19 +58,24 @@ class StandaloneAgent:
             llm_client: LLM client for generating responses
             temperature: Sampling temperature (0.0-1.0)
             max_tokens: Maximum tokens in response
+            is_background: If True, LLM requests will be marked as background tasks
+                          that yield to user-initiated requests. Default True since
+                          StandaloneAgents are typically used for background processing
+                          like Knowledge Brain document comprehension.
         """
         self.agent_id = agent_id
         self.mode = mode
         self.llm_client = llm_client
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.is_background = is_background
 
         # Validate mode
         valid_modes = ["research", "analysis", "critic"]
         if mode not in valid_modes:
             raise ValueError(f"Invalid mode '{mode}'. Must be one of: {valid_modes}")
 
-        logger.debug(f"StandaloneAgent initialized: {agent_id} (mode={mode})")
+        logger.debug(f"StandaloneAgent initialized: {agent_id} (mode={mode}, is_background={is_background})")
 
     def process_task(self, context: str) -> str:
         """
@@ -92,7 +98,8 @@ class StandaloneAgent:
                 system_prompt=system_prompt,
                 user_prompt=context,
                 temperature=self.temperature,
-                max_tokens=self.max_tokens
+                max_tokens=self.max_tokens,
+                is_background=self.is_background
             )
 
             return response.content

@@ -54,12 +54,39 @@ WEB_SEARCH_NEEDED: latest AI news"
 
     'file_operations': {
         'name': 'File Operations',
-        'keywords': ['file_operations', 'file', 'create', 'write', 'mkdir', 'echo'],
-        'instructions': """📁 FILE OPERATIONS - CREATE/MODIFY FILES:
+        'keywords': ['file_operations', 'file', 'read', 'create', 'write', 'mkdir', 'echo', 'cat'],
+        'instructions': """📁 FILE OPERATIONS - READ AND WRITE FILES:
 
 ⚠️ **CRITICAL: ALWAYS USE RELATIVE PATHS, NEVER ABSOLUTE PATHS**
    Use: results/file.txt ✅
    NOT: /results/file.txt ❌ (requires root permissions, will fail!)
+
+📖 READ FILE CONTENTS:
+✓ "SYSTEM_ACTION_NEEDED: cat [filepath]"  # Read entire file
+✓ "SYSTEM_ACTION_NEEDED: head -n [N] [filepath]"  # Read first N lines (replace [N] with number)
+✓ "SYSTEM_ACTION_NEEDED: tail -n [N] [filepath]"  # Read last N lines (replace [N] with number)
+✓ "SYSTEM_ACTION_NEEDED: wc -l [filepath]"  # Count lines
+
+🔍 DISCOVER FILE LOCATIONS (When path is unknown):
+When you need a file but don't know its full path, DISCOVER it first using find:
+
+✓ "SYSTEM_ACTION_NEEDED: find . -name 'filename.py' -type f"  # Find Python file
+✓ "SYSTEM_ACTION_NEEDED: find . -name 'config.yaml' -type f"  # Find config file
+✓ "SYSTEM_ACTION_NEEDED: find . -name '*.md' -type f"  # Find all markdown files
+
+The find command will return the file's location. Then use that path with cat/head/tail.
+
+Example reasoning flow:
+"User wants central_post.py but I don't know the path.
+SYSTEM_ACTION_NEEDED: find . -name 'central_post.py' -type f
+
+After system returns './src/communication/central_post.py', I can read it:
+SYSTEM_ACTION_NEEDED: cat ./src/communication/central_post.py"
+
+📝 CHECK FILE/DIRECTORY EXISTS:
+✓ "SYSTEM_ACTION_NEEDED: test -f src/agents/prompt_optimization.py && echo 'File exists' || echo 'File not found'"
+✓ "SYSTEM_ACTION_NEEDED: test -d results && echo 'Directory exists' || echo 'Directory not found'"
+✓ "SYSTEM_ACTION_NEEDED: ls -la src/agents/"  # List directory contents
 
 CREATE DIRECTORY:
 ✓ "SYSTEM_ACTION_NEEDED: mkdir -p results/data"

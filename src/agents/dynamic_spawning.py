@@ -517,7 +517,7 @@ class TeamSizeOptimizer:
     and performance feedback.
     """
     
-    def __init__(self, max_agents: int = 25, token_budget_limit: int = 10000,
+    def __init__(self, max_agents: int = 25, token_budget_limit: int = 45000,
                  performance_weight: float = 0.4, efficiency_weight: float = 0.6):
         """
         Initialize team size optimizer.
@@ -719,7 +719,7 @@ class DynamicSpawning:
     """
     
     def __init__(self, agent_factory, confidence_threshold: float = 0.8,
-                 max_agents: int = 25, token_budget_limit: int = 10000):
+                 max_agents: int = 25, token_budget_limit: int = 45000):
         """
         Initialize dynamic spawning system.
         
@@ -871,11 +871,13 @@ class DynamicSpawning:
 
             priority_score = 1.0 - confidence_metrics.current_average  # Higher priority for lower confidence
 
+            # CRITICAL: Clamp spawn time range to valid 0.0-1.0 bounds
+            clamped_time = min(max(current_time, 0.0), 0.99)  # Ensure spawn_time stays within 0-1
             decisions.append(SpawningDecision(
                 should_spawn=True,
                 agent_type=agent_type,
                 spawn_parameters={
-                    "spawn_time_range": (current_time, min(current_time + 0.01, 1.0)),  # Immediate spawn (clamped to 1.0)
+                    "spawn_time_range": (clamped_time, min(clamped_time + 0.01, 1.0)),  # Immediate spawn (clamped to valid range)
                     "max_tokens": self.team_optimizer.get_resource_budget_for_new_agent(agent_type),
                     "complexity": complexity if 'complexity' in locals() else "medium"
                 },
@@ -905,11 +907,13 @@ class DynamicSpawning:
             if content_analysis.complexity_score > 0.7:
                 priority_score += 0.2
             
+            # CRITICAL: Clamp spawn time range to valid 0.0-1.0 bounds
+            clamped_time = min(max(current_time, 0.0), 0.99)  # Ensure spawn_time stays within 0-1
             decisions.append(SpawningDecision(
                 should_spawn=True,
                 agent_type=suggested_type,
                 spawn_parameters={
-                    "spawn_time_range": (current_time, min(current_time + 0.01, 1.0)),  # Immediate spawn (clamped to 1.0)
+                    "spawn_time_range": (clamped_time, min(clamped_time + 0.01, 1.0)),  # Immediate spawn (clamped to valid range)
                     "max_tokens": self.team_optimizer.get_resource_budget_for_new_agent(suggested_type),
                     "specialized_focus": self._get_specialized_focus(content_analysis, suggested_type)
                 },
@@ -953,19 +957,19 @@ class DynamicSpawning:
         NEW: Plugin-aware spawning - tries to create agent via plugin registry first,
         then falls back to hardcoded types for backward compatibility.
         """
-        spawn_params = decision.spawn_parameters
+        spawn_params = decision.spawn_parameters.copy()  # Make a copy to avoid modifying original
         agent_type = decision.agent_type
 
-        # Extract spawn parameters
-        spawn_time_range = spawn_params.get("spawn_time_range", (0.1, 0.3))
-        max_tokens = spawn_params.get("max_tokens", 800)
-        specialized_focus = spawn_params.get("specialized_focus", "general")
+        # Extract spawn parameters (using .pop() to remove from dict and avoid duplicate kwargs)
+        spawn_time_range = spawn_params.pop("spawn_time_range", (0.1, 0.3))
+        max_tokens = spawn_params.pop("max_tokens", 800)
+        specialized_focus = spawn_params.pop("specialized_focus", "general")
 
         # NEW: Try plugin-aware path first (supports all registered agent types)
         if hasattr(self.agent_factory, 'create_agent_by_type'):
             try:
                 # Estimate complexity from spawn parameters or default to "medium"
-                complexity = spawn_params.get("complexity", "medium")
+                complexity = spawn_params.pop("complexity", "medium")
 
                 # Use plugin-aware factory method
                 agent = self.agent_factory.create_agent_by_type(
@@ -973,7 +977,7 @@ class DynamicSpawning:
                     complexity=complexity,
                     spawn_time_range=spawn_time_range,
                     max_tokens=max_tokens,
-                    **spawn_params
+                    **spawn_params  # Now safe - no duplicate parameters
                 )
 
                 if agent is not None:

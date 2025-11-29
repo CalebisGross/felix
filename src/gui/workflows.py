@@ -132,21 +132,70 @@ class WorkflowsFrame(ttk.Frame):
         """Setup logging to route pipeline logs to output text widget."""
         # Setup module-specific logger for workflows to avoid conflicts
         from .logging_handler import setup_gui_logging
+
+        # TEMPORARY DEBUG MODE: Set ALL Felix modules to WARNING by default
+        # This blocks INFO logs while allowing WARNING/ERROR
         self.workflow_logger = setup_gui_logging(
             text_widget=self.output_text,
             log_queue=None,
-            level=logging.INFO,
+            level=logging.WARNING,  # Suppress INFO from all modules by default
             module_name='felix_workflows'
         )
 
-        # Also add a root logger handler to catch everything
-        root_logger = logging.getLogger()
-        if not any(isinstance(h, logging.Handler) for h in root_logger.handlers):
-            # Only set if root logger has no handlers
-            root_logger.setLevel(logging.INFO)
+        # Override ONLY felix_workflows to DEBUG to see our debug traces
+        self.workflow_logger.setLevel(logging.DEBUG)
+
+        # Custom filter to allow DEBUG but block INFO
+        class DebugAndWarningOnlyFilter(logging.Filter):
+            def filter(self, record):
+                # Allow DEBUG (10) and WARNING+ (30+), block INFO (20)
+                return record.levelno == logging.DEBUG or record.levelno >= logging.WARNING
+
+        # CRITICAL: Also set handlers to DEBUG and add filter to block INFO
+        for handler in self.workflow_logger.handlers:
+            handler.setLevel(logging.DEBUG)
+            handler.addFilter(DebugAndWarningOnlyFilter())
+
+        # CRITICAL: Also set felix_gui logger to WARNING (it's at INFO from utils.py)
+        felix_gui_logger = logging.getLogger('felix_gui')
+        felix_gui_logger.setLevel(logging.WARNING)
 
         # Confirm logging setup
-        self.workflow_logger.info("Workflows logging initialized successfully")
+        self.workflow_logger.debug("🔧 Workflows logging initialized - DEBUG MODE (INFO suppressed)")
+
+        # DIAGNOSTIC: Show actual logging configuration at runtime
+        self.workflow_logger.debug("="*60)
+        self.workflow_logger.debug("LOGGING CONFIGURATION DIAGNOSTIC - ALL LOGGERS")
+        self.workflow_logger.debug("="*60)
+
+        # Get ALL loggers in the system, not just hardcoded ones
+        all_logger_names = sorted(logging.root.manager.loggerDict.keys())
+
+        # Add root logger first
+        root_logger = logging.getLogger()
+        self.workflow_logger.debug(f"Logger: ROOT")
+        self.workflow_logger.debug(f"  Level: {logging.getLevelName(root_logger.level)} ({root_logger.level})")
+        self.workflow_logger.debug(f"  Handlers: {len(root_logger.handlers)}")
+        for i, h in enumerate(root_logger.handlers):
+            self.workflow_logger.debug(f"    Handler {i}: {type(h).__name__}, Level: {logging.getLevelName(h.level)} ({h.level})")
+        self.workflow_logger.debug("")
+
+        # Show all named loggers
+        for logger_name in all_logger_names:
+            logger_obj = logging.getLogger(logger_name)
+
+            # Only show loggers that have configuration (level set or handlers attached)
+            if logger_obj.level != logging.NOTSET or len(logger_obj.handlers) > 0:
+                self.workflow_logger.debug(f"Logger: {logger_name}")
+                self.workflow_logger.debug(f"  Level: {logging.getLevelName(logger_obj.level)} ({logger_obj.level})")
+                self.workflow_logger.debug(f"  Effective Level: {logging.getLevelName(logger_obj.getEffectiveLevel())} ({logger_obj.getEffectiveLevel()})")
+                self.workflow_logger.debug(f"  Propagate: {logger_obj.propagate}")
+                self.workflow_logger.debug(f"  Handlers: {len(logger_obj.handlers)}")
+                for i, h in enumerate(logger_obj.handlers):
+                    self.workflow_logger.debug(f"    Handler {i}: {type(h).__name__}, Level: {logging.getLevelName(h.level)} ({h.level})")
+                self.workflow_logger.debug("")
+
+        self.workflow_logger.debug("="*60)
 
     def _enable_features(self):
         """Enable workflow features when system is running."""
@@ -475,8 +524,8 @@ class WorkflowsFrame(ttk.Frame):
 
     def _update_progress(self, status, progress_percentage):
         """Update progress bar and status display."""
-        # Update progress bar
-        self.progress['value'] = progress_percentage
+        # Update progress bar - clamp to 100% max
+        self.progress['value'] = min(progress_percentage, 100)
 
     def _start_approval_polling(self):
         """Start polling for pending approvals during workflow execution."""

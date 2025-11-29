@@ -120,7 +120,7 @@ def get_felix_config() -> FelixConfig:
             helix_height=float(os.getenv("FELIX_HELIX_HEIGHT", "8.0")),
             helix_turns=int(os.getenv("FELIX_HELIX_TURNS", "2")),
             max_agents=int(os.getenv("FELIX_MAX_AGENTS", "10")),
-            base_token_budget=int(os.getenv("FELIX_BASE_TOKEN_BUDGET", "2500")),
+            base_token_budget=int(os.getenv("FELIX_BASE_TOKEN_BUDGET", "20000")),  # 50K context window
             enable_knowledge_brain=os.getenv("FELIX_ENABLE_KNOWLEDGE_BRAIN", "false").lower() == "true",
             verbose_llm_logging=os.getenv("FELIX_VERBOSE_LOGGING", "false").lower() == "true",
 

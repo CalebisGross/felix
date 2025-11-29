@@ -204,7 +204,8 @@ def setup_gui_logging(text_widget: Optional[tk.Text] = None,
         'src.memory',
         'src.pipeline',
         'src.core',
-        'src.gui'  # Include GUI module logs (felix_system.py, etc.)
+        'src.gui',  # Include GUI module logs (felix_system.py, etc.)
+        'src.prompts'  # Include prompts module (prompt_pipeline.py)
     ]
 
     for mod_name in felix_modules:

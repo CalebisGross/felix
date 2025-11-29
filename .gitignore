@@ -38,6 +38,11 @@ wheels/
 *.db-journal
 *.log
 *.backup
+felix_knowledge.db.backup_*
+.felix_index.json
+
+# Tests (local only)
+tests/
 
 # User-specific configuration
 felix_gui_config.json

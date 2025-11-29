@@ -46,6 +46,16 @@ Memory optimization through abstractive compression.
 Agent-level performance metrics and optimization.
 - **`AgentPerformanceTracker`**: Tracks individual agent effectiveness, latency, and quality scores
 
+### [audit_log.py](audit_log.py)
+Comprehensive audit trail for all CRUD operations on knowledge entries.
+- **`AuditLogger`**: Records all knowledge base operations with full context and state tracking
+- **`audit_logged`**: Decorator for automatic audit logging of CRUD operations
+- **`get_audit_logger()`**: Singleton accessor for audit logger instance
+- **Methods**: `log_operation()`, `get_audit_history()`, `get_entry_history()`, `get_recent_changes()`, `get_statistics()`, `cleanup_old_logs()`, `export_to_csv()`
+- **Features**: Transaction-level grouping, before/after state capture, query and export capabilities, automatic cleanup of old logs
+
+**Integration**: Works with `knowledge_audit_log` table (requires migration: `add_audit_log_table.py`)
+
 ## Key Concepts
 
 ### Knowledge Entry Structure

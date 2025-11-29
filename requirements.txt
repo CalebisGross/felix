@@ -4,6 +4,7 @@
 openai>=1.0.0
 httpx>=0.24.0
 PyYAML>=6.0  # For configuration files
+jinja2>=3.1.0  # For synthesis prompt templates
 
 # Cloud LLM Providers (optional, install as needed)
 # anthropic>=0.25.0  # For Anthropic Claude support
@@ -20,8 +21,9 @@ lxml>=4.9.0
 
 # Optional: SearxNG support uses httpx (already included above)
 
-# GUI Dependencies (optional, usually included with Python)
+# GUI Dependencies
 # tkinter is included with standard Python installation
+customtkinter>=5.2.0  # Modern GUI framework
 
 # Knowledge Brain Dependencies (optional)
 # PyPDF2>=3.0.0  # For PDF document reading

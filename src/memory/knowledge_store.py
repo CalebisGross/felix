@@ -70,6 +70,7 @@ class KnowledgeType(Enum):
     OPTIMIZATION_DATA = "optimization_data"
     DOMAIN_EXPERTISE = "domain_expertise"
     TOOL_INSTRUCTION = "tool_instruction"  # For storing conditional tool instructions
+    FILE_LOCATION = "file_location"  # For storing discovered file paths (meta-learning)
 
 class ConfidenceLevel(Enum):
     """Confidence levels for knowledge entries."""
@@ -236,6 +237,31 @@ class KnowledgeStore:
             except sqlite3.OperationalError as e:
                 # FTS5 might not be available in some SQLite builds
                 logger.debug(f"FTS5 table creation skipped: {e}")
+
+            # Knowledge relationships table for knowledge graph
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS knowledge_relationships (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_id TEXT NOT NULL,
+                    target_id TEXT NOT NULL,
+                    relationship_type TEXT NOT NULL,
+                    confidence REAL DEFAULT 0.5,
+                    created_at REAL DEFAULT (strftime('%s', 'now')),
+                    UNIQUE(source_id, target_id, relationship_type)
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_kr_source
+                ON knowledge_relationships(source_id)
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_kr_target
+                ON knowledge_relationships(target_id)
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_kr_type
+                ON knowledge_relationships(relationship_type)
+            """)
 
             # Migrate existing data if needed
             self._migrate_existing_tags(conn)
@@ -894,6 +920,80 @@ class KnowledgeStore:
         except sqlite3.Error as e:
             logger.error(f"Failed to record knowledge usage: {e}")
             return False
+
+    def get_domain_coverage_metrics(self, domain: str) -> Dict[str, Any]:
+        """
+        Get coverage metrics for a specific domain.
+
+        Computes entry count, average confidence, freshness, and overall
+        coverage score for epistemic awareness (Phase 5 - Knowledge Gap Cartography).
+
+        Args:
+            domain: Domain name to compute metrics for
+
+        Returns:
+            Dictionary with coverage metrics:
+            - entry_count: Number of knowledge entries
+            - avg_confidence: Average confidence level (0.0-1.0)
+            - freshness_score: How recent the entries are (0.0-1.0)
+            - coverage_score: Overall coverage score (0.0-1.0)
+        """
+        try:
+            with sqlite3.connect(self.storage_path) as conn:
+                # Count entries and compute average confidence
+                cursor = conn.execute("""
+                    SELECT
+                        COUNT(*) as entry_count,
+                        AVG(CASE
+                            WHEN confidence_level = 'VERIFIED' THEN 1.0
+                            WHEN confidence_level = 'HIGH' THEN 0.8
+                            WHEN confidence_level = 'MEDIUM' THEN 0.6
+                            WHEN confidence_level = 'LOW' THEN 0.4
+                            WHEN confidence_level = 'SPECULATIVE' THEN 0.2
+                            ELSE 0.5
+                        END) as avg_confidence,
+                        AVG(updated_at) as avg_updated
+                    FROM knowledge_entries
+                    WHERE domain = ? OR domain LIKE ?
+                """, (domain, f"%{domain}%"))
+
+                row = cursor.fetchone()
+                entry_count = row[0] or 0
+                avg_confidence = row[1] or 0.0
+                avg_updated = row[2] or 0
+
+                # Compute freshness score (entries updated recently = higher score)
+                current_time = time.time()
+                if avg_updated > 0:
+                    age_days = (current_time - avg_updated) / (24 * 3600)
+                    freshness_score = max(0.0, 1.0 - (age_days / 30))  # Decays over 30 days
+                else:
+                    freshness_score = 0.0
+
+                # Compute coverage score as weighted combination
+                entry_factor = min(1.0, entry_count / 10)  # Cap at 10 entries
+
+                coverage_score = (
+                    0.5 * entry_factor +
+                    0.3 * avg_confidence +
+                    0.2 * freshness_score
+                )
+
+                return {
+                    'entry_count': entry_count,
+                    'avg_confidence': avg_confidence,
+                    'freshness_score': freshness_score,
+                    'coverage_score': coverage_score
+                }
+
+        except sqlite3.Error as e:
+            logger.error(f"Failed to get domain coverage metrics: {e}")
+            return {
+                'entry_count': 0,
+                'avg_confidence': 0.0,
+                'freshness_score': 0.0,
+                'coverage_score': 0.0
+            }
 
     def update_success_rate(self, knowledge_id: str, 
                            success_rate: float) -> bool:

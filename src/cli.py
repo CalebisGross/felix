@@ -48,7 +48,7 @@ def cmd_run(args):
 
         # Agent and token configuration
         max_agents=25,
-        base_token_budget=2500,
+        base_token_budget=20000,  # Generous budget for 50K context window
 
         # LLM configuration (will use config/llm.yaml)
         verbose_llm_logging=args.verbose
@@ -321,7 +321,7 @@ def cmd_chat(args):
         web_search_enabled=args.web_search,
         auto_approve_system_actions=True,  # CLI mode: auto-approve commands without blocking
         max_agents=25,
-        base_token_budget=2500,
+        base_token_budget=20000,  # Generous budget for 50K context window
         verbose_llm_logging=args.verbose
     )
 
