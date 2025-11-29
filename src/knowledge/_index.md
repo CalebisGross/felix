@@ -58,6 +58,36 @@ Bridge connecting Knowledge Brain to Felix workflows.
 - **`WorkflowIntegration`**: Auto-injects relevant knowledge into workflows when enabled
 - **Context augmentation**: Enriches agent context with domain-relevant knowledge
 
+### [backup_manager_extended.py](backup_manager_extended.py)
+Extended backup manager for knowledge base with JSON export/import.
+- **`KnowledgeBackupManager`**: JSON export/import with compression and selective operations
+- **Export features**: Gzip compression, selective by domain/date range/confidence level
+- **Import features**: Conflict resolution (skip, replace, merge), integrity verification
+- **Integration**: Complements base `BackupManager` for SQLite backups with knowledge-specific JSON format
+
+### [directory_index.py](directory_index.py)
+Directory index management for watched directories.
+- **`DirectoryIndex`**: Manages `.felix_index.json` files in watched directories
+- **Purpose**: Track processed documents, enable directory-level re-processing and bulk deletion
+- **Index structure**: Document tracking with doc_id, file_hash, status, entry_count, entry_ids
+- **Statistics**: Total documents, completed/failed/pending counts, total entries
+
+### [knowledge_cleanup.py](knowledge_cleanup.py)
+High-level cleanup operations for knowledge brain system.
+- **`KnowledgeCleanupManager`**: Safe cleanup operations for entries, documents, and database integrity
+- **Operations**: Pattern-based deletion, orphan cleanup, batch operations
+- **Default exclusions**: `.venv`, `node_modules`, `.git`, `__pycache__`, `site-packages`, etc.
+- **Methods**: `preview_cleanup_by_pattern()`, batch delete, integrity verification
+
+### [quality_checker.py](quality_checker.py)
+Knowledge quality detection and resolution tools (Phase 5).
+- **`KnowledgeQualityChecker`**: Detects and resolves quality issues in knowledge base
+- **`DuplicateCandidate`**: Pair of potentially duplicate entries with similarity score and suggested action
+- **`ContradictionCandidate`**: Pair of potentially contradictory entries with confidence score
+- **`QualityScore`**: Overall quality score with confidence, relationship, validation, and access success components
+- **Detection methods**: Embedding similarity, text matching, semantic contradiction analysis
+- **Actions**: Merge suggestions, review recommendations, quality scoring
+
 ## Key Concepts
 
 ### Agentic Comprehension

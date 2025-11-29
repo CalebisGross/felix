@@ -1,10 +1,12 @@
 """
 Knowledge Daemon for Felix Knowledge Brain
 
-Autonomous background processing system with three concurrent modes:
+Autonomous background processing system with five concurrent modes:
 - Mode A: Initial Batch Processing - Process existing documents in directories
 - Mode B: Continuous Refinement - Periodically re-analyze knowledge for new connections
 - Mode C: File System Watching - Monitor directories for new documents
+- Mode D: Scheduled Backups - Automatic database and JSON backups
+- Mode E: Gap-Directed Learning - Proactive knowledge acquisition to fill gaps (OPT-IN)
 
 Runs indefinitely in background threads with graceful shutdown support.
 """
@@ -55,8 +57,12 @@ class DaemonConfig:
     enable_refinement: bool = True
     enable_file_watching: bool = True
     enable_scheduled_backup: bool = False  # Enable automatic backups
+    enable_gap_learning: bool = False  # Mode E: Gap-directed learning (OPT-IN)
     refinement_interval: int = 3600  # seconds (1 hour)
     backup_interval: int = 86400  # seconds (24 hours)
+    gap_learning_interval: int = 1800  # seconds (30 minutes) for gap acquisition
+    gap_min_severity: float = 0.6  # Minimum gap severity for acquisition
+    gap_min_occurrences: int = 3  # Minimum gap occurrences for acquisition
     backup_compress: bool = True  # Use compression for JSON backups
     backup_keep_days: int = 30  # Keep backups for N days
     processing_threads: int = 2
@@ -348,6 +354,17 @@ class KnowledgeDaemon:
             self.threads.append(backup_thread)
             logger.info("✓ Mode D: Scheduled backups started")
 
+        # Mode E: Gap-Directed Learning (Phase 7 - OPT-IN)
+        if self.config.enable_gap_learning:
+            gap_thread = threading.Thread(
+                target=self._gap_directed_learning_loop,
+                name="KnowledgeDaemon-GapLearning",
+                daemon=True
+            )
+            gap_thread.start()
+            self.threads.append(gap_thread)
+            logger.info("✓ Mode E: Gap-directed learning started (opt-in)")
+
         logger.info("Knowledge Daemon fully operational")
 
     def stop(self):
@@ -507,6 +524,10 @@ class KnowledgeDaemon:
                     stats = self.document_queue.get_stats()
                     self.progress_callback('batch_progress', stats)
 
+                # Brief yield between documents to allow user-initiated requests through
+                # Works in conjunction with is_background semaphore in LLM clients
+                time.sleep(0.2)
+
             except Exception as e:
                 logger.error(f"Failed to process {file_path}: {e}")
                 self.document_queue.mark_failed(file_path)
@@ -638,6 +659,94 @@ class KnowledgeDaemon:
                 logger.error(f"Backup cycle failed: {e}")
 
         logger.info("Backup loop exited")
+
+    def _gap_directed_learning_loop(self):
+        """
+        Mode E: Gap-Directed Learning (OPT-IN).
+
+        Periodically queries for high-priority knowledge gaps and attempts
+        to fill them through web search. This is an opt-in feature that
+        remains disabled by default.
+
+        Phase 7 - Knowledge Gap Cartography feature.
+        """
+        logger.info("Gap Learning: Starting gap-directed learning loop (opt-in)")
+
+        # Import gap-directed learning components
+        try:
+            from .gap_tracker import GapTracker
+            from .gap_directed_learning import GapDirectedLearner
+        except ImportError as e:
+            logger.error(f"Gap learning components not available: {e}")
+            return
+
+        # Initialize gap tracker and learner
+        gap_tracker = GapTracker(self.knowledge_store.storage_path)
+
+        # Try to get web search client from knowledge store or create one
+        web_search_client = None
+        try:
+            from src.llm.web_search import WebSearchClient
+            web_search_client = WebSearchClient()
+            logger.info("Gap Learning: Web search client available")
+        except Exception as e:
+            logger.warning(f"Gap Learning: Web search not available ({e}), "
+                          "gap filling will be limited to manual resolution")
+
+        gap_learner = GapDirectedLearner(
+            gap_tracker=gap_tracker,
+            knowledge_store=self.knowledge_store,
+            web_search_client=web_search_client
+        )
+
+        # Track last run time
+        last_gap_check = 0
+
+        while self.running:
+            # Wait for gap learning interval with interruptible sleep
+            sleep_remaining = self.config.gap_learning_interval
+            while sleep_remaining > 0 and self.running:
+                sleep_time = min(1.0, sleep_remaining)
+                time.sleep(sleep_time)
+                sleep_remaining -= sleep_time
+
+            if not self.running:
+                break
+
+            try:
+                logger.info("Gap Learning: Starting acquisition cycle...")
+                start_time = time.time()
+
+                # Run acquisition cycle with configured thresholds
+                result = gap_learner.run_acquisition_cycle(
+                    max_targets=3  # Process up to 3 gaps per cycle
+                )
+
+                duration = time.time() - start_time
+                last_gap_check = time.time()
+
+                # Get acquisition stats
+                stats = gap_learner.get_acquisition_stats()
+
+                logger.info(f"Gap Learning cycle complete: "
+                           f"{result['targets_resolved']}/{result['targets_found']} gaps resolved, "
+                           f"{result['entries_created']} entries created, "
+                           f"{duration:.1f}s")
+
+                # Report progress
+                if self.progress_callback:
+                    self.progress_callback('gap_learning_complete', {
+                        'duration': duration,
+                        'targets_found': result['targets_found'],
+                        'targets_resolved': result['targets_resolved'],
+                        'entries_created': result['entries_created'],
+                        'stats': stats
+                    })
+
+            except Exception as e:
+                logger.error(f"Gap learning cycle failed: {e}")
+
+        logger.info("Gap learning loop exited")
 
     def _start_file_watching(self):
         """
