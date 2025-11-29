@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import sqlite3
 import json
+import queue
 from .utils import ThreadManager, DBHelper, logger
 from .workflow_history_frame import WorkflowHistoryFrame
 
@@ -53,6 +54,9 @@ class MemorySubFrame(ttk.Frame):
         self.theme_manager = theme_manager
         self.entries = []  # list of (id, content)
 
+        # Queue for thread-safe communication
+        self.result_queue = queue.Queue()
+
         # Listbox with scrollbar
         self.listbox = tk.Listbox(self, height=10)
         listbox_scrollbar = ttk.Scrollbar(self, command=self.listbox.yview)
@@ -101,8 +105,37 @@ class MemorySubFrame(ttk.Frame):
         # Apply initial theme
         self.apply_theme()
 
+        # Start polling queue on main thread
+        self._poll_results()
+
         # Load initial entries
         self.load_entries()
+
+    def _poll_results(self):
+        """Poll the result queue and update GUI (runs on main thread)."""
+        try:
+            while not self.result_queue.empty():
+                result = self.result_queue.get_nowait()
+                action = result.get('action')
+
+                if action == 'update_listbox':
+                    self._update_listbox()
+                elif action == 'show_no_entries':
+                    self._show_no_entries_message()
+                elif action == 'show_error':
+                    messagebox.showerror("Error", result['message'])
+                elif action == 'show_warning':
+                    messagebox.showwarning(result['title'], result['message'])
+                elif action == 'show_info':
+                    messagebox.showinfo(result['title'], result['message'])
+                elif action == 'reload':
+                    self.load_entries()
+
+        except Exception as e:
+            logger.error(f"Error in poll_results: {e}", exc_info=True)
+
+        # Schedule next poll
+        self.after(100, self._poll_results)
 
     def load_entries(self):
         self.thread_manager.start_thread(self._load_entries_thread)
@@ -146,14 +179,14 @@ class MemorySubFrame(ttk.Frame):
                 self.entries = []
                 logger.warning(f"Memory modules not available, trying direct SQL query")
 
-            self.after(0, self._update_listbox)
+            # Put result in queue for main thread to process
+            self.result_queue.put({'action': 'update_listbox'})
             # Show message if no entries
             if not self.entries:
-                self.after(0, lambda: self._show_no_entries_message())
+                self.result_queue.put({'action': 'show_no_entries'})
         except Exception as e:
             logger.error(f"Error loading entries: {e}", exc_info=True)
-            error_msg = str(e)
-            self.after(0, lambda: messagebox.showerror("Error", f"Failed to load entries: {error_msg}"))
+            self.result_queue.put({'action': 'show_error', 'message': f"Failed to load entries: {str(e)}"})
 
     def _update_listbox(self):
         self.listbox.delete(0, tk.END)
@@ -210,11 +243,11 @@ class MemorySubFrame(ttk.Frame):
                 self.entries = []
                 logger.warning("Search not available without memory modules")
 
-            self.after(0, self._update_listbox)
+            # Put result in queue for main thread to process
+            self.result_queue.put({'action': 'update_listbox'})
         except Exception as e:
             logger.error(f"Error searching: {e}", exc_info=True)
-            error_msg = str(e)
-            self.after(0, lambda: messagebox.showerror("Error", f"Failed to search: {error_msg}"))
+            self.result_queue.put({'action': 'show_error', 'message': f"Failed to search: {str(e)}"})
 
     def on_select(self, event):
         selection = self.listbox.curselection()
@@ -291,8 +324,8 @@ class MemorySubFrame(ttk.Frame):
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?",
                           (self.table_name,))
             if not cursor.fetchone():
-                self.after(0, lambda: messagebox.showerror("Error",
-                    f"Table '{self.table_name}' not found in database"))
+                self.result_queue.put({'action': 'show_error',
+                    'message': f"Table '{self.table_name}' not found in database"})
                 conn.close()
                 return
 
@@ -309,34 +342,32 @@ class MemorySubFrame(ttk.Frame):
                     cursor.execute("DELETE FROM tasks WHERE task_id = ?", (id_,))
                 success_msg = "Task entry deleted."
             else:
-                self.after(0, lambda: messagebox.showerror("Error",
-                    f"Unknown table type: {self.table_name}"))
+                self.result_queue.put({'action': 'show_error',
+                    'message': f"Unknown table type: {self.table_name}"})
                 conn.close()
                 return
 
             # Check if anything was deleted
             if cursor.rowcount == 0:
-                self.after(0, lambda: messagebox.showwarning("Warning",
-                    "No entry found with that ID. It may have already been deleted."))
+                self.result_queue.put({'action': 'show_warning', 'title': 'Warning',
+                    'message': "No entry found with that ID. It may have already been deleted."})
             else:
-                self.after(0, lambda: messagebox.showinfo("Success", success_msg))
+                self.result_queue.put({'action': 'show_info', 'title': 'Success', 'message': success_msg})
 
             conn.commit()
             conn.close()
 
             # Reload entries
-            self.after(0, self.load_entries)
+            self.result_queue.put({'action': 'reload'})
 
         except sqlite3.Error as e:
             logger.error(f"SQLite error deleting entry: {e}", exc_info=True)
-            error_msg = str(e)
-            self.after(0, lambda: messagebox.showerror("Database Error",
-                f"Failed to delete entry: {error_msg}"))
+            self.result_queue.put({'action': 'show_error',
+                'message': f"Failed to delete entry: {str(e)}"})
         except Exception as e:
             logger.error(f"Error deleting: {e}", exc_info=True)
-            error_msg = str(e)
-            self.after(0, lambda: messagebox.showerror("Error",
-                f"Failed to delete: {error_msg}"))
+            self.result_queue.put({'action': 'show_error',
+                'message': f"Failed to delete: {str(e)}"})
 
     def apply_theme(self):
         """Apply current theme to memory sub-frame widgets."""

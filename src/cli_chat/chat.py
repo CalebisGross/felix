@@ -199,7 +199,7 @@ class FelixChat:
         import subprocess
         import os
 
-        # !command - Execute bash command, capture output
+        # !command - Execute bash command with trust-based approval
         if user_input.startswith('!'):
             command = user_input[1:].strip()
 
@@ -208,6 +208,31 @@ class FelixChat:
                 return ""
 
             try:
+                # Route through trust manager for security classification
+                from src.execution.trust_manager import TrustLevel
+                trust_manager = self.orchestrator.felix_system.trust_manager
+                trust_level = trust_manager.classify_command(command)
+
+                # BLOCKED commands cannot execute
+                if trust_level == TrustLevel.BLOCKED:
+                    self.formatter.print_error(f"❌ Command blocked for security")
+                    self.formatter.print_info(f"   Command: {command}")
+                    self.formatter.print_info(f"   Reason: This command is classified as dangerous")
+                    return ""
+
+                # REVIEW commands require user approval
+                if trust_level == TrustLevel.REVIEW:
+                    self.formatter.print_warning("\n⚠️  Command Requires Approval")
+                    self.formatter.print_info(f"   Command: {command}")
+                    self.formatter.print_info(f"   Risk level: {trust_level.value}")
+                    print()
+
+                    response = input("Execute this command? [y/N]: ").strip().lower()
+                    if response != 'y':
+                        self.formatter.print_info("Command cancelled by user")
+                        return ""
+
+                # Execute (either SAFE or user-approved REVIEW)
                 self.formatter.print_info(f"Executing: {command}")
                 result = subprocess.run(
                     command,

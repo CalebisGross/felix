@@ -45,6 +45,7 @@ class LLMTask:
     metadata: Optional[Dict[str, Any]] = None
     context_history: Optional[List[Dict[str, Any]]] = None  # Previous agent outputs
     knowledge_entries: Optional[List[Any]] = None  # Relevant knowledge from memory
+    tool_instructions: str = ""  # Conditional tool instructions based on task requirements
 
     def __post_init__(self):
         if self.metadata is None:
@@ -612,6 +613,70 @@ class LLMAgent(Agent):
             if self._progress >= checkpoint:
                 self._last_checkpoint_processed = i
 
+    def _build_strict_rules(self, task: LLMTask) -> List[str]:
+        """
+        Build strict rules based on available context to prevent agent comprehension failures.
+
+        Args:
+            task: Task object containing context
+
+        Returns:
+            List of strict rule strings
+        """
+        strict_rules = []
+
+        # Rule 1: Tool usage
+        if hasattr(task, 'tool_instructions') and task.tool_instructions:
+            strict_rules.append(
+                "🛠️ TOOL RULE: Tool instructions are provided below. USE them. "
+                "DO NOT request different tools or claim you lack tools."
+            )
+
+        # Rule 2: Web search data
+        if hasattr(task, 'knowledge_entries') and task.knowledge_entries:
+            web_search_present = any(
+                hasattr(k, 'domain') and k.domain == "web_search"
+                for k in task.knowledge_entries
+            )
+            if web_search_present:
+                strict_rules.append(
+                    "🔍 WEB SEARCH RULE: Web search data is ALREADY PROVIDED below. "
+                    "DO NOT write 'WEB_SEARCH_NEEDED:' - you already have the data. "
+                    "Use the existing knowledge instead."
+                )
+
+        # Rule 3: Previous agent outputs
+        if hasattr(task, 'context_history') and task.context_history:
+            strict_rules.append(
+                f"👥 COLLABORATION RULE: {len(task.context_history)} agent(s) have already contributed. "
+                f"Build on their work. DO NOT repeat what they found or said."
+            )
+
+        return strict_rules
+
+    def _build_response_format(self) -> str:
+        """
+        Build mandatory response format instructions.
+
+        Returns:
+            Formatted response format string
+        """
+        return """
+🎯 MANDATORY RESPONSE FORMAT:
+
+Before your main response, write this acknowledgment line:
+CONTEXT_USED: [brief summary of what context/knowledge/tools you used]
+
+Examples:
+- CONTEXT_USED: Web search data from 2 sources, previous research outputs
+- CONTEXT_USED: File operation tools
+- CONTEXT_USED: None (first agent, no prior context)
+
+Then provide your response.
+
+This acknowledgment ensures you've reviewed available resources before responding.
+"""
+
     def create_position_aware_prompt(self, task: LLMTask, current_time: float) -> tuple[str, int]:
         """
         Create system prompt that adapts to agent's helix position with token budget.
@@ -706,12 +771,41 @@ class LLMAgent(Agent):
         if optimized_prompt:
             base_prompt = optimized_prompt
         else:
+            # CRITICAL: Include conditional tool instructions if available
+            tool_instructions = ""
+            if hasattr(task, 'tool_instructions') and task.tool_instructions:
+                tool_instructions = f"\n\n{task.tool_instructions}"
+                logger.debug(f"Including tool instructions in prompt ({len(task.tool_instructions)} chars)")
+
             base_prompt = self.llm_client.create_agent_system_prompt(
                 agent_type=self.agent_type,
                 position_info=position_info,
-                task_context=f"{task.context}{context_summary}{knowledge_summary}{concepts_summary}"
+                task_context=f"{task.context}{context_summary}{knowledge_summary}{concepts_summary}{tool_instructions}"
             )
-        
+
+        # NEW: Inject Context Awareness Protocol (Hybrid Imperative Prompting)
+        # This forces agents to comprehend and use available context instead of ignoring it
+        protocol_section = ""
+
+        # Step 1: Add context inventory if available
+        if hasattr(task, 'context_inventory') and task.context_inventory:
+            protocol_section += "\n\n" + task.context_inventory + "\n"
+
+        # Step 2: Add strict rules based on available resources
+        strict_rules = self._build_strict_rules(task)
+        if strict_rules:
+            protocol_section += "\n🚨 STRICT RULES (FOLLOW THESE CAREFULLY):\n"
+            for i, rule in enumerate(strict_rules, 1):
+                protocol_section += f"  {i}. {rule}\n"
+
+        # Step 3: Add mandatory response format
+        protocol_section += self._build_response_format()
+
+        # Inject protocol into base prompt
+        if protocol_section:
+            base_prompt = base_prompt + protocol_section
+            logger.debug(f"Injected context awareness protocol ({len(protocol_section)} chars)")
+
         # Calculate temperature for metadata
         temperature = self.get_adaptive_temperature(current_time)
 

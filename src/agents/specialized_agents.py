@@ -397,14 +397,17 @@ Your response (15-30 words, direct answer only):"""
                     depth_ratio=depth_ratio
                 )
 
-                # Combine: tools_header + header + main prompt
-                base_prompt = AGENT_TOOLS_HEADER + header + main_prompt
+                # Combine: conditional tools + header + main prompt
+                tools_header = task.tool_instructions if task.tool_instructions else AGENT_TOOLS_HEADER
+                base_prompt = tools_header + header + main_prompt
             else:
                 # Fallback to hardcoded
-                base_prompt = AGENT_TOOLS_HEADER + self._build_hardcoded_prompt(depth_ratio, strict_mode)
+                tools_header = task.tool_instructions if task.tool_instructions else AGENT_TOOLS_HEADER
+                base_prompt = tools_header + self._build_hardcoded_prompt(depth_ratio, strict_mode)
         else:
             # No PromptManager, use hardcoded prompts
-            base_prompt = AGENT_TOOLS_HEADER + self._build_hardcoded_prompt(depth_ratio, strict_mode)
+            tools_header = task.tool_instructions if task.tool_instructions else AGENT_TOOLS_HEADER
+            base_prompt = tools_header + self._build_hardcoded_prompt(depth_ratio, strict_mode)
 
         # Add shared context
         if self.shared_context:
@@ -616,7 +619,9 @@ class AnalysisAgent(LLMAgent):
             )
             stage_token_budget = token_allocation.stage_budget
 
-        base_prompt = AGENT_TOOLS_HEADER + f"""You are a specialized ANALYSIS AGENT in the Felix multi-agent system.
+        # Use conditional tool instructions if available, otherwise fallback to static header
+        tools_header = task.tool_instructions if task.tool_instructions else AGENT_TOOLS_HEADER
+        base_prompt = tools_header + f"""You are a specialized ANALYSIS AGENT in the Felix multi-agent system.
 
 Analysis Type: {self.analysis_type}
 Current Position: Depth {depth_ratio:.2f}/1.0 on the helix
@@ -777,7 +782,9 @@ class CriticAgent(LLMAgent):
             )
             stage_token_budget = token_allocation.stage_budget
 
-        base_prompt = AGENT_TOOLS_HEADER + f"""You are a specialized CRITIC AGENT in the Felix multi-agent system.
+        # Use conditional tool instructions if available, otherwise fallback to static header
+        tools_header = task.tool_instructions if task.tool_instructions else AGENT_TOOLS_HEADER
+        base_prompt = tools_header + f"""You are a specialized CRITIC AGENT in the Felix multi-agent system.
 
 Review Focus: {self.review_focus}
 Current Position: Depth {depth_ratio:.2f}/1.0 on the helix

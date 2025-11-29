@@ -874,43 +874,16 @@ class LMStudioClient:
             # If timezone abbreviation is empty, add local time indicator
             current_datetime = f"{current_datetime.strip()} (local time)"
 
+        # IMPORTANT: Tool instructions are now provided CONDITIONALLY via task_context
+        # based on task requirements. DO NOT hardcode tool availability here.
+        # Tool instructions come from the conditional tool memory system:
+        # - Task is classified for tool requirements (classify_tool_requirements)
+        # - Required tools are retrieved from knowledge store (retrieve_tool_instructions)
+        # - Instructions are passed via task.tool_instructions in task_context
+        # This prevents agents from using tools they don't need (solves unwanted file creation)
+
         base_prompt = f"""📅 CURRENT DATE/TIME: {current_datetime}
 Use this for any time-sensitive queries or context.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-⚠️⚠️⚠️ CRITICAL TOOLS AVAILABLE ⚠️⚠️⚠️
-
-🔍 WEB SEARCH - USE THIS FOR CURRENT INFORMATION:
-If you need current/real-time data (dates, times, recent events, latest stats), write EXACTLY:
-WEB_SEARCH_NEEDED: [your query]
-
-EXAMPLES - COPY THIS FORMAT:
-✓ Time query: "WEB_SEARCH_NEEDED: current date and time"
-✓ Recent event: "WEB_SEARCH_NEEDED: 2024 election results"
-✓ Latest stat: "WEB_SEARCH_NEEDED: current inflation rate"
-
-🚨 DO NOT say "I cannot access" - REQUEST A SEARCH FIRST!
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-🖥️ SYSTEM COMMANDS - USE THIS FOR SYSTEM OPERATIONS:
-If you need to check system state, run commands, or interact with the terminal, write EXACTLY:
-SYSTEM_ACTION_NEEDED: [command]
-
-EXAMPLES - COPY THIS FORMAT:
-✓ Check time/date: "SYSTEM_ACTION_NEEDED: date"
-✓ Check directory: "SYSTEM_ACTION_NEEDED: pwd"
-✓ List files: "SYSTEM_ACTION_NEEDED: ls -la"
-✓ Check Python packages: "SYSTEM_ACTION_NEEDED: pip list"
-✓ Activate venv: "SYSTEM_ACTION_NEEDED: source .venv/bin/activate"
-
-SAFETY LEVELS:
-- SAFE (execute immediately): ls, pwd, date, pip list, which, etc.
-- REVIEW (need approval): pip install, git push, mkdir, etc.
-- BLOCKED (never execute): rm -rf, dangerous operations
-
-🚨 DO NOT say "I cannot access the terminal" - REQUEST A COMMAND FIRST!
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 

@@ -26,6 +26,13 @@ class EnrichedContext:
     compression_ratio: float
     knowledge_entries: List[Any]
     message_count: int
+    tool_instructions: str = ""  # Conditional tool instructions based on task requirements
+    tool_instruction_ids: List[str] = None  # IDs of tool instruction knowledge entries (for meta-learning)
+    context_inventory: str = ""  # NEW: Explicit inventory of available resources for agent comprehension
+
+    def __post_init__(self):
+        if self.tool_instruction_ids is None:
+            self.tool_instruction_ids = []
 
 
 class CollaborativeContextBuilder:
@@ -163,13 +170,88 @@ class CollaborativeContextBuilder:
         # Default to complex for open-ended, analytical tasks
         return "COMPLEX"
 
+    def build_context_inventory(self,
+                                tool_instructions: str,
+                                tool_instruction_ids: List[str],
+                                knowledge_entries: List[Any],
+                                context_history: List[Dict[str, Any]]) -> str:
+        """
+        Build explicit context inventory for agent prompts to improve comprehension.
+
+        This creates a clear "what you already have" checklist that forces agents
+        to acknowledge available resources before making redundant requests.
+
+        Args:
+            tool_instructions: Tool instruction text (if any)
+            tool_instruction_ids: IDs of tool instructions
+            knowledge_entries: Knowledge entries retrieved
+            context_history: Previous agent outputs
+
+        Returns:
+            Formatted inventory string for prompt injection
+        """
+        inventory_lines = [
+            "=" * 60,
+            "📦 CONTEXT INVENTORY (WHAT YOU ALREADY HAVE)",
+            "=" * 60
+        ]
+
+        # Tool availability
+        if tool_instructions:
+            tool_count = len(tool_instruction_ids)
+            inventory_lines.append(f"✅ TOOLS AVAILABLE: {tool_count} tool instruction(s) loaded")
+            inventory_lines.append("   DO NOT request tools - you already have them")
+            inventory_lines.append(f"   Review the tool instructions section below")
+        else:
+            inventory_lines.append("❌ TOOLS: None available for this task")
+            inventory_lines.append("   If you need tools, this task doesn't require them")
+
+        # Knowledge availability (web search and workflow data)
+        web_search_entries = [k for k in knowledge_entries if k.domain == "web_search"]
+        workflow_entries = [k for k in knowledge_entries if k.domain == "workflow_task"]
+
+        if web_search_entries:
+            inventory_lines.append(f"✅ WEB SEARCH DATA: {len(web_search_entries)} result(s) available")
+            inventory_lines.append("   DO NOT request web search - data is already here")
+
+            # Show sources if available
+            sources = set()
+            for entry in web_search_entries[:3]:  # Sample first 3
+                if isinstance(entry.content, dict) and 'source_url' in entry.content:
+                    sources.add(entry.content['source_url'][:50])
+            if sources:
+                inventory_lines.append(f"   Sources: {', '.join(list(sources)[:2])}...")
+        else:
+            inventory_lines.append("❌ WEB SEARCH DATA: No results yet")
+            inventory_lines.append("   You MAY request web search if needed for current information")
+
+        # Previous agent outputs
+        if context_history:
+            inventory_lines.append(f"✅ PREVIOUS AGENT OUTPUTS: {len(context_history)} message(s)")
+            agent_types = set([h.get('agent_type', 'unknown') for h in context_history])
+            inventory_lines.append(f"   Agent types: {', '.join(agent_types)}")
+            inventory_lines.append("   BUILD ON THIS WORK - don't repeat what they found")
+        else:
+            inventory_lines.append("❌ PREVIOUS OUTPUTS: You are the first agent")
+            inventory_lines.append("   You are pioneering this workflow")
+
+        # Workflow knowledge
+        if workflow_entries:
+            inventory_lines.append(f"📚 WORKFLOW KNOWLEDGE: {len(workflow_entries)} stored insight(s)")
+            inventory_lines.append("   Previous workflows have relevant information")
+
+        inventory_lines.append("=" * 60)
+
+        return "\n".join(inventory_lines)
+
     def build_agent_context(self,
                            original_task: str,
                            agent_type: str,
                            agent_id: str,
                            current_time: float,
                            max_context_tokens: int = 2000,
-                           message_limit: int = 10) -> EnrichedContext:
+                           message_limit: int = 10,
+                           tool_requirements: Optional[Dict[str, bool]] = None) -> EnrichedContext:
         """
         Build enriched context for agent including previous agent outputs.
 
@@ -180,13 +262,33 @@ class CollaborativeContextBuilder:
             current_time: Current simulation time
             max_context_tokens: Maximum tokens for context (for compression)
             message_limit: Maximum messages to retrieve
+            tool_requirements: Optional dict specifying which tools are needed
+                              {'needs_file_ops': bool, 'needs_web_search': bool, 'needs_system_commands': bool}
 
         Returns:
-            EnrichedContext with task description and accumulated context
+            EnrichedContext with task description, accumulated context, and conditional tool instructions
         """
         logger.info(f"="*60)
         logger.info(f"Building collaborative context for {agent_type} agent: {agent_id}")
         logger.info(f"  Task: {original_task[:80]}..." if len(original_task) > 80 else f"  Task: {original_task}")
+
+        # Retrieve tool instructions based on task requirements (conditional injection)
+        tool_instructions = ""
+        tool_instruction_ids = []
+        if tool_requirements and self.memory_facade:
+            try:
+                logger.info("🔧 TOOL INSTRUCTION RETRIEVAL")
+                logger.info(f"  Tool requirements: {tool_requirements}")
+                tool_instructions, tool_instruction_ids = self.memory_facade.retrieve_tool_instructions(tool_requirements)
+                if tool_instructions:
+                    logger.info(f"  ✓ Retrieved tool instructions ({len(tool_instructions)} chars)")
+                    logger.info(f"  ✓ Tracking {len(tool_instruction_ids)} tool instruction IDs for meta-learning")
+                else:
+                    logger.info("  ℹ No tool instructions needed or available for this task")
+            except Exception as e:
+                logger.warning(f"  ⚠ Tool instruction retrieval failed: {e}")
+                tool_instructions = ""
+                tool_instruction_ids = []
 
         # Retrieve recent messages from CentralPost (exclude self)
         from src.communication.central_post import MessageType
@@ -540,6 +642,20 @@ class CollaborativeContextBuilder:
         self.contexts_built += 1
         self.total_compression_ratio += compression_ratio
 
+        # NEW: Build context inventory for agent comprehension
+        logger.info("")
+        logger.info("📦 BUILDING CONTEXT INVENTORY")
+        context_inventory = self.build_context_inventory(
+            tool_instructions=tool_instructions,
+            tool_instruction_ids=tool_instruction_ids,
+            knowledge_entries=knowledge_entries,
+            context_history=context_history
+        )
+        logger.info("  ✓ Context inventory generated for agent prompt")
+        logger.info(f"    - Tools: {'Available' if tool_instructions else 'None'}")
+        logger.info(f"    - Web search data: {len([k for k in knowledge_entries if k.domain == 'web_search'])} entries")
+        logger.info(f"    - Previous outputs: {len(context_history)} messages")
+
         enriched = EnrichedContext(
             task_description=original_task,
             context_history=context_history,
@@ -547,7 +663,10 @@ class CollaborativeContextBuilder:
             compressed_context_size=compressed_size,
             compression_ratio=compression_ratio,
             knowledge_entries=knowledge_entries,
-            message_count=len(recent_messages)
+            message_count=len(recent_messages),
+            tool_instructions=tool_instructions,  # Include conditional tool instructions
+            tool_instruction_ids=tool_instruction_ids,  # Include IDs for meta-learning
+            context_inventory=context_inventory  # NEW: Include inventory for agent comprehension
         )
 
         logger.info(f"  ✓ Collaborative context built successfully:")

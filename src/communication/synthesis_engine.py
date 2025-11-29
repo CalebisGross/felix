@@ -122,6 +122,87 @@ class SynthesisEngine:
         # Default to complex for open-ended, analytical tasks
         return "COMPLEX"
 
+    def classify_tool_requirements(self, task_description: str) -> Dict[str, bool]:
+        """
+        Classify which tool capabilities are needed for a task.
+
+        This enables conditional tool instruction injection - agents only receive
+        instructions for tools they actually need, reducing token waste.
+
+        Tool categories:
+        - file_operations: Creating, modifying, or managing files
+        - web_search: Accessing current/real-time information
+        - system_commands: Package management, process control, system inspection
+
+        Args:
+            task_description: The task description from user
+
+        Returns:
+            Dictionary with tool requirement flags:
+            {
+                'needs_file_ops': bool,
+                'needs_web_search': bool,
+                'needs_system_commands': bool
+            }
+
+        Examples:
+            >>> engine.classify_tool_requirements("Create a report and save it to report.txt")
+            {'needs_file_ops': True, 'needs_web_search': False, 'needs_system_commands': False}
+            >>> engine.classify_tool_requirements("What's the latest news on AI?")
+            {'needs_file_ops': False, 'needs_web_search': True, 'needs_system_commands': False}
+            >>> engine.classify_tool_requirements("Explain quantum computing")
+            {'needs_file_ops': False, 'needs_web_search': False, 'needs_system_commands': False}
+        """
+        import re
+
+        task_lower = task_description.lower()
+
+        # File operation patterns
+        file_patterns = [
+            r'\b(create|write|save|generate|export|output)\s+(a\s+)?file',
+            r'\bsave\s+(to|in|as)\b',
+            r'\bwrite\s+(to|into)\b',
+            r'\b(create|make|generate)\s+(a\s+)?(document|report|output|result)',
+            r'\bfile\s+(with|containing)',
+            r'\bgenerate.*\.(txt|md|json|csv|py|js)',
+            r'\bexport\s+(to|as)\b',
+        ]
+
+        # Web search patterns (current information, time-sensitive queries)
+        web_search_patterns = [
+            r'\b(current|latest|recent|now|today|this\s+(week|month|year))',
+            r'\bwhat\'?s?\s+(happening|new|the\s+news)',
+            r'\b(search|find|look\s+up|google)\b',
+            r'\bup\s+to\s+date\b',
+            r'\blive\s+(data|information)',
+            r'\breal[-\s]?time\b',
+            r'\blatest\s+(update|version|news)',
+        ]
+
+        # System command patterns (package management, process control, system inspection)
+        system_command_patterns = [
+            r'\b(install|uninstall|upgrade)\s+(package|library|module|dependency)',
+            r'\bmkdir\b',
+            r'\bchmod\b',
+            r'\b(run|execute)\s+(command|script|process)',
+            r'\b(start|stop|restart)\s+(process|service)',
+            r'\bcheck\s+(if|whether).*installed',
+            r'\bpip\s+(install|list)',
+            r'\bnpm\s+(install|run)',
+            r'\bapt[-\s]get\b',
+        ]
+
+        # Classify tool requirements
+        needs_file_ops = any(re.search(pattern, task_lower) for pattern in file_patterns)
+        needs_web_search = any(re.search(pattern, task_lower) for pattern in web_search_patterns)
+        needs_system_commands = any(re.search(pattern, task_lower) for pattern in system_command_patterns)
+
+        return {
+            'needs_file_ops': needs_file_ops,
+            'needs_web_search': needs_web_search,
+            'needs_system_commands': needs_system_commands
+        }
+
     def synthesize_agent_outputs(self, task_description: str, max_messages: int = 20,
                                  task_complexity: str = "COMPLEX") -> Dict[str, Any]:
         """

@@ -56,7 +56,8 @@ class SystemCommandManager:
                  approval_manager: ApprovalManager,
                  agent_registry: Any,  # AgentRegistry reference
                  message_queue_callback: Callable[[Message], None],
-                 config: Any = None):  # Felix configuration for auto-approval
+                 config: Any = None,  # Felix configuration for auto-approval
+                 gui_mode: bool = False):  # Whether running in GUI mode
         """
         Initialize System Command Manager.
 
@@ -68,6 +69,7 @@ class SystemCommandManager:
             agent_registry: AgentRegistry for agent info lookup
             message_queue_callback: Callback to queue messages (central_post.queue_message)
             config: Optional FelixConfig for checking auto-approval settings
+            gui_mode: Whether running in GUI mode (prevents CLI approval prompts)
         """
         self.system_executor = system_executor
         self.trust_manager = trust_manager
@@ -76,6 +78,7 @@ class SystemCommandManager:
         self.agent_registry = agent_registry
         self._queue_message = message_queue_callback
         self.config = config  # Store config for auto-approval checks
+        self.gui_mode = gui_mode  # Store GUI mode flag
 
         # Action tracking
         self._action_results: Dict[str, CommandResult] = {}
@@ -186,6 +189,31 @@ class SystemCommandManager:
         """Handle REVIEW commands - check deduplication, auto-approval, or request approval."""
         logger.info(f"⚠ Command requires APPROVAL")
 
+        # EMERGENCY SAFETY CHECK: Never auto-approve destructive commands
+        # These patterns bypass deduplication and auto-approval rules
+        import re
+        DESTRUCTIVE_PATTERNS = [
+            r'rm\s+-rf',  # Any rm -rf command
+            r'rm\s+-fr',  # Reversed flags
+            r'truncate\s+-s\s*0',  # Truncate files to zero
+            r'dd\s+.*of=',  # Write to devices
+            r':\s*>\s*[^>]',  # Truncate via ": > file"
+            r'>\s*/dev/sd',  # Write to disk devices
+        ]
+
+        for pattern in DESTRUCTIVE_PATTERNS:
+            if re.search(pattern, command, re.IGNORECASE):
+                logger.warning("=" * 60)
+                logger.warning("🚨 DESTRUCTIVE COMMAND DETECTED")
+                logger.warning(f"   Command: {command}")
+                logger.warning(f"   Pattern: {pattern}")
+                logger.warning("   FORCING MANUAL APPROVAL (skipping deduplication/auto-approval)")
+                logger.warning("=" * 60)
+
+                # Force manual approval request (skip deduplication and auto-approval)
+                return self._request_approval(action_id, agent_id, command, context,
+                                             workflow_id, trust_level)
+
         # 1. Check for command deduplication within workflow
         if workflow_id:
             command_hash = self.system_executor.compute_command_hash(command)
@@ -238,9 +266,9 @@ class SystemCommandManager:
 
             return action_id
 
-        # 2.5. Check for global auto-approval flag (CLI mode)
+        # 2.5. Check for auto-approval (non-interactive mode only)
         if self._should_auto_approve():
-            logger.info(f"⚡ CLI mode: auto-approving REVIEW command without blocking")
+            logger.info(f"⚡ Non-interactive mode: auto-approving REVIEW command")
 
             # Execute immediately as if it were a SAFE command
             result = self._execute_command_with_streaming(
@@ -250,7 +278,7 @@ class SystemCommandManager:
                 context=context,
                 workflow_id=workflow_id,
                 trust_level=trust_level,
-                approved_by="cli_auto_approve"
+                approved_by="auto_approve"
             )
 
             # Cache in workflow deduplication
@@ -260,11 +288,70 @@ class SystemCommandManager:
                     self._executed_commands[workflow_id] = {}
                 self._executed_commands[workflow_id][command_hash] = result
 
-            logger.info(f"📤 Auto-approved command result (CLI mode):")
+            logger.info(f"📤 Auto-approved command result:")
             logger.info(f"   Success: {result.success}")
             logger.info(f"   Exit code: {result.exit_code}")
 
             return action_id
+
+        # 2.6. Interactive CLI mode: prompt user for approval (only if not GUI mode)
+        import sys
+        if not self.gui_mode and sys.stdin.isatty():
+            logger.info("🖥️  Interactive CLI: prompting user for approval")
+
+            # Display approval request
+            print("\n" + "=" * 60)
+            print("⚠️  AGENT COMMAND APPROVAL REQUIRED")
+            print("=" * 60)
+            print(f"Requesting agent: {agent_id}")
+            print(f"Command:          {command}")
+            print(f"Context:          {context[:100]}...")
+            print(f"Risk level:       {trust_level.value.upper()}")
+            print("=" * 60)
+            print()
+
+            response = input("Execute this command? [y/N]: ").strip().lower()
+
+            if response == 'y':
+                # User approved - execute
+                logger.info("✓ User approved command execution")
+
+                result = self._execute_command_with_streaming(
+                    action_id=action_id,
+                    command=command,
+                    agent_id=agent_id,
+                    context=context,
+                    workflow_id=workflow_id,
+                    trust_level=trust_level,
+                    approved_by="cli_user"
+                )
+
+                # Cache result
+                if workflow_id:
+                    command_hash = self.system_executor.compute_command_hash(command)
+                    if workflow_id not in self._executed_commands:
+                        self._executed_commands[workflow_id] = {}
+                    self._executed_commands[workflow_id][command_hash] = result
+
+                return action_id
+
+            else:
+                # User denied - create failed result
+                logger.info("✗ User denied command execution")
+
+                result = CommandResult(
+                    command=command,
+                    success=False,
+                    stdout="",
+                    stderr="Command denied by user",
+                    exit_code=-1,
+                    execution_time=0.0
+                )
+
+                self._action_results[action_id] = result
+                self._broadcast_action_result(action_id, agent_id, command, result)
+
+                return action_id
 
         # 3. Request user approval via ApprovalManager
         approval_id = self.approval_manager.request_approval(
@@ -292,14 +379,36 @@ class SystemCommandManager:
 
     def _should_auto_approve(self) -> bool:
         """
-        Check if auto-approval is enabled via config.
+        Check if auto-approval should be used.
+
+        Auto-approval only happens when:
+        1. Config flag is enabled AND
+        2. We're NOT in interactive CLI mode (user can't respond to prompts)
+
+        Interactive CLI mode (stdin is a TTY) ALWAYS prompts for approval
+        to prevent data loss incidents.
 
         Returns:
-            True if auto_approve_system_actions config flag is set (CLI mode), False otherwise
+            True if should auto-approve (non-interactive mode), False if should prompt user
         """
-        if self.config and hasattr(self.config, 'auto_approve_system_actions'):
-            return self.config.auto_approve_system_actions
-        return False
+        # Check if auto-approval is enabled in config
+        if not (self.config and hasattr(self.config, 'auto_approve_system_actions')):
+            return False
+
+        if not self.config.auto_approve_system_actions:
+            return False
+
+        # Even if config says auto-approve, check if we're in interactive CLI
+        import sys
+        is_interactive_cli = sys.stdin.isatty()
+
+        if is_interactive_cli:
+            # Interactive CLI mode: NEVER auto-approve, always prompt
+            logger.debug("Interactive CLI detected - disabling auto-approval")
+            return False
+
+        # Non-interactive mode (GUI, batch, pipes): can auto-approve
+        return True
 
     def _execute_command_with_streaming(self, action_id: str, command: str, agent_id: str,
                                        context: str, workflow_id: Optional[str],

@@ -203,6 +203,12 @@ def run_felix_workflow(felix_system, task_input: str,
         task_complexity = central_post.synthesis_engine.classify_task_complexity(task_input)
         logger.info(f"Task complexity classification: {task_complexity}")
 
+        # Classify tool requirements for conditional tool instruction injection
+        tool_requirements = central_post.synthesis_engine.classify_tool_requirements(task_input)
+        logger.info(f"Tool requirements classification: file_ops={tool_requirements['needs_file_ops']}, "
+                   f"web_search={tool_requirements['needs_web_search']}, "
+                   f"system_commands={tool_requirements['needs_system_commands']}")
+
         # Check web search availability (Fix 5)
         logger.info("=" * 60)
         logger.info("🔍 WEB SEARCH AVAILABILITY CHECK")
@@ -470,19 +476,33 @@ def run_felix_workflow(felix_system, task_input: str,
                                 agent_id=agent.agent_id,
                                 current_time=current_time,
                                 max_context_tokens=agent.max_tokens,
-                                message_limit=3  # Reduced from 10 to fit within token budget
+                                message_limit=3,  # Reduced from 10 to fit within token budget
+                                tool_requirements=tool_requirements  # Pass tool requirements for conditional injection
                             )
 
                             # Update task with enriched context for collaborative processing
                             task.context_history = enriched_context.context_history
                             task.knowledge_entries = enriched_context.knowledge_entries
+                            task.tool_instructions = enriched_context.tool_instructions  # Include conditional tool instructions
+                            task.context_inventory = enriched_context.context_inventory  # NEW: Include context inventory for agent comprehension
                             logger.info(f"  ✓ Using collaborative context with {len(enriched_context.context_history)} previous outputs")
+                            if enriched_context.tool_instructions:
+                                logger.info(f"  ✓ Tool instructions included ({len(enriched_context.tool_instructions)} chars)")
+                            if enriched_context.context_inventory:
+                                logger.info(f"  ✓ Context awareness protocol enabled ({len(enriched_context.context_inventory)} chars)")
 
                             # Track knowledge entry IDs for meta-learning
                             if enriched_context.knowledge_entries:
                                 for entry in enriched_context.knowledge_entries:
                                     if hasattr(entry, 'knowledge_id') and entry.knowledge_id not in results["knowledge_entry_ids"]:
                                         results["knowledge_entry_ids"].append(entry.knowledge_id)
+
+                            # Track tool instruction IDs for meta-learning
+                            if enriched_context.tool_instruction_ids:
+                                for tool_id in enriched_context.tool_instruction_ids:
+                                    if tool_id not in results["knowledge_entry_ids"]:
+                                        results["knowledge_entry_ids"].append(tool_id)
+                                logger.info(f"  ✓ Tracking {len(enriched_context.tool_instruction_ids)} tool instruction IDs for meta-learning")
 
                         except Exception as ctx_error:
                             logger.warning(f"  ⚠ Collaborative context building failed, falling back to non-collaborative mode: {ctx_error}")

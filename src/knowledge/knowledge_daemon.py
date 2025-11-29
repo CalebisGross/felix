@@ -36,6 +36,14 @@ from .graph_builder import KnowledgeGraphBuilder
 from .embeddings import EmbeddingProvider
 from src.memory.knowledge_store import KnowledgeStore
 
+# Optional backup manager (Phase 5 feature)
+try:
+    from .backup_manager_extended import KnowledgeBackupManager
+    BACKUP_MANAGER_AVAILABLE = True
+except ImportError:
+    BACKUP_MANAGER_AVAILABLE = False
+    KnowledgeBackupManager = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -46,11 +54,47 @@ class DaemonConfig:
     enable_batch_processing: bool = True
     enable_refinement: bool = True
     enable_file_watching: bool = True
+    enable_scheduled_backup: bool = False  # Enable automatic backups
     refinement_interval: int = 3600  # seconds (1 hour)
+    backup_interval: int = 86400  # seconds (24 hours)
+    backup_compress: bool = True  # Use compression for JSON backups
+    backup_keep_days: int = 30  # Keep backups for N days
     processing_threads: int = 2
     max_memory_mb: int = 512
     chunk_size: int = 1000
     chunk_overlap: int = 200
+    exclusion_patterns: List[str] = None  # Path patterns to exclude from scanning
+
+    def __post_init__(self):
+        """Initialize exclusion patterns with defaults if not provided."""
+        if self.exclusion_patterns is None:
+            self.exclusion_patterns = [
+                "*/.venv/*",
+                "*/.venv/**",
+                "*/venv/*",
+                "*/venv/**",
+                "*/node_modules/*",
+                "*/node_modules/**",
+                "*/.git/*",
+                "*/.git/**",
+                "*/__pycache__/*",
+                "*/__pycache__/**",
+                "*/dist/*",
+                "*/dist/**",
+                "*/build/*",
+                "*/build/**",
+                "*/.pytest_cache/*",
+                "*/.mypy_cache/*",
+                "*/site-packages/*",
+                "*/site-packages/**",
+                "*/.tox/*",
+                "*/.nox/*",
+                "*/htmlcov/*",
+                "*/.coverage",
+                "*/.env",
+                "*/.vscode/*",
+                "*/.idea/*",
+            ]
 
 
 @dataclass
@@ -60,10 +104,12 @@ class DaemonStatus:
     batch_processor_active: bool
     refiner_active: bool
     file_watcher_active: bool
+    backup_active: bool  # Phase 5
     documents_pending: int
     documents_processed: int
     documents_failed: int
     last_refinement: Optional[float]
+    last_backup: Optional[float]  # Phase 5
     last_activity: Optional[float]
     uptime_seconds: float
 
@@ -121,13 +167,29 @@ if WATCHDOG_AVAILABLE:
     class DocumentFileHandler(FileSystemEventHandler):
         """Handles file system events for document monitoring."""
 
-        def __init__(self, document_queue: DocumentQueue, file_patterns: List[str]):
+        def __init__(self, document_queue: DocumentQueue, file_patterns: List[str],
+                     exclusion_patterns: List[str] = None):
             super().__init__()
             self.document_queue = document_queue
             self.file_patterns = file_patterns
+            self.exclusion_patterns = exclusion_patterns or []
+
+        def _should_exclude(self, file_path: str) -> bool:
+            """Check if file path matches any exclusion patterns."""
+            import fnmatch
+
+            for pattern in self.exclusion_patterns:
+                if fnmatch.fnmatch(file_path, pattern):
+                    return True
+            return False
 
         def _should_process(self, file_path: str) -> bool:
             """Check if file should be processed."""
+            # First check exclusions
+            if self._should_exclude(file_path):
+                return False
+
+            # Then check if matches file patterns
             path = Path(file_path)
             return any(path.match(pattern) for pattern in self.file_patterns)
 
@@ -202,10 +264,41 @@ class KnowledgeDaemon:
         self.threads = []
         self.start_time = None
         self.last_refinement = None
+        self.last_backup = None
         self.last_activity = None
 
         # File watching
         self.observer = None
+
+        # Backup manager (Phase 5)
+        self.backup_manager = None
+        if BACKUP_MANAGER_AVAILABLE and config.enable_scheduled_backup:
+            try:
+                self.backup_manager = KnowledgeBackupManager(knowledge_store)
+                logger.info("✓ Backup manager initialized")
+            except Exception as e:
+                logger.warning(f"Failed to initialize backup manager: {e}")
+
+    def _should_exclude_path(self, file_path: Path) -> bool:
+        """
+        Check if a file path matches any exclusion patterns.
+
+        Args:
+            file_path: Path to check
+
+        Returns:
+            True if path should be excluded, False otherwise
+        """
+        import fnmatch
+
+        file_path_str = str(file_path)
+
+        for pattern in self.config.exclusion_patterns:
+            if fnmatch.fnmatch(file_path_str, pattern):
+                logger.debug(f"Excluding {file_path_str} (matches {pattern})")
+                return True
+
+        return False
 
     def start(self):
         """Start all daemon modes."""
@@ -243,6 +336,17 @@ class KnowledgeDaemon:
         if self.config.enable_file_watching:
             self._start_file_watching()
             logger.info("✓ Mode C: File watching started")
+
+        # Mode D: Scheduled Backups (Phase 5)
+        if self.config.enable_scheduled_backup and self.backup_manager:
+            backup_thread = threading.Thread(
+                target=self._backup_loop,
+                name="KnowledgeDaemon-Backup",
+                daemon=True
+            )
+            backup_thread.start()
+            self.threads.append(backup_thread)
+            logger.info("✓ Mode D: Scheduled backups started")
 
         logger.info("Knowledge Daemon fully operational")
 
@@ -311,10 +415,12 @@ class KnowledgeDaemon:
             batch_processor_active=self.config.enable_batch_processing,
             refiner_active=self.config.enable_refinement,
             file_watcher_active=self.config.enable_file_watching and self.observer is not None,
+            backup_active=self.config.enable_scheduled_backup and self.backup_manager is not None,
             documents_pending=queue_stats['pending'],
             documents_processed=queue_stats['completed'],
             documents_failed=queue_stats['failed'],
             last_refinement=self.last_refinement,
+            last_backup=self.last_backup,
             last_activity=self.last_activity,
             uptime_seconds=uptime
         )
@@ -364,6 +470,10 @@ class KnowledgeDaemon:
             patterns = ['*.pdf', '*.txt', '*.md', '*.py', '*.js', '*.java']
             for pattern in patterns:
                 for file_path in path.rglob(pattern):
+                    # Skip excluded paths
+                    if self._should_exclude_path(file_path):
+                        continue
+
                     file_path_str = str(file_path.absolute())
                     # Skip if already processed
                     if file_path_str not in already_processed:
@@ -449,6 +559,86 @@ class KnowledgeDaemon:
 
         logger.info("Refinement loop exited")
 
+    def _backup_loop(self):
+        """
+        Mode D: Scheduled backups of knowledge base.
+
+        Periodically creates database and JSON backups with automatic cleanup.
+        Phase 5 feature - requires KnowledgeBackupManager.
+        """
+        if not self.backup_manager:
+            logger.warning("Backup loop started but backup manager not available")
+            return
+
+        logger.info("Backup: Starting scheduled backup loop")
+
+        # Perform initial backup after startup
+        try:
+            logger.info("Backup: Creating initial backup...")
+            backups = self.backup_manager.create_scheduled_backup(
+                include_database=True,
+                include_json=True,
+                compress=self.config.backup_compress
+            )
+            self.last_backup = time.time()
+            logger.info(f"Initial backup complete: {list(backups.keys())}")
+
+            if self.progress_callback:
+                self.progress_callback('backup_complete', {
+                    'backups': backups,
+                    'initial': True
+                })
+        except Exception as e:
+            logger.error(f"Initial backup failed: {e}")
+
+        while self.running:
+            # Wait for backup interval with interruptible sleep
+            sleep_remaining = self.config.backup_interval
+            while sleep_remaining > 0 and self.running:
+                sleep_time = min(1.0, sleep_remaining)
+                time.sleep(sleep_time)
+                sleep_remaining -= sleep_time
+
+            if not self.running:
+                break
+
+            try:
+                logger.info("Backup: Starting backup cycle...")
+                start_time = time.time()
+
+                # Create backups
+                backups = self.backup_manager.create_scheduled_backup(
+                    include_database=True,
+                    include_json=True,
+                    compress=self.config.backup_compress
+                )
+
+                # Cleanup old backups
+                deleted = self.backup_manager.cleanup_old_backups(
+                    max_age_days=self.config.backup_keep_days,
+                    keep_minimum=5
+                )
+
+                duration = time.time() - start_time
+                self.last_backup = time.time()
+
+                logger.info(f"Backup cycle complete: {list(backups.keys())}, "
+                          f"deleted {deleted['database'] + deleted['json']} old backups, "
+                          f"{duration:.1f}s")
+
+                # Report progress
+                if self.progress_callback:
+                    self.progress_callback('backup_complete', {
+                        'duration': duration,
+                        'backups': backups,
+                        'deleted': deleted
+                    })
+
+            except Exception as e:
+                logger.error(f"Backup cycle failed: {e}")
+
+        logger.info("Backup loop exited")
+
     def _start_file_watching(self):
         """
         Mode C: Watch file system for new/modified documents.
@@ -458,7 +648,11 @@ class KnowledgeDaemon:
 
             # Set up handlers for each watch directory
             file_patterns = ['*.pdf', '*.txt', '*.md', '*.py', '*.js', '*.java']
-            handler = DocumentFileHandler(self.document_queue, file_patterns)
+            handler = DocumentFileHandler(
+                self.document_queue,
+                file_patterns,
+                self.config.exclusion_patterns
+            )
 
             for watch_dir in self.config.watch_directories:
                 path = Path(watch_dir)
@@ -539,6 +733,15 @@ class KnowledgeDaemon:
                 concept_count=total_concepts
             )
 
+            # Update directory index
+            self._update_directory_index(
+                file_path=file_path,
+                doc_id=ingestion_result.document_id,
+                file_hash=ingestion_result.metadata.file_hash,
+                status='completed',
+                entry_count=total_concepts
+            )
+
             duration = time.time() - start_time
             logger.info(f"Document processed: {ingestion_result.metadata.file_name} - "
                        f"{total_concepts} concepts, {graph_stats.get('relationships_created', 0)} relationships, "
@@ -607,6 +810,59 @@ class KnowledgeDaemon:
         except Exception as e:
             logger.error(f"Failed to update document status: {e}")
 
+    def _update_directory_index(self, file_path: str, doc_id: str, file_hash: str,
+                                 status: str, entry_count: int):
+        """
+        Update directory index file with document processing info.
+
+        Args:
+            file_path: Absolute path to the document
+            doc_id: Document ID
+            file_hash: File hash
+            status: Processing status
+            entry_count: Number of entries created
+        """
+        try:
+            from src.knowledge.directory_index import DirectoryIndex
+            import sqlite3
+
+            # Get directory path
+            file_path_obj = Path(file_path)
+            directory_path = file_path_obj.parent
+            file_name = file_path_obj.name
+
+            # Get index
+            index = DirectoryIndex(str(directory_path))
+
+            # Get entry IDs from database
+            entry_ids = []
+            try:
+                conn = sqlite3.connect(self.knowledge_store.storage_path)
+                cursor = conn.execute("""
+                    SELECT knowledge_id FROM knowledge_entries
+                    WHERE source_doc_id = ?
+                """, (doc_id,))
+                entry_ids = [row[0] for row in cursor.fetchall()]
+                conn.close()
+            except Exception as e:
+                logger.warning(f"Could not fetch entry IDs: {e}")
+
+            # Update index
+            index.add_document(
+                file_name=file_name,
+                doc_id=doc_id,
+                file_hash=file_hash,
+                status=status,
+                entry_count=entry_count,
+                entry_ids=entry_ids
+            )
+
+            logger.debug(f"Updated directory index for: {file_name}")
+
+        except Exception as e:
+            logger.warning(f"Failed to update directory index: {e}")
+            # Non-fatal - don't let this stop document processing
+
     def trigger_refinement(self):
         """Manually trigger a refinement cycle."""
         logger.info("Manual refinement trigger")
@@ -637,14 +893,21 @@ class KnowledgeDaemon:
         # Queue all documents
         patterns = ['*.pdf', '*.txt', '*.md', '*.py', '*.js', '*.java']
         queued_count = 0
+        excluded_count = 0
 
         for pattern in patterns:
             for file_path in path.rglob(pattern):
+                # Skip excluded paths
+                if self._should_exclude_path(file_path):
+                    excluded_count += 1
+                    continue
+
                 self.document_queue.add(str(file_path))
                 queued_count += 1
 
         return {
             'queued': queued_count,
+            'excluded': excluded_count,
             'directory': directory_path
         }
 
@@ -717,6 +980,106 @@ class KnowledgeDaemon:
             'success': True,
             'removed': directory_path
         }
+
+    def reprocess_document(self, file_path: str, force: bool = False) -> Dict[str, Any]:
+        """
+        Re-process an existing document (detects changes by hash).
+
+        Args:
+            file_path: Path to document
+            force: If True, re-process even if hash unchanged
+
+        Returns:
+            Dict with processing results
+        """
+        try:
+            import hashlib
+
+            # Normalize path
+            file_path = str(Path(file_path).resolve())
+
+            # Check if file exists
+            if not Path(file_path).exists():
+                return {
+                    'status': 'error',
+                    'error': 'File does not exist'
+                }
+
+            # Calculate current file hash
+            with open(file_path, 'rb') as f:
+                current_hash = hashlib.md5(f.read()).hexdigest()
+
+            # Check if document exists in database
+            with sqlite3.connect(self.knowledge_store.storage_path) as conn:
+                cursor = conn.execute("""
+                    SELECT doc_id, file_hash, ingestion_status
+                    FROM document_sources
+                    WHERE file_path = ?
+                """, (file_path,))
+                row = cursor.fetchone()
+
+                if not row:
+                    # New document - process normally
+                    logger.info(f"Document not in database, adding to queue: {file_path}")
+                    self.document_queue.add(file_path)
+                    return {
+                        'status': 'queued',
+                        'reason': 'new_document'
+                    }
+
+                doc_id, old_hash, status = row
+
+                # Check if file changed
+                if not force and old_hash == current_hash:
+                    logger.info(f"Document unchanged (hash match), skipping: {file_path}")
+                    return {
+                        'status': 'skipped',
+                        'reason': 'no_changes',
+                        'doc_id': doc_id
+                    }
+
+                # Delete old entries
+                logger.info(f"Re-processing document (hash changed or forced): {file_path}")
+                cursor.execute("""
+                    DELETE FROM knowledge_entries
+                    WHERE source_doc_id = ?
+                """, (doc_id,))
+
+                # Delete from tags table
+                cursor.execute("""
+                    DELETE FROM knowledge_tags
+                    WHERE knowledge_id IN (
+                        SELECT knowledge_id FROM knowledge_entries
+                        WHERE source_doc_id = ?
+                    )
+                """, (doc_id,))
+
+                # Reset document status
+                cursor.execute("""
+                    UPDATE document_sources
+                    SET ingestion_status = 'pending',
+                        file_hash = ?,
+                        chunk_count = 0,
+                        concept_count = 0
+                    WHERE doc_id = ?
+                """, (current_hash, doc_id))
+
+                conn.commit()
+
+            # Queue for re-processing
+            self.document_queue.add(file_path)
+
+            return {
+                'status': 'queued',
+                'reason': 'file_changed' if old_hash != current_hash else 'forced',
+                'doc_id': doc_id,
+                'old_hash': old_hash,
+                'new_hash': current_hash
+            }
+
+        except Exception as e:
+            logger.error(f"Error re-processing document: {e}")
+            return {'status': 'error', 'error': str(e)}
 
     def _restart_file_watching(self):
         """Restart file watching with updated directory list."""

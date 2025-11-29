@@ -6,31 +6,33 @@ import os
 from tkinter import messagebox
 
 class ThreadManager:
+    """
+    Manages background threads and provides thread-safe communication with the main GUI thread.
+
+    Background threads should NEVER call Tkinter methods directly. Instead, they should:
+    1. Put results in their component's queue
+    2. Let the component's poll method (running on main thread) update the GUI
+    """
     def __init__(self, root):
         self.root = root
         self.threads = []
-        self.queue = queue.Queue()
+        self._active = True
 
     def start_thread(self, target, args=()):
+        """Start a daemon thread for background work."""
         thread = threading.Thread(target=target, args=args, daemon=True)
         thread.start()
         self.threads.append(thread)
-        self.poll_queue()
-
-    def poll_queue(self):
-        try:
-            while True:
-                msg = self.queue.get_nowait()
-                if msg == 'update_gui':
-                    # Placeholder for GUI updates
-                    pass
-        except queue.Empty:
-            pass
-        self.root.after(100, self.poll_queue)
 
     def join_threads(self):
+        """Wait for all threads to complete (with timeout)."""
         for thread in self.threads:
             thread.join(timeout=1.0)
+
+    def shutdown(self):
+        """Signal shutdown and join threads."""
+        self._active = False
+        self.join_threads()
 
 class DBHelper:
     def __init__(self):

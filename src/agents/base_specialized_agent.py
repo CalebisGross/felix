@@ -11,6 +11,13 @@ Plugin API Overview:
 3. Implement create_agent() to instantiate your agent
 4. Optional: Override supports_task() for intelligent agent selection
 
+Tool Instructions (Conditional Injection):
+- Plugin agents automatically receive conditional tool instructions via task.tool_instructions
+- Tool instructions are based on task requirements (file ops, web search, system commands)
+- In your agent's create_position_aware_prompt(), use:
+  tools_header = task.tool_instructions if task.tool_instructions else FALLBACK_HEADER
+- This gives agents only the tools they need, reducing token usage
+
 Example Custom Agent Plugin:
     ```python
     from src.agents.base_specialized_agent import SpecializedAgentPlugin, AgentMetadata

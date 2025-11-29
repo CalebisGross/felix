@@ -426,7 +426,8 @@ class CentralPost:
                  web_search_min_samples: int = 1,
                  web_search_cooldown: float = 10.0,
                  knowledge_store: Optional["KnowledgeStore"] = None,
-                 config: Optional[Any] = None):
+                 config: Optional[Any] = None,
+                 gui_mode: bool = False):
         """
         Initialize central post with configuration parameters.
 
@@ -442,6 +443,7 @@ class CentralPost:
             web_search_cooldown: Seconds between web searches to prevent spam (default: 10.0)
             knowledge_store: Optional shared KnowledgeStore instance (if None, creates new one)
             config: Optional FelixConfig for system-wide settings (auto-approval, etc.)
+            gui_mode: Whether running in GUI mode (prevents CLI approval prompts)
         """
         self.max_agents = max_agents
         self.enable_metrics = enable_metrics
@@ -449,6 +451,7 @@ class CentralPost:
         self.llm_client = llm_client  # For CentralPost synthesis
         self.web_search_client = web_search_client  # For Research agents
         self.config = config  # Store config for passing to subsystems
+        self.gui_mode = gui_mode  # Store GUI mode flag for passing to subsystems
         
         # Connection management
         self._registered_agents: Dict[str, str] = {}  # agent_id -> connection_id
@@ -555,7 +558,8 @@ class CentralPost:
             approval_manager=self.approval_manager,
             agent_registry=self.agent_registry,
             message_queue_callback=self.queue_message,
-            config=config  # Pass config for auto-approval flag (CLI mode)
+            config=config,  # Pass config for auto-approval flag (CLI mode)
+            gui_mode=self.gui_mode  # Pass GUI mode flag to prevent CLI prompts
         )
 
         # 5. Web Search Coordinator
@@ -983,6 +987,12 @@ class CentralPost:
         requests and automatically routes them through the system autonomy
         infrastructure.
 
+        Note on Conditional Tool Instructions:
+        - Agents only receive tool patterns (like SYSTEM_ACTION_NEEDED) if task requires them
+        - If agent uses this pattern, it means tool instructions were provided
+        - System is self-correcting: no instructions = agent doesn't know pattern
+        - No additional validation needed
+
         Args:
             message: Message containing SYSTEM_ACTION_NEEDED request
         """
@@ -1369,9 +1379,75 @@ class CentralPost:
         # Placeholder for task assignment logic
         pass
     
+    def _validate_agent_response(self, message: Message) -> Dict[str, Any]:
+        """
+        Validate agent followed context awareness protocol.
+
+        Detects violations like requesting web search when data is already available
+        or requesting tools that were already provided.
+
+        Args:
+            message: Message from agent
+
+        Returns:
+            Dictionary with validation results and any violations
+        """
+        content = message.content.get('content', '')
+        validation_result = {
+            'followed_protocol': False,
+            'violations': [],
+            'warnings': []
+        }
+
+        # Check 1: Did agent acknowledge context? (optional check, just log)
+        if 'CONTEXT_USED:' in content:
+            validation_result['followed_protocol'] = True
+            logger.debug(f"✓ {message.sender_id} acknowledged context usage")
+        else:
+            # This is just a warning, not a violation
+            validation_result['warnings'].append("Agent did not explicitly acknowledge context (missing 'CONTEXT_USED:')")
+
+        # Check 2: Did agent request redundant web search?
+        if 'WEB_SEARCH_NEEDED:' in content:
+            # Check if web search data was already available to this agent
+            # We can approximate this by checking recent knowledge entries
+            try:
+                from src.memory.knowledge_store import KnowledgeQuery, ConfidenceLevel
+                import time as time_module
+
+                # Check if web search results exist in recent knowledge
+                recent_web_search = self.memory_facade.retrieve_knowledge_with_query(
+                    KnowledgeQuery(
+                        domains=["web_search"],
+                        min_confidence=ConfidenceLevel.MEDIUM,
+                        time_range=(time_module.time() - 3600, time_module.time()),  # Last hour
+                        limit=5
+                    )
+                )
+
+                if recent_web_search and len(recent_web_search) > 0:
+                    validation_result['violations'].append(
+                        f"Agent requested web search despite {len(recent_web_search)} recent web search result(s) being available"
+                    )
+                    logger.warning(f"⚠️ PROTOCOL VIOLATION: {message.sender_id} requested redundant web search")
+                    logger.warning(f"   {len(recent_web_search)} web search results were available in knowledge store")
+            except Exception as e:
+                logger.debug(f"Could not validate web search redundancy: {e}")
+
+        return validation_result
+
     def _handle_status_update(self, message: Message) -> None:
         """Handle status update from agent and detect web search + system action requests."""
         content = message.content.get('content', '')
+
+        # NEW: Validate agent response for protocol compliance
+        validation = self._validate_agent_response(message)
+        if validation['violations']:
+            for violation in validation['violations']:
+                logger.warning(f"  ⚠️ VIOLATION: {violation}")
+        if validation['warnings']:
+            for warning in validation['warnings']:
+                logger.debug(f"  ⚠️ WARNING: {warning}")
 
         # DEBUG: Log to trace pattern detection
         logger.debug(f"_handle_status_update called for agent {message.sender_id}")

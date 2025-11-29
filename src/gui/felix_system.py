@@ -412,9 +412,10 @@ class FelixSystem:
                 web_search_min_samples=self.config.web_search_min_samples,
                 web_search_cooldown=self.config.web_search_cooldown,
                 knowledge_store=self.knowledge_store,  # CRITICAL: Share the same knowledge_store instance!
-                config=self.config  # Pass config for auto-approval and other settings
+                config=self.config,  # Pass config for auto-approval and other settings
+                gui_mode=True  # Enable GUI mode to use approval dialogs instead of CLI prompts
             )
-            logger.info("Central post initialized with synthesis capability and shared knowledge store")
+            logger.info("Central post initialized with synthesis capability and shared knowledge store (GUI mode enabled)")
 
             # Initialize spoke manager (for O(N) communication topology)
             if self.config.enable_spoke_topology:

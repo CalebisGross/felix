@@ -137,11 +137,10 @@ review:
 
 # BLOCKED: Dangerous commands that should never execute
 blocked:
-  # Destructive file operations
-  - 'sudo\s+rm\s+-rf\s+/'
-  - 'rm\s+-rf\s+/(?!tmp|var/tmp)'  # Block except temp dirs
-  - 'rm\s+-rf\s+\*'
-  - 'rm\s+-rf\s+~'
+  # Destructive file operations (STRENGTHENED - blocks ALL rm -rf, not just root)
+  - 'sudo\s+rm\s+-rf'  # Block "sudo rm -rf" followed by ANY path
+  - 'rm\s+-rf'  # Block "rm -rf" followed by ANY path
+  - 'rm\s+-fr'  # Also catch reversed flags
   - '^dd\s'
   - '^mkfs\s'
   - '^fdisk\s'

@@ -16,6 +16,7 @@ from enum import Enum
 from typing import Dict, List, Optional, Any, Union
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
+from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,19 @@ try:
 except ImportError:
     logger.warning("Validation functions not available - running without quality control")
     VALIDATION_AVAILABLE = False
+
+# Import audit logging for CRUD operations tracking
+try:
+    from src.memory.audit_log import audit_logged
+    AUDIT_LOGGING_AVAILABLE = True
+except ImportError:
+    logger.debug("Audit logging not available - running without audit trail")
+    AUDIT_LOGGING_AVAILABLE = False
+    # Define no-op decorator if audit logging not available
+    def audit_logged(operation: str, user_agent: str = "KnowledgeStore"):
+        def decorator(func):
+            return func
+        return decorator
 
 # Lazy import for embeddings to avoid circular dependency
 # (src.knowledge modules import KnowledgeStore, so we can't import at module level)
@@ -55,6 +69,7 @@ class KnowledgeType(Enum):
     FAILURE_ANALYSIS = "failure_analysis"
     OPTIMIZATION_DATA = "optimization_data"
     DOMAIN_EXPERTISE = "domain_expertise"
+    TOOL_INSTRUCTION = "tool_instruction"  # For storing conditional tool instructions
 
 class ConfidenceLevel(Enum):
     """Confidence levels for knowledge entries."""
@@ -259,7 +274,55 @@ class KnowledgeStore:
             # Migration failed, but don't crash - system will fall back to JSON tags
             print(f"Tag migration failed (non-critical): {e}")
             pass
-    
+
+    @contextmanager
+    def transaction(self):
+        """
+        Context manager for safe database transactions.
+
+        Provides automatic transaction management with proper error handling
+        and rollback on failure. Foreign keys are enabled for CASCADE DELETE.
+
+        Usage:
+            with knowledge_store.transaction() as conn:
+                conn.execute("DELETE FROM document_sources WHERE doc_id = ?", (doc_id,))
+                conn.execute("UPDATE knowledge_entries SET ...")
+                # Automatically commits on success, rolls back on exception
+
+        Yields:
+            sqlite3.Connection: Database connection with active transaction
+
+        Raises:
+            Exception: On commit failure (after automatic rollback)
+
+        Example:
+            >>> with store.transaction() as conn:
+            ...     cursor = conn.cursor()
+            ...     cursor.execute("DELETE FROM knowledge_entries WHERE domain = ?", ("test",))
+            ...     cursor.execute("UPDATE document_sources SET status = ?", ("processed",))
+            ...     # Changes committed automatically if no exceptions
+        """
+        conn = None
+        try:
+            conn = sqlite3.connect(self.storage_path)
+            conn.execute("PRAGMA foreign_keys = ON")  # Enable CASCADE DELETE
+            conn.execute("BEGIN TRANSACTION")
+
+            yield conn
+
+            conn.commit()
+            logger.debug("Transaction committed successfully")
+
+        except Exception as e:
+            if conn:
+                conn.rollback()
+                logger.error(f"Transaction failed, rolled back: {e}")
+            raise
+
+        finally:
+            if conn:
+                conn.close()
+
     def _generate_knowledge_id(self, content: Dict[str, Any],
                               source_agent: str,
                               domain: str) -> str:
@@ -298,7 +361,8 @@ class KnowledgeStore:
         Note: For backward compatibility only. New entries are stored as JSON.
         """
         return pickle.loads(compressed_data)
-    
+
+    @audit_logged("INSERT", "KnowledgeStore")
     def store_knowledge(self, knowledge_type: KnowledgeType,
                        content: Dict[str, Any],
                        confidence_level: ConfidenceLevel,
@@ -885,7 +949,198 @@ class KnowledgeStore:
                 """, (json.dumps(related_entries), time.time(), knowledge_id))
             
             return True
-    
+
+    def get_entry_by_id(self, knowledge_id: str) -> Optional[KnowledgeEntry]:
+        """
+        Retrieve a single knowledge entry by ID.
+
+        Args:
+            knowledge_id: Entry ID
+
+        Returns:
+            KnowledgeEntry or None if not found
+        """
+        try:
+            with sqlite3.connect(self.storage_path) as conn:
+                cursor = conn.execute(
+                    "SELECT * FROM knowledge_entries WHERE knowledge_id = ?",
+                    (knowledge_id,)
+                )
+                row = cursor.fetchone()
+
+                if row:
+                    return self._row_to_entry(row, conn)
+                return None
+
+        except Exception as e:
+            logger.error(f"Error retrieving entry {knowledge_id}: {e}")
+            return None
+
+    @audit_logged("UPDATE", "KnowledgeStore")
+    def update_knowledge_entry(self, knowledge_id: str,
+                               updates: Dict[str, Any]) -> bool:
+        """
+        Update an existing knowledge entry.
+
+        Args:
+            knowledge_id: Entry ID to update
+            updates: Dict with fields to update (content, confidence_level,
+                    domain, tags, etc.)
+
+        Returns:
+            True if updated successfully, False otherwise
+        """
+        try:
+            # Get existing entry
+            entry = self.get_entry_by_id(knowledge_id)
+            if not entry:
+                logger.warning(f"Entry not found: {knowledge_id}")
+                return False
+
+            with sqlite3.connect(self.storage_path) as conn:
+                # Build UPDATE statement dynamically
+                update_fields = []
+                params = []
+
+                if 'content' in updates:
+                    update_fields.append("content_json = ?")
+                    params.append(json.dumps(updates['content']))
+                    # Invalidate embedding if content changes
+                    update_fields.append("embedding = NULL")
+
+                if 'confidence_level' in updates:
+                    update_fields.append("confidence_level = ?")
+                    level = updates['confidence_level']
+                    if isinstance(level, ConfidenceLevel):
+                        params.append(level.value)
+                    else:
+                        params.append(level)
+
+                if 'domain' in updates:
+                    update_fields.append("domain = ?")
+                    params.append(updates['domain'])
+
+                if 'tags' in updates:
+                    update_fields.append("tags_json = ?")
+                    params.append(json.dumps(updates['tags']))
+
+                    # Update normalized tags table
+                    conn.execute("DELETE FROM knowledge_tags WHERE knowledge_id = ?",
+                               (knowledge_id,))
+                    for tag in updates['tags']:
+                        conn.execute(
+                            "INSERT INTO knowledge_tags (knowledge_id, tag) VALUES (?, ?)",
+                            (knowledge_id, tag)
+                        )
+
+                # Always update timestamp
+                update_fields.append("updated_at = ?")
+                params.append(time.time())
+
+                # Execute update
+                params.append(knowledge_id)
+                sql = f"UPDATE knowledge_entries SET {', '.join(update_fields)} WHERE knowledge_id = ?"
+
+                cursor = conn.execute(sql, params)
+                conn.commit()
+
+                logger.info(f"Updated entry {knowledge_id}")
+                return cursor.rowcount > 0
+
+        except Exception as e:
+            logger.error(f"Error updating entry {knowledge_id}: {e}")
+            return False
+
+    @audit_logged("MERGE", "KnowledgeStore")
+    def merge_knowledge_entries(self, primary_id: str,
+                                secondary_ids: List[str],
+                                merge_strategy: str = "keep_primary") -> bool:
+        """
+        Merge multiple knowledge entries into one.
+
+        Args:
+            primary_id: ID of entry to keep
+            secondary_ids: IDs of entries to merge and delete
+            merge_strategy: How to merge ("keep_primary", "combine_content",
+                           "highest_confidence")
+
+        Returns:
+            True if merged successfully, False otherwise
+        """
+        try:
+            # Get all entries
+            primary = self.get_entry_by_id(primary_id)
+            if not primary:
+                logger.error(f"Primary entry not found: {primary_id}")
+                return False
+
+            secondaries = [self.get_entry_by_id(sid) for sid in secondary_ids]
+            secondaries = [s for s in secondaries if s is not None]
+
+            if not secondaries:
+                logger.warning("No valid secondary entries to merge")
+                return False
+
+            # Merge logic based on strategy
+            merged_content = primary.content.copy()
+            merged_tags = set(primary.tags)
+            merged_related = set(primary.related_entries)
+            max_confidence = primary.confidence_level
+
+            for secondary in secondaries:
+                merged_tags.update(secondary.tags)
+                merged_related.update(secondary.related_entries)
+
+                # Combine confidence (use highest)
+                confidence_order = {
+                    ConfidenceLevel.LOW: 0,
+                    ConfidenceLevel.MEDIUM: 1,
+                    ConfidenceLevel.HIGH: 2,
+                    ConfidenceLevel.VERIFIED: 3
+                }
+                if confidence_order[secondary.confidence_level] > confidence_order[max_confidence]:
+                    max_confidence = secondary.confidence_level
+
+                # Combine content based on strategy
+                if merge_strategy == "combine_content":
+                    for key, value in secondary.content.items():
+                        if key not in merged_content:
+                            merged_content[key] = value
+                        elif isinstance(value, list):
+                            if isinstance(merged_content[key], list):
+                                merged_content[key].extend(value)
+
+            # Update primary entry
+            updates = {
+                'content': merged_content,
+                'confidence_level': max_confidence,
+                'tags': list(merged_tags)
+            }
+
+            with sqlite3.connect(self.storage_path) as conn:
+                # Update primary
+                self.update_knowledge_entry(primary_id, updates)
+
+                # Update related_entries_json
+                conn.execute("""
+                    UPDATE knowledge_entries
+                    SET related_entries_json = ?
+                    WHERE knowledge_id = ?
+                """, (json.dumps(list(merged_related)), primary_id))
+
+                # Delete secondary entries
+                for sec_id in secondary_ids:
+                    self.delete_knowledge(sec_id)
+
+                conn.commit()
+
+            logger.info(f"Merged {len(secondary_ids)} entries into {primary_id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error merging entries: {e}")
+            return False
+
     def get_knowledge_summary(self) -> Dict[str, Any]:
         """Get summary statistics of knowledge store."""
         with sqlite3.connect(self.storage_path) as conn:
@@ -953,7 +1208,8 @@ class KnowledgeStore:
                 "average_success_rate": avg_success_rate,
                 "storage_path": str(self.storage_path)
             }
-    
+
+    @audit_logged("CLEANUP", "KnowledgeStore")
     def cleanup_old_entries(self, max_age_days: int = 30,
                            min_success_rate: float = 0.3) -> int:
         """
@@ -971,9 +1227,1109 @@ class KnowledgeStore:
         
         with sqlite3.connect(self.storage_path) as conn:
             cursor = conn.execute("""
-                DELETE FROM knowledge_entries 
+                DELETE FROM knowledge_entries
                 WHERE (created_at < ? AND success_rate < ?)
                    OR (access_count = 0 AND created_at < ?)
             """, (cutoff_time, min_success_rate, cutoff_time))
-            
+
             return cursor.rowcount
+
+    @audit_logged("DELETE", "KnowledgeStore")
+    def delete_knowledge(self, knowledge_id: str) -> bool:
+        """
+        Delete a single knowledge entry by ID.
+
+        Args:
+            knowledge_id: ID of the knowledge entry to delete
+
+        Returns:
+            True if deleted, False if not found
+        """
+        try:
+            with sqlite3.connect(self.storage_path) as conn:
+                # Delete from main table (FTS5 trigger will handle knowledge_fts)
+                cursor = conn.execute(
+                    "DELETE FROM knowledge_entries WHERE knowledge_id = ?",
+                    (knowledge_id,)
+                )
+
+                # Also remove from tags table
+                conn.execute(
+                    "DELETE FROM knowledge_tags WHERE knowledge_id = ?",
+                    (knowledge_id,)
+                )
+
+                # Remove this entry from all related_entries_json arrays
+                # This prevents broken relationships
+                conn.execute("""
+                    UPDATE knowledge_entries
+                    SET related_entries_json = (
+                        SELECT json_remove(
+                            related_entries_json,
+                            '$[' || idx || ']'
+                        )
+                        FROM (
+                            SELECT key as idx
+                            FROM json_each(related_entries_json)
+                            WHERE value = ?
+                        )
+                    )
+                    WHERE related_entries_json LIKE ?
+                """, (knowledge_id, f'%{knowledge_id}%'))
+
+                conn.commit()
+                return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Error deleting knowledge entry {knowledge_id}: {e}")
+            return False
+
+    def preview_delete_by_pattern(self, path_pattern: str,
+                                   include_entries: bool = True) -> Dict[str, Any]:
+        """
+        Preview what would be deleted by a path pattern without actually deleting.
+
+        Args:
+            path_pattern: SQL LIKE pattern or glob pattern for file paths
+            include_entries: If True, count associated knowledge entries
+
+        Returns:
+            Dict with counts and sample paths
+        """
+        import fnmatch
+
+        try:
+            with sqlite3.connect(self.storage_path) as conn:
+                # Convert glob pattern to SQL LIKE if needed
+                if '*' in path_pattern or '?' in path_pattern:
+                    # For glob patterns, fetch all and filter in Python
+                    cursor = conn.execute(
+                        "SELECT doc_id, file_path, ingestion_status FROM document_sources"
+                    )
+                    all_docs = cursor.fetchall()
+
+                    matching_docs = [
+                        (doc_id, path, status)
+                        for doc_id, path, status in all_docs
+                        if fnmatch.fnmatch(path, path_pattern)
+                    ]
+                    doc_count = len(matching_docs)
+                    doc_ids = [doc_id for doc_id, _, _ in matching_docs]
+                    sample_paths = [path for _, path, _ in matching_docs[:10]]
+                else:
+                    # SQL LIKE pattern
+                    cursor = conn.execute("""
+                        SELECT doc_id, file_path
+                        FROM document_sources
+                        WHERE file_path LIKE ?
+                        LIMIT 10
+                    """, (path_pattern,))
+                    sample_paths = [row[1] for row in cursor.fetchall()]
+
+                    cursor = conn.execute("""
+                        SELECT COUNT(*), GROUP_CONCAT(doc_id)
+                        FROM document_sources
+                        WHERE file_path LIKE ?
+                    """, (path_pattern,))
+                    row = cursor.fetchone()
+                    doc_count = row[0]
+                    doc_ids = row[1].split(',') if row[1] else []
+
+                # Count associated knowledge entries
+                entry_count = 0
+                if include_entries and doc_ids:
+                    placeholders = ','.join('?' * len(doc_ids))
+                    cursor = conn.execute(f"""
+                        SELECT COUNT(*)
+                        FROM knowledge_entries
+                        WHERE source_doc_id IN ({placeholders})
+                    """, doc_ids)
+                    entry_count = cursor.fetchone()[0]
+
+                return {
+                    "document_count": doc_count,
+                    "entry_count": entry_count,
+                    "sample_paths": sample_paths,
+                    "pattern": path_pattern
+                }
+        except Exception as e:
+            logger.error(f"Error previewing delete by pattern: {e}")
+            return {"error": str(e)}
+
+    @audit_logged("DELETE", "KnowledgeStore")
+    def delete_documents_by_pattern(self, path_pattern: str,
+                                     cascade_entries: bool = False,
+                                     dry_run: bool = False) -> Dict[str, Any]:
+        """
+        Delete document sources matching a path pattern.
+
+        Args:
+            path_pattern: SQL LIKE pattern or glob pattern for file paths
+            cascade_entries: If True, also delete associated knowledge entries
+            dry_run: If True, only preview without deleting
+
+        Returns:
+            Dict with deleted counts and details
+        """
+        import fnmatch
+
+        if dry_run:
+            return self.preview_delete_by_pattern(path_pattern, cascade_entries)
+
+        try:
+            with self.transaction() as conn:
+                # Find matching documents
+                if '*' in path_pattern or '?' in path_pattern:
+                    cursor = conn.execute(
+                        "SELECT doc_id, file_path FROM document_sources"
+                    )
+                    all_docs = cursor.fetchall()
+
+                    matching_docs = [
+                        (doc_id, path)
+                        for doc_id, path in all_docs
+                        if fnmatch.fnmatch(path, path_pattern)
+                    ]
+                    doc_ids = [doc_id for doc_id, _ in matching_docs]
+                else:
+                    cursor = conn.execute("""
+                        SELECT doc_id FROM document_sources
+                        WHERE file_path LIKE ?
+                    """, (path_pattern,))
+                    doc_ids = [row[0] for row in cursor.fetchall()]
+
+                if not doc_ids:
+                    return {"documents_deleted": 0, "entries_deleted": 0}
+
+                entries_deleted = 0
+
+                # Delete associated knowledge entries if requested
+                if cascade_entries:
+                    placeholders = ','.join('?' * len(doc_ids))
+
+                    # Get entry IDs first for cleanup
+                    cursor = conn.execute(f"""
+                        SELECT knowledge_id FROM knowledge_entries
+                        WHERE source_doc_id IN ({placeholders})
+                    """, doc_ids)
+                    entry_ids = [row[0] for row in cursor.fetchall()]
+
+                    # Delete entries
+                    cursor = conn.execute(f"""
+                        DELETE FROM knowledge_entries
+                        WHERE source_doc_id IN ({placeholders})
+                    """, doc_ids)
+                    entries_deleted = cursor.rowcount
+
+                    # Delete from tags table
+                    if entry_ids:
+                        placeholders = ','.join('?' * len(entry_ids))
+                        conn.execute(f"""
+                            DELETE FROM knowledge_tags
+                            WHERE knowledge_id IN ({placeholders})
+                        """, entry_ids)
+
+                # Delete document sources
+                placeholders = ','.join('?' * len(doc_ids))
+                cursor = conn.execute(f"""
+                    DELETE FROM document_sources
+                    WHERE doc_id IN ({placeholders})
+                """, doc_ids)
+                docs_deleted = cursor.rowcount
+
+                return {
+                    "documents_deleted": docs_deleted,
+                    "entries_deleted": entries_deleted,
+                    "pattern": path_pattern
+                }
+
+        except Exception as e:
+            logger.error(f"Error deleting documents by pattern: {e}")
+            return {"error": str(e)}
+
+    def delete_entries_by_source_pattern(self, path_pattern: str,
+                                         dry_run: bool = False) -> Dict[str, Any]:
+        """
+        Delete knowledge entries whose source documents match a path pattern.
+        Does NOT delete the document sources themselves.
+
+        Args:
+            path_pattern: SQL LIKE pattern or glob pattern for file paths
+            dry_run: If True, only preview without deleting
+
+        Returns:
+            Dict with deleted count
+        """
+        if dry_run:
+            preview = self.preview_delete_by_pattern(path_pattern, include_entries=True)
+            return {"entries_would_delete": preview.get("entry_count", 0)}
+
+        import fnmatch
+
+        try:
+            with self.transaction() as conn:
+                # Find matching document IDs
+                if '*' in path_pattern or '?' in path_pattern:
+                    cursor = conn.execute(
+                        "SELECT doc_id, file_path FROM document_sources"
+                    )
+                    all_docs = cursor.fetchall()
+
+                    doc_ids = [
+                        doc_id
+                        for doc_id, path in all_docs
+                        if fnmatch.fnmatch(path, path_pattern)
+                    ]
+                else:
+                    cursor = conn.execute("""
+                        SELECT doc_id FROM document_sources
+                        WHERE file_path LIKE ?
+                    """, (path_pattern,))
+                    doc_ids = [row[0] for row in cursor.fetchall()]
+
+                if not doc_ids:
+                    return {"entries_deleted": 0}
+
+                # Get entry IDs for tag cleanup
+                placeholders = ','.join('?' * len(doc_ids))
+                cursor = conn.execute(f"""
+                    SELECT knowledge_id FROM knowledge_entries
+                    WHERE source_doc_id IN ({placeholders})
+                """, doc_ids)
+                entry_ids = [row[0] for row in cursor.fetchall()]
+
+                # Delete entries
+                cursor = conn.execute(f"""
+                    DELETE FROM knowledge_entries
+                    WHERE source_doc_id IN ({placeholders})
+                """, doc_ids)
+                entries_deleted = cursor.rowcount
+
+                # Delete from tags table
+                if entry_ids:
+                    placeholders = ','.join('?' * len(entry_ids))
+                    conn.execute(f"""
+                        DELETE FROM knowledge_tags
+                        WHERE knowledge_id IN ({placeholders})
+                    """, entry_ids)
+
+                return {
+                    "entries_deleted": entries_deleted,
+                    "pattern": path_pattern
+                }
+
+        except Exception as e:
+            logger.error(f"Error deleting entries by source pattern: {e}")
+            return {"error": str(e)}
+
+    @audit_logged("CLEANUP", "KnowledgeStore")
+    def delete_orphaned_entries(self, dry_run: bool = False) -> Dict[str, Any]:
+        """
+        Delete knowledge entries that have no corresponding document source.
+
+        Args:
+            dry_run: If True, only count without deleting
+
+        Returns:
+            Dict with deleted count
+        """
+        try:
+            # Find orphaned entries first (read-only query)
+            with sqlite3.connect(self.storage_path) as conn:
+                cursor = conn.execute("""
+                    SELECT knowledge_id
+                    FROM knowledge_entries
+                    WHERE source_doc_id IS NOT NULL
+                    AND source_doc_id NOT IN (SELECT doc_id FROM document_sources)
+                """)
+                orphaned_ids = [row[0] for row in cursor.fetchall()]
+
+            if dry_run:
+                return {"orphaned_count": len(orphaned_ids)}
+
+            if not orphaned_ids:
+                return {"entries_deleted": 0}
+
+            # Delete in transaction
+            with self.transaction() as conn:
+                # Delete orphaned entries
+                placeholders = ','.join('?' * len(orphaned_ids))
+                cursor = conn.execute(f"""
+                    DELETE FROM knowledge_entries
+                    WHERE knowledge_id IN ({placeholders})
+                """, orphaned_ids)
+                deleted_count = cursor.rowcount
+
+                # Delete from tags table
+                conn.execute(f"""
+                    DELETE FROM knowledge_tags
+                    WHERE knowledge_id IN ({placeholders})
+                """, orphaned_ids)
+
+                return {"entries_deleted": deleted_count}
+
+        except Exception as e:
+            logger.error(f"Error deleting orphaned entries: {e}")
+            return {"error": str(e)}
+
+    @audit_logged("CLEANUP", "KnowledgeStore")
+    def delete_failed_documents(self, max_age_days: int = 7,
+                                 cascade_entries: bool = False,
+                                 dry_run: bool = False) -> Dict[str, Any]:
+        """
+        Delete document sources with 'failed' status older than specified age.
+
+        Args:
+            max_age_days: Minimum age in days for failed documents to delete
+            cascade_entries: If True, also delete associated knowledge entries
+            dry_run: If True, only count without deleting
+
+        Returns:
+            Dict with deleted counts
+        """
+        max_age_seconds = max_age_days * 24 * 3600
+        cutoff_time = time.time() - max_age_seconds
+
+        try:
+            # Find failed documents first (read-only query)
+            with sqlite3.connect(self.storage_path) as conn:
+                cursor = conn.execute("""
+                    SELECT doc_id
+                    FROM document_sources
+                    WHERE ingestion_status = 'failed'
+                    AND added_at < ?
+                """, (cutoff_time,))
+                failed_ids = [row[0] for row in cursor.fetchall()]
+
+                if dry_run:
+                    entry_count = 0
+                    if cascade_entries and failed_ids:
+                        placeholders = ','.join('?' * len(failed_ids))
+                        cursor = conn.execute(f"""
+                            SELECT COUNT(*) FROM knowledge_entries
+                            WHERE source_doc_id IN ({placeholders})
+                        """, failed_ids)
+                        entry_count = cursor.fetchone()[0]
+
+                    return {
+                        "failed_documents": len(failed_ids),
+                        "entries_affected": entry_count
+                    }
+
+            if not failed_ids:
+                return {"documents_deleted": 0, "entries_deleted": 0}
+
+            # Delete in transaction
+            with self.transaction() as conn:
+                entries_deleted = 0
+
+                # Delete associated entries if requested
+                if cascade_entries:
+                    placeholders = ','.join('?' * len(failed_ids))
+
+                    # Get entry IDs for tag cleanup
+                    cursor = conn.execute(f"""
+                        SELECT knowledge_id FROM knowledge_entries
+                        WHERE source_doc_id IN ({placeholders})
+                    """, failed_ids)
+                    entry_ids = [row[0] for row in cursor.fetchall()]
+
+                    # Delete entries
+                    cursor = conn.execute(f"""
+                        DELETE FROM knowledge_entries
+                        WHERE source_doc_id IN ({placeholders})
+                    """, failed_ids)
+                    entries_deleted = cursor.rowcount
+
+                    # Delete from tags
+                    if entry_ids:
+                        placeholders = ','.join('?' * len(entry_ids))
+                        conn.execute(f"""
+                            DELETE FROM knowledge_tags
+                            WHERE knowledge_id IN ({placeholders})
+                        """, entry_ids)
+
+                # Delete failed documents
+                placeholders = ','.join('?' * len(failed_ids))
+                cursor = conn.execute(f"""
+                    DELETE FROM document_sources
+                    WHERE doc_id IN ({placeholders})
+                """, failed_ids)
+                docs_deleted = cursor.rowcount
+
+                return {
+                    "documents_deleted": docs_deleted,
+                    "entries_deleted": entries_deleted
+                }
+
+        except Exception as e:
+            logger.error(f"Error deleting failed documents: {e}")
+            return {"error": str(e)}
+
+    # Watch Directory Management
+
+    def add_watch_directory(self, directory_path: str, notes: str = None) -> bool:
+        """
+        Add a watched directory to the database.
+
+        Args:
+            directory_path: Absolute path to directory
+            notes: Optional notes about this directory
+
+        Returns:
+            True if added successfully, False otherwise
+        """
+        try:
+            with sqlite3.connect(self.storage_path) as conn:
+                cursor = conn.execute("""
+                    INSERT OR IGNORE INTO watch_directories
+                    (directory_path, added_at, enabled, notes)
+                    VALUES (?, ?, 1, ?)
+                """, (directory_path, time.time(), notes))
+
+                conn.commit()
+                return cursor.rowcount > 0
+
+        except Exception as e:
+            logger.error(f"Error adding watch directory: {e}")
+            return False
+
+    def remove_watch_directory(self, directory_path: str) -> bool:
+        """
+        Remove a watched directory from the database.
+
+        Args:
+            directory_path: Absolute path to directory
+
+        Returns:
+            True if removed successfully, False otherwise
+        """
+        try:
+            with sqlite3.connect(self.storage_path) as conn:
+                cursor = conn.execute("""
+                    DELETE FROM watch_directories
+                    WHERE directory_path = ?
+                """, (directory_path,))
+
+                conn.commit()
+                return cursor.rowcount > 0
+
+        except Exception as e:
+            logger.error(f"Error removing watch directory: {e}")
+            return False
+
+    def update_watch_directory_stats(self, directory_path: str) -> bool:
+        """
+        Update statistics for a watched directory.
+
+        Counts documents and entries from this directory and updates the table.
+
+        Args:
+            directory_path: Absolute path to directory
+
+        Returns:
+            True if updated successfully, False otherwise
+        """
+        try:
+            with sqlite3.connect(self.storage_path) as conn:
+                # Count documents from this directory
+                cursor = conn.execute("""
+                    SELECT COUNT(*)
+                    FROM document_sources
+                    WHERE file_path LIKE ?
+                """, (f"{directory_path}%",))
+                doc_count = cursor.fetchone()[0]
+
+                # Count entries from this directory
+                cursor = conn.execute("""
+                    SELECT COUNT(DISTINCT ke.knowledge_id)
+                    FROM knowledge_entries ke
+                    JOIN document_sources ds ON ke.source_doc_id = ds.doc_id
+                    WHERE ds.file_path LIKE ?
+                """, (f"{directory_path}%",))
+                entry_count = cursor.fetchone()[0]
+
+                # Update watch directory
+                cursor = conn.execute("""
+                    UPDATE watch_directories
+                    SET document_count = ?,
+                        entry_count = ?,
+                        last_scan = ?
+                    WHERE directory_path = ?
+                """, (doc_count, entry_count, time.time(), directory_path))
+
+                conn.commit()
+                return cursor.rowcount > 0
+
+        except Exception as e:
+            logger.error(f"Error updating watch directory stats: {e}")
+            return False
+
+    def get_watch_directories(self, enabled_only: bool = False) -> List[Dict[str, Any]]:
+        """
+        Get all watched directories with their statistics.
+
+        Args:
+            enabled_only: If True, only return enabled directories
+
+        Returns:
+            List of directory info dicts
+        """
+        try:
+            with sqlite3.connect(self.storage_path) as conn:
+                query = """
+                    SELECT watch_id, directory_path, added_at, enabled,
+                           last_scan, document_count, entry_count, notes
+                    FROM watch_directories
+                """
+
+                if enabled_only:
+                    query += " WHERE enabled = 1"
+
+                query += " ORDER BY added_at DESC"
+
+                cursor = conn.execute(query)
+                directories = []
+
+                for row in cursor.fetchall():
+                    directories.append({
+                        'watch_id': row[0],
+                        'directory_path': row[1],
+                        'added_at': row[2],
+                        'enabled': bool(row[3]),
+                        'last_scan': row[4],
+                        'document_count': row[5],
+                        'entry_count': row[6],
+                        'notes': row[7]
+                    })
+
+                return directories
+
+        except Exception as e:
+            logger.error(f"Error getting watch directories: {e}")
+            return []
+
+    def toggle_watch_directory(self, directory_path: str) -> bool:
+        """
+        Toggle enabled/disabled state of a watched directory.
+
+        Args:
+            directory_path: Absolute path to directory
+
+        Returns:
+            True if toggled successfully, False otherwise
+        """
+        try:
+            with sqlite3.connect(self.storage_path) as conn:
+                # Get current state
+                cursor = conn.execute("""
+                    SELECT enabled FROM watch_directories
+                    WHERE directory_path = ?
+                """, (directory_path,))
+
+                row = cursor.fetchone()
+                if not row:
+                    return False
+
+                new_state = 0 if row[0] else 1
+
+                # Toggle state
+                cursor = conn.execute("""
+                    UPDATE watch_directories
+                    SET enabled = ?
+                    WHERE directory_path = ?
+                """, (new_state, directory_path))
+
+                conn.commit()
+                return cursor.rowcount > 0
+
+        except Exception as e:
+            logger.error(f"Error toggling watch directory: {e}")
+            return False
+
+    # ===== Phase 5: Advanced Search & Analytics =====
+
+    def advanced_search(
+        self,
+        content: Optional[str] = None,
+        domain: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        confidence_level: Optional[ConfidenceLevel] = None,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        knowledge_type: Optional[KnowledgeType] = None,
+        min_validation_score: Optional[float] = None,
+        logic: str = "AND",
+        limit: int = 100
+    ) -> List[KnowledgeEntry]:
+        """
+        Advanced multi-field search with AND/OR logic.
+
+        Args:
+            content: Search in content (uses FTS5 if available)
+            domain: Filter by domain (exact match or LIKE pattern)
+            tags: Filter by tags (all must match for AND, any for OR)
+            confidence_level: Minimum confidence level
+            start_date: Filter by creation date (start)
+            end_date: Filter by creation date (end)
+            knowledge_type: Filter by knowledge type
+            min_validation_score: Minimum validation score
+            logic: "AND" or "OR" for combining conditions
+            limit: Maximum results to return
+
+        Returns:
+            List of matching knowledge entries
+        """
+        try:
+            conn = sqlite3.connect(self.storage_path)
+            conn.row_factory = sqlite3.Row
+
+            # Build query based on logic
+            if logic not in ("AND", "OR"):
+                logic = "AND"
+
+            conditions = []
+            params = []
+
+            # Content search (use FTS5 if available and content specified)
+            if content:
+                # Try FTS5 first for better performance
+                fts_cursor = conn.cursor()
+                fts_cursor.execute("""
+                    SELECT name FROM sqlite_master
+                    WHERE type='table' AND name='knowledge_fts'
+                """)
+                if fts_cursor.fetchone():
+                    # Use FTS5
+                    fts_cursor.execute("""
+                        SELECT knowledge_id FROM knowledge_fts
+                        WHERE knowledge_fts MATCH ?
+                        LIMIT ?
+                    """, (content, limit * 2))  # Get more from FTS, filter later
+                    fts_ids = [row[0] for row in fts_cursor.fetchall()]
+                    if fts_ids:
+                        placeholders = ','.join('?' * len(fts_ids))
+                        conditions.append(f"knowledge_id IN ({placeholders})")
+                        params.extend(fts_ids)
+                else:
+                    # Fallback to LIKE search
+                    conditions.append("content_json LIKE ?")
+                    params.append(f"%{content}%")
+
+            # Domain filter
+            if domain:
+                if "%" in domain or "*" in domain:
+                    domain = domain.replace("*", "%")
+                    conditions.append("domain LIKE ?")
+                else:
+                    conditions.append("domain = ?")
+                params.append(domain)
+
+            # Tags filter
+            if tags:
+                if logic == "AND":
+                    # All tags must match
+                    for tag in tags:
+                        conditions.append("tags_json LIKE ?")
+                        params.append(f'%"{tag}"%')
+                else:
+                    # Any tag matches
+                    tag_conditions = " OR ".join(["tags_json LIKE ?" for _ in tags])
+                    conditions.append(f"({tag_conditions})")
+                    params.extend([f'%"{tag}"%' for tag in tags])
+
+            # Confidence level
+            if confidence_level:
+                conditions.append("confidence_level = ?")
+                params.append(confidence_level.value)
+
+            # Date range
+            if start_date:
+                conditions.append("created_at >= ?")
+                params.append(start_date.timestamp())
+
+            if end_date:
+                conditions.append("created_at <= ?")
+                params.append(end_date.timestamp())
+
+            # Knowledge type
+            if knowledge_type:
+                conditions.append("knowledge_type = ?")
+                params.append(knowledge_type.value)
+
+            # Validation score
+            if min_validation_score is not None:
+                conditions.append("validation_score >= ?")
+                params.append(min_validation_score)
+
+            # Build final query
+            if conditions:
+                where_clause = f" WHERE {f' {logic} '.join(conditions)}"
+            else:
+                where_clause = ""
+
+            query = f"""
+                SELECT * FROM knowledge_entries
+                {where_clause}
+                ORDER BY created_at DESC
+                LIMIT ?
+            """
+            params.append(limit)
+
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+
+            # Convert rows to KnowledgeEntry objects
+            entries = []
+            for row in cursor.fetchall():
+                entry = self._row_to_knowledge_entry(row)
+                if entry:
+                    entries.append(entry)
+
+            conn.close()
+
+            logger.info(f"Advanced search returned {len(entries)} results")
+            return entries
+
+        except Exception as e:
+            logger.error(f"Advanced search failed: {e}")
+            if 'conn' in locals():
+                conn.close()
+            return []
+
+    def get_analytics_data(self) -> Dict[str, Any]:
+        """
+        Get comprehensive analytics data for dashboard.
+
+        Returns:
+            Dictionary with analytics metrics:
+            - entries_per_domain_over_time: Time series data
+            - entry_growth_trend: Monthly growth statistics
+            - confidence_distribution: Breakdown by confidence level
+            - top_domains: Top 10 domains by entry count
+            - quality_metrics: Average confidence, validation scores
+            - relationship_stats: Relationship counts and types
+        """
+        try:
+            conn = sqlite3.connect(self.storage_path)
+            cursor = conn.cursor()
+
+            analytics = {}
+
+            # 1. Entries per domain (top 10)
+            cursor.execute("""
+                SELECT domain, COUNT(*) as count
+                FROM knowledge_entries
+                WHERE domain IS NOT NULL
+                GROUP BY domain
+                ORDER BY count DESC
+                LIMIT 10
+            """)
+            analytics['top_domains'] = [
+                {'domain': row[0], 'count': row[1]}
+                for row in cursor.fetchall()
+            ]
+
+            # 2. Confidence distribution
+            cursor.execute("""
+                SELECT confidence_level, COUNT(*) as count
+                FROM knowledge_entries
+                GROUP BY confidence_level
+            """)
+            analytics['confidence_distribution'] = {
+                row[0]: row[1] for row in cursor.fetchall()
+            }
+
+            # 3. Entry growth trend (last 12 months)
+            import time
+            from datetime import datetime, timedelta
+
+            monthly_data = []
+            for i in range(11, -1, -1):  # Last 12 months
+                month_start = datetime.now() - timedelta(days=30 * i)
+                month_end = month_start + timedelta(days=30)
+
+                cursor.execute("""
+                    SELECT COUNT(*) FROM knowledge_entries
+                    WHERE created_at >= ? AND created_at < ?
+                """, (month_start.timestamp(), month_end.timestamp()))
+
+                count = cursor.fetchone()[0]
+                monthly_data.append({
+                    'month': month_start.strftime('%Y-%m'),
+                    'count': count
+                })
+
+            analytics['entry_growth_trend'] = monthly_data
+
+            # 4. Quality metrics
+            cursor.execute("""
+                SELECT
+                    AVG(CASE confidence_level
+                        WHEN 'low' THEN 1
+                        WHEN 'medium' THEN 2
+                        WHEN 'high' THEN 3
+                        WHEN 'verified' THEN 4
+                        ELSE 0
+                    END) as avg_confidence,
+                    AVG(validation_score) as avg_validation,
+                    AVG(success_rate) as avg_success_rate,
+                    COUNT(*) as total_entries
+                FROM knowledge_entries
+            """)
+            row = cursor.fetchone()
+            analytics['quality_metrics'] = {
+                'avg_confidence': row[0] or 0,
+                'avg_validation_score': row[1] or 0,
+                'avg_success_rate': row[2] or 0,
+                'total_entries': row[3]
+            }
+
+            # 5. Relationship statistics
+            cursor.execute("""
+                SELECT name FROM sqlite_master
+                WHERE type='table' AND name='knowledge_relationships'
+            """)
+            if cursor.fetchone():
+                cursor.execute("""
+                    SELECT
+                        relationship_type,
+                        COUNT(*) as count,
+                        AVG(confidence) as avg_confidence
+                    FROM knowledge_relationships
+                    GROUP BY relationship_type
+                """)
+                analytics['relationship_stats'] = [
+                    {
+                        'type': row[0],
+                        'count': row[1],
+                        'avg_confidence': row[2]
+                    }
+                    for row in cursor.fetchall()
+                ]
+            else:
+                analytics['relationship_stats'] = []
+
+            # 6. Knowledge type distribution
+            cursor.execute("""
+                SELECT knowledge_type, COUNT(*) as count
+                FROM knowledge_entries
+                GROUP BY knowledge_type
+                ORDER BY count DESC
+            """)
+            analytics['type_distribution'] = {
+                row[0]: row[1] for row in cursor.fetchall()
+            }
+
+            # 7. Entries per domain over time (last 30 days, top 5 domains)
+            top_5_domains = [d['domain'] for d in analytics['top_domains'][:5]]
+            domain_time_series = {}
+
+            for domain in top_5_domains:
+                daily_data = []
+                for i in range(29, -1, -1):  # Last 30 days
+                    day_start = datetime.now() - timedelta(days=i)
+                    day_end = day_start + timedelta(days=1)
+
+                    cursor.execute("""
+                        SELECT COUNT(*) FROM knowledge_entries
+                        WHERE domain = ? AND created_at >= ? AND created_at < ?
+                    """, (domain, day_start.timestamp(), day_end.timestamp()))
+
+                    count = cursor.fetchone()[0]
+                    daily_data.append({
+                        'date': day_start.strftime('%Y-%m-%d'),
+                        'count': count
+                    })
+
+                domain_time_series[domain] = daily_data
+
+            analytics['entries_per_domain_over_time'] = domain_time_series
+
+            conn.close()
+
+            return analytics
+
+        except Exception as e:
+            logger.error(f"Failed to get analytics data: {e}")
+            if 'conn' in locals():
+                conn.close()
+            return {}
+
+    def generate_quality_report(self) -> Dict[str, Any]:
+        """
+        Generate quality report identifying entries needing attention.
+
+        Returns:
+            Dictionary with quality issues:
+            - low_confidence_entries: Entries with confidence < 0.5
+            - entries_with_flags: Entries with validation flags
+            - orphaned_entries: Entries with no relationships
+            - domains_low_quality: Domains with lowest success rates
+            - unvalidated_entries: Entries never validated
+            - recent_failures: Recent entries with low success rates
+        """
+        try:
+            conn = sqlite3.connect(self.storage_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            report = {}
+
+            # 1. Low confidence entries (< medium)
+            cursor.execute("""
+                SELECT knowledge_id, domain, confidence_level,
+                       content_json, created_at
+                FROM knowledge_entries
+                WHERE confidence_level IN ('low')
+                ORDER BY created_at DESC
+                LIMIT 50
+            """)
+            report['low_confidence_entries'] = [
+                {
+                    'knowledge_id': row['knowledge_id'],
+                    'domain': row['domain'],
+                    'confidence_level': row['confidence_level'],
+                    'content': json.loads(row['content_json']) if row['content_json'] else {},
+                    'age_days': (time.time() - row['created_at']) / 86400
+                }
+                for row in cursor.fetchall()
+            ]
+
+            # 2. Entries with validation flags
+            cursor.execute("""
+                SELECT knowledge_id, domain, validation_flags,
+                       validation_score, content_json
+                FROM knowledge_entries
+                WHERE validation_flags IS NOT NULL
+                  AND validation_flags != '[]'
+                ORDER BY validation_score ASC
+                LIMIT 50
+            """)
+            report['entries_with_flags'] = [
+                {
+                    'knowledge_id': row['knowledge_id'],
+                    'domain': row['domain'],
+                    'flags': json.loads(row['validation_flags']) if row['validation_flags'] else [],
+                    'validation_score': row['validation_score'],
+                    'content': json.loads(row['content_json']) if row['content_json'] else {}
+                }
+                for row in cursor.fetchall()
+            ]
+
+            # 3. Orphaned entries (no relationships)
+            cursor.execute("""
+                SELECT name FROM sqlite_master
+                WHERE type='table' AND name='knowledge_relationships'
+            """)
+            if cursor.fetchone():
+                cursor.execute("""
+                    SELECT ke.knowledge_id, ke.domain, ke.content_json, ke.created_at
+                    FROM knowledge_entries ke
+                    LEFT JOIN knowledge_relationships kr
+                      ON ke.knowledge_id = kr.source_id
+                      OR ke.knowledge_id = kr.target_id
+                    WHERE kr.source_id IS NULL
+                    ORDER BY ke.created_at DESC
+                    LIMIT 50
+                """)
+                report['orphaned_entries'] = [
+                    {
+                        'knowledge_id': row['knowledge_id'],
+                        'domain': row['domain'],
+                        'content': json.loads(row['content_json']) if row['content_json'] else {},
+                        'age_days': (time.time() - row['created_at']) / 86400
+                    }
+                    for row in cursor.fetchall()
+                ]
+            else:
+                report['orphaned_entries'] = []
+
+            # 4. Domains with lowest success rates
+            cursor.execute("""
+                SELECT domain,
+                       COUNT(*) as entry_count,
+                       AVG(success_rate) as avg_success_rate,
+                       AVG(validation_score) as avg_validation
+                FROM knowledge_entries
+                WHERE domain IS NOT NULL
+                GROUP BY domain
+                HAVING COUNT(*) >= 5
+                ORDER BY avg_success_rate ASC
+                LIMIT 10
+            """)
+            report['domains_low_quality'] = [
+                {
+                    'domain': row[0],
+                    'entry_count': row[1],
+                    'avg_success_rate': row[2],
+                    'avg_validation': row[3]
+                }
+                for row in cursor.fetchall()
+            ]
+
+            # 5. Unvalidated entries
+            cursor.execute("""
+                SELECT knowledge_id, domain, content_json, created_at
+                FROM knowledge_entries
+                WHERE validated_at IS NULL
+                  AND created_at < ?
+                ORDER BY created_at ASC
+                LIMIT 50
+            """, (time.time() - 86400 * 7,))  # Older than 7 days
+            report['unvalidated_entries'] = [
+                {
+                    'knowledge_id': row['knowledge_id'],
+                    'domain': row['domain'],
+                    'content': json.loads(row['content_json']) if row['content_json'] else {},
+                    'age_days': (time.time() - row['created_at']) / 86400
+                }
+                for row in cursor.fetchall()
+            ]
+
+            # 6. Recent failures (low success rate, accessed recently)
+            cursor.execute("""
+                SELECT knowledge_id, domain, success_rate,
+                       access_count, content_json
+                FROM knowledge_entries
+                WHERE success_rate < 0.3
+                  AND access_count > 0
+                ORDER BY access_count DESC
+                LIMIT 30
+            """)
+            report['recent_failures'] = [
+                {
+                    'knowledge_id': row['knowledge_id'],
+                    'domain': row['domain'],
+                    'success_rate': row['success_rate'],
+                    'access_count': row['access_count'],
+                    'content': json.loads(row['content_json']) if row['content_json'] else {}
+                }
+                for row in cursor.fetchall()
+            ]
+
+            # Summary statistics
+            report['summary'] = {
+                'total_issues': (
+                    len(report['low_confidence_entries']) +
+                    len(report['entries_with_flags']) +
+                    len(report['orphaned_entries']) +
+                    len(report['unvalidated_entries']) +
+                    len(report['recent_failures'])
+                ),
+                'low_confidence_count': len(report['low_confidence_entries']),
+                'flagged_count': len(report['entries_with_flags']),
+                'orphaned_count': len(report['orphaned_entries']),
+                'unvalidated_count': len(report['unvalidated_entries']),
+                'failing_count': len(report['recent_failures'])
+            }
+
+            conn.close()
+
+            logger.info(f"Quality report generated: {report['summary']['total_issues']} issues found")
+            return report
+
+        except Exception as e:
+            logger.error(f"Failed to generate quality report: {e}")
+            if 'conn' in locals():
+                conn.close()
+            return {'summary': {'total_issues': 0}, 'error': str(e)}

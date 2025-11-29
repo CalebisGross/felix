@@ -270,6 +270,29 @@ class RichOutputFormatter:
             self.fallback = OutputFormatter()
             self.use_rich = False
 
+    def _color(self, text: str, color: str) -> str:
+        """Apply color to text (for compatibility with direct _color calls)."""
+        if self.use_rich:
+            # Map ANSI color names to rich markup tags
+            color_map = {
+                'reset': 'reset',
+                'bold': 'bold',
+                'dim': 'dim',
+                'red': 'red',
+                'green': 'green',
+                'yellow': 'yellow',
+                'blue': 'blue',
+                'magenta': 'magenta',
+                'cyan': 'cyan',
+                'white': 'white',
+                'gray': 'dim',
+            }
+            markup = color_map.get(color, color)
+            return f"[{markup}]{text}[/{markup}]"
+        else:
+            # Delegate to fallback formatter
+            return self.fallback._color(text, color)
+
     def print_header(self, text: str):
         """Print a header."""
         if self.use_rich:

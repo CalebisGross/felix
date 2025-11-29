@@ -175,6 +175,102 @@ class MemoryFacade:
             logger.error(f"Failed to retrieve knowledge with query: {e}")
             return []
 
+    def retrieve_tool_instructions(self, tool_requirements: Dict[str, bool]) -> tuple[str, List[str]]:
+        """
+        Retrieve tool instructions based on task requirements (conditional tool injection).
+
+        This implements the "subconscious memory" pattern where agents only receive
+        instructions for tools they actually need, reducing token waste.
+
+        Args:
+            tool_requirements: Dictionary with tool requirement flags:
+                {'needs_file_ops': bool, 'needs_web_search': bool, 'needs_system_commands': bool}
+
+        Returns:
+            Tuple of (instructions_string, list_of_knowledge_ids):
+            - instructions_string: Assembled tool instructions for required tools
+            - list_of_knowledge_ids: IDs of tool instruction entries (for meta-learning)
+
+        Example:
+            >>> tool_reqs = {'needs_file_ops': True, 'needs_web_search': False, 'needs_system_commands': False}
+            >>> instructions, ids = memory_facade.retrieve_tool_instructions(tool_reqs)
+            >>> # Returns file operation instructions and their knowledge IDs
+        """
+        if not self._memory_enabled or not self.knowledge_store:
+            logger.debug("Tool instruction retrieval skipped: memory disabled or no knowledge store")
+            return "", []
+
+        if not tool_requirements or not any(tool_requirements.values()):
+            logger.debug("No tools required for this task - skipping tool instruction retrieval")
+            return "", []
+
+        try:
+            # Map tool requirement flags to tool instruction identifiers
+            tool_map = {
+                'needs_file_ops': 'file_operations',
+                'needs_web_search': 'web_search',
+                'needs_system_commands': 'system_commands'
+            }
+
+            # Collect needed tool names
+            needed_tools = [
+                tool_name
+                for flag, tool_name in tool_map.items()
+                if tool_requirements.get(flag, False)
+            ]
+
+            if not needed_tools:
+                return "", []
+
+            logger.info(f"Retrieving tool instructions for: {', '.join(needed_tools)}")
+
+            # Retrieve tool instructions from knowledge store (domain="tool_instructions")
+            assembled_instructions = []
+            knowledge_ids = []  # Track IDs for meta-learning
+
+            for tool_name in needed_tools:
+                # Query by domain and check tool_name in content dict
+                # Note: We use domain filtering and then filter by tool_name in content
+                query = KnowledgeQuery(
+                    domains=["tool_instructions"],
+                    limit=10  # Get all tool instructions, we'll filter below
+                )
+                all_tool_entries = self.knowledge_store.retrieve_knowledge(query)
+
+                # Filter to find the specific tool by tool_name in content
+                entries = [
+                    entry for entry in all_tool_entries
+                    if isinstance(entry.content, dict) and entry.content.get('tool_name') == tool_name
+                ]
+
+                if entries:
+                    # Extract instruction text and ID from knowledge entry
+                    for entry in entries:
+                        if isinstance(entry.content, dict):
+                            instruction_text = entry.content.get('instructions', str(entry.content))
+                        else:
+                            instruction_text = str(entry.content)
+
+                        assembled_instructions.append(instruction_text)
+                        knowledge_ids.append(entry.knowledge_id)  # Track ID for meta-learning
+                        logger.debug(f"  ✓ Retrieved {tool_name} instructions ({len(instruction_text)} chars, ID: {entry.knowledge_id})")
+                else:
+                    logger.warning(f"  ⚠ No instructions found for tool: {tool_name}")
+
+            # Assemble all instructions with separators
+            if assembled_instructions:
+                result = "\n\n".join(assembled_instructions)
+                logger.info(f"✓ Assembled tool instructions: {len(result)} characters, {len(assembled_instructions)} tools")
+                logger.info(f"  Tool instruction IDs: {knowledge_ids}")
+                return result, knowledge_ids
+            else:
+                logger.warning("No tool instructions could be retrieved")
+                return "", []
+
+        except Exception as e:
+            logger.error(f"Failed to retrieve tool instructions: {e}")
+            return "", []
+
     def get_task_strategy_recommendations(self, task_description: str,
                                         task_type: str = "general",
                                         complexity: str = "MODERATE") -> Dict[str, Any]:
@@ -266,16 +362,10 @@ class MemoryFacade:
             summary: Dict[str, Any] = {"memory_enabled": True}
 
             if self.knowledge_store:
-                # Get knowledge entry count using proper query
-                query = KnowledgeQuery(limit=1000)
-                all_knowledge = self.knowledge_store.retrieve_knowledge(query)
-                summary["knowledge_entries"] = len(all_knowledge)
-
-                # Get domain breakdown
-                domains: Dict[str, int] = {}
-                for entry in all_knowledge:
-                    domains[entry.domain] = domains.get(entry.domain, 0) + 1
-                summary["knowledge_by_domain"] = domains
+                # Use efficient statistics method instead of retrieving all entries
+                knowledge_stats = self.knowledge_store.get_knowledge_summary()
+                summary["knowledge_entries"] = knowledge_stats.get("total_entries", 0)
+                summary["knowledge_by_domain"] = knowledge_stats.get("domain_distribution", {})
             else:
                 summary["knowledge_entries"] = 0
                 summary["knowledge_by_domain"] = {}

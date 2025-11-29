@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import json
 import os
+import queue
 from typing import List
 from .utils import ThreadManager, DBHelper, logger
 from .dashboard import DashboardFrame
@@ -113,6 +114,32 @@ class MainApp(tk.Tk):
         self.status_var.set("Ready")
         status_bar = ttk.Label(self, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W)
         status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+
+        # Queue for thread-safe communication
+        self.result_queue = queue.Queue()
+
+        # Start polling queue on main thread
+        self._poll_results()
+
+    def _poll_results(self):
+        """Poll the result queue and update GUI (runs on main thread)."""
+        try:
+            while not self.result_queue.empty():
+                result = self.result_queue.get_nowait()
+                action = result.get('action')
+
+                if action == 'set_status':
+                    self.status_var.set(result['status'])
+                elif action == 'enable_features':
+                    self._enable_all_features()
+                elif action == 'show_error':
+                    messagebox.showerror(result.get('title', 'Error'), result['message'])
+
+        except Exception as e:
+            logger.error(f"Error in poll_results: {e}", exc_info=True)
+
+        # Schedule next poll
+        self.after(100, self._poll_results)
 
     def show_about(self):
         messagebox.showinfo("About", "Felix GUI - Version 1.0")
@@ -253,25 +280,29 @@ class MainApp(tk.Tk):
             # Start the system
             if self.felix_system.start():
                 self.system_running = True
-                self.status_var.set("System Running")
+                # Put result in queue for main thread to process
+                self.result_queue.put({'action': 'set_status', 'status': 'System Running'})
                 logger.info("Felix system fully integrated and running")
-                self._enable_all_features()
+                self.result_queue.put({'action': 'enable_features'})
             else:
                 self.system_running = False
                 self.felix_system = None
-                self.status_var.set("System Start Failed")
-                self.after(0, lambda: messagebox.showerror(
-                    "System Start Failed",
-                    "Failed to start Felix system. Check logs for details.\n"
-                    "Ensure LM Studio is running with a model loaded."
-                ))
+                # Put result in queue for main thread to process
+                self.result_queue.put({'action': 'set_status', 'status': 'System Start Failed'})
+                self.result_queue.put({
+                    'action': 'show_error',
+                    'title': 'System Start Failed',
+                    'message': "Failed to start Felix system. Check logs for details.\n"
+                               "Ensure LM Studio is running with a model loaded."
+                })
 
         except Exception as e:
             logger.error(f"Error starting Felix system: {e}", exc_info=True)
             self.system_running = False
             self.felix_system = None
-            self.status_var.set("System Start Failed")
-            self.after(0, lambda: messagebox.showerror("Error", f"Failed to start system: {e}"))
+            # Put result in queue for main thread to process
+            self.result_queue.put({'action': 'set_status', 'status': 'System Start Failed'})
+            self.result_queue.put({'action': 'show_error', 'message': f"Failed to start system: {e}"})
 
     def _enable_all_features(self):
         """Enable features in all frames when system is running."""
@@ -324,12 +355,13 @@ class MainApp(tk.Tk):
                 self.felix_system = None
 
             self.system_running = False
-            self.status_var.set("System Stopped")
+            # Put result in queue for main thread to process
+            self.result_queue.put({'action': 'set_status', 'status': 'System Stopped'})
             logger.info("Felix system stopped")
 
         except Exception as e:
             logger.error(f"Error stopping system: {e}", exc_info=True)
-            self.after(0, lambda: messagebox.showerror("Error", f"Failed to stop system: {e}"))
+            self.result_queue.put({'action': 'show_error', 'message': f"Failed to stop system: {e}"})
 
     def start_knowledge_daemon(self):
         """Start the knowledge daemon if Felix system is running."""
