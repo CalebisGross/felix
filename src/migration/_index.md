@@ -94,6 +94,34 @@ Workflow history schema evolution.
 Agent performance tracking.
 - **`AgentPerformanceMigration001`**: Creates `agent_performance` table with metrics
 
+### Additional Migrations
+
+#### [add_audit_log_table.py](add_audit_log_table.py)
+Knowledge audit log table creation.
+- **Purpose**: Creates comprehensive audit trail for all CRUD operations on knowledge entries
+- **Table**: `knowledge_audit_log` with timestamp, operation type, knowledge_id, user_agent, old/new values, transaction_id
+- **Features**: Before/after state capture, transaction-level grouping, indexed for fast querying
+- **Integration**: Used by `AuditLogger` in `src/memory/audit_log.py`
+
+#### [add_cascade_delete.py](add_cascade_delete.py)
+CASCADE DELETE foreign key constraint migration.
+- **Purpose**: Adds CASCADE DELETE to `knowledge_entries.source_doc_id` foreign key
+- **Effect**: Automatically deletes associated knowledge entries when a document is deleted
+- **Challenge**: SQLite requires table recreation for foreign key changes
+- **Process**: Create new table → copy data → drop old → rename → recreate indexes
+
+#### [add_fts5_triggers.py](add_fts5_triggers.py)
+FTS5 auto-synchronization triggers.
+- **Purpose**: Keeps `knowledge_fts` virtual table automatically synchronized with `knowledge_entries`
+- **Triggers**: `knowledge_entries_ai` (INSERT), `knowledge_entries_au` (UPDATE), `knowledge_entries_ad` (DELETE)
+- **Background**: Replaces removed triggers that had schema mismatch issues
+
+#### [add_watch_directories_table.py](add_watch_directories_table.py)
+Watch directories tracking table.
+- **Purpose**: Tracks watched directories with metadata and statistics for Knowledge Brain
+- **Table**: `watch_directories` with path, enabled status, scan timestamps, document/entry counts
+- **Usage**: Enables directory-level operations and visibility in Knowledge Brain GUI
+
 ## Key Concepts
 
 ### Migration Versioning
