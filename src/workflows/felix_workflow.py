@@ -20,6 +20,9 @@ from typing import Dict, Any, Optional, Callable
 # Import collaborative context builder for agent collaboration
 from .context_builder import CollaborativeContextBuilder
 
+# Import concept registry for terminology consistency
+from .concept_registry import ConceptRegistry
+
 # Import learning systems for pattern recommendations and optimization
 from src.learning import RecommendationEngine
 
@@ -63,6 +66,90 @@ def _map_synthesis_complexity_to_task_complexity(synthesis_complexity: str) -> T
         "VERY_COMPLEX": TaskComplexity.VERY_COMPLEX
     }
     return mapping.get(synthesis_complexity.upper(), TaskComplexity.MODERATE)
+
+
+def _store_file_discoveries(result_content: str, knowledge_store, agent_id: str = "system", task_id: str = "discovery") -> int:
+    """
+    Extract and store file path discoveries from command results.
+
+    When agents use `find` commands, this function extracts the discovered paths
+    and stores them in the knowledge store for future reuse. This enables
+    meta-learning: the system remembers where files are located.
+
+    Args:
+        result_content: The agent's output containing find command results
+        knowledge_store: KnowledgeStore instance for persistence
+        agent_id: ID of the agent that made the discovery
+        task_id: ID of the task context
+
+    Returns:
+        Number of file discoveries stored
+    """
+    import re
+    import os
+    from src.memory.knowledge_store import KnowledgeType, ConfidenceLevel
+
+    if not knowledge_store:
+        return 0
+
+    # Pattern matches find command output: ./path/to/file.ext
+    # Also matches relative paths without ./ prefix
+    find_results = re.findall(r'(?:^|\s)(\.?/?[\w/.-]+\.(?:py|js|ts|java|cpp|c|h|go|rs|rb|txt|md|json|yaml|yml|xml|html|css|sh))(?:\s|$)', result_content, re.MULTILINE)
+
+    # Deduplicate paths in case regex matches same file multiple times
+    unique_paths = list(set(p.strip() for p in find_results if p.strip() and len(p.strip()) >= 3))
+
+    stored_count = 0
+    for path in unique_paths:
+        filename = os.path.basename(path)
+        directory = os.path.dirname(path)
+
+        # Check if we already have this exact path stored
+        from src.memory.knowledge_store import KnowledgeQuery
+        existing = knowledge_store.retrieve_knowledge(
+            KnowledgeQuery(
+                domains=["file_locations"],
+                content_keywords=[filename],
+                limit=5
+            )
+        )
+
+        # Skip if already stored
+        already_exists = any(
+            e.content.get('full_path') == path
+            for e in existing
+        )
+        if already_exists:
+            continue
+
+        try:
+            # Build tags list, filtering out empty strings and duplicates
+            parent_dir = path.split('/')[-2] if '/' in path and len(path.split('/')) > 1 else ''
+            tags = list(set(t for t in [filename, directory, parent_dir] if t))
+
+            entry_id = knowledge_store.store_knowledge(
+                knowledge_type=KnowledgeType.FILE_LOCATION,
+                content={
+                    'filename': filename,
+                    'full_path': path,
+                    'directory': directory,
+                    'discovered_by': agent_id,
+                    'task_context': task_id
+                },
+                confidence_level=ConfidenceLevel.VERIFIED,  # Found paths are verified
+                source_agent=agent_id,
+                domain="file_locations",
+                tags=tags
+            )
+
+            if entry_id:
+                logger.info(f"  📁 Learned file location: {filename} → {path}")
+                stored_count += 1
+
+        except Exception as e:
+            logger.debug(f"Failed to store file discovery {path}: {e}")
+
+    return stored_count
 
 
 def run_felix_workflow(felix_system, task_input: str,
@@ -164,6 +251,10 @@ def run_felix_workflow(felix_system, task_input: str,
         )
         logger.info("Initialized CollaborativeContextBuilder with compression for agent collaboration")
 
+        # Initialize ConceptRegistry for terminology consistency (Phase 1.4)
+        concept_registry = ConceptRegistry(workflow_id=workflow_id)
+        logger.info("Initialized ConceptRegistry for workflow-scoped concept tracking")
+
         # Initialize RecommendationEngine for learning-based optimization
         recommendation_engine = None
         if felix_system.task_memory and felix_system.config.enable_learning:
@@ -203,11 +294,54 @@ def run_felix_workflow(felix_system, task_input: str,
         task_complexity = central_post.synthesis_engine.classify_task_complexity(task_input)
         logger.info(f"Task complexity classification: {task_complexity}")
 
+        # Store complexity in task metadata for prompt pipeline to use
+        # Defensive check: handle both LLMTask objects and dict representations
+        if hasattr(task, 'metadata'):
+            task.metadata['complexity'] = task_complexity
+        elif isinstance(task, dict):
+            if 'metadata' not in task:
+                task['metadata'] = {}
+            task['metadata']['complexity'] = task_complexity
+
         # Classify tool requirements for conditional tool instruction injection
         tool_requirements = central_post.synthesis_engine.classify_tool_requirements(task_input)
         logger.info(f"Tool requirements classification: file_ops={tool_requirements['needs_file_ops']}, "
                    f"web_search={tool_requirements['needs_web_search']}, "
                    f"system_commands={tool_requirements['needs_system_commands']}")
+
+        # Classify task type for meta-learning differentiation (Phase 2 - Knowledge Gap Cartography)
+        # Different task types benefit from different knowledge, enabling meta-learning boost
+        classified_task_type = central_post.synthesis_engine.classify_task_type(task_input)
+        logger.info(f"Task type classification: {classified_task_type}")
+
+        # Phase 7: Analyze knowledge coverage for epistemic self-awareness
+        # This identifies knowledge gaps BEFORE workflow execution
+        coverage_report = None
+        try:
+            from src.knowledge.coverage_analyzer import KnowledgeCoverageAnalyzer
+            if knowledge_store:
+                coverage_analyzer = KnowledgeCoverageAnalyzer(knowledge_store)
+                coverage_report = coverage_analyzer.analyze_coverage(task_input)
+
+                logger.info("=" * 60)
+                logger.info("📊 KNOWLEDGE COVERAGE ANALYSIS")
+                logger.info(f"  Overall coverage: {coverage_report.overall_coverage_score:.2f}")
+                if coverage_report.covered_domains:
+                    logger.info(f"  ✓ Covered: {', '.join(coverage_report.covered_domains)}")
+                if coverage_report.weak_domains:
+                    logger.info(f"  ⚠ Weak: {', '.join(coverage_report.weak_domains)}")
+                if coverage_report.missing_domains:
+                    logger.info(f"  ✗ Missing: {', '.join(coverage_report.missing_domains)}")
+                if coverage_report.gap_summary:
+                    logger.info(f"  {coverage_report.gap_summary}")
+                logger.info("=" * 60)
+        except Exception as e:
+            logger.warning(f"Coverage analysis failed (continuing without): {e}")
+
+        # Phase 3.2: Initialize failure recovery manager
+        from src.workflows.failure_recovery import FailureRecoveryManager, FailureType
+        failure_recovery = FailureRecoveryManager()
+        logger.info("✓ Failure recovery system initialized")
 
         # Check web search availability (Fix 5)
         logger.info("=" * 60)
@@ -303,6 +437,10 @@ def run_felix_workflow(felix_system, task_input: str,
             "centralpost_synthesis": None  # Will store CentralPost synthesis output
         }
 
+        # Track reasoning evaluations from CriticAgent for weighted synthesis (Phase 6)
+        # Maps agent_id -> reasoning evaluation dict from CriticAgent.evaluate_reasoning_process()
+        reasoning_evals = {}
+
         # Track ALL processed messages for dynamic spawning (REAL messages, not mocks!)
         all_processed_messages = []
 
@@ -347,7 +485,7 @@ def run_felix_workflow(felix_system, task_input: str,
                 task_complexity_enum = _map_synthesis_complexity_to_task_complexity(task_complexity)
                 unified_recommendation = recommendation_engine.get_pre_workflow_recommendations(
                     task_description=task_input,
-                    task_type="workflow_task",
+                    task_type=classified_task_type,
                     task_complexity=task_complexity_enum
                 )
 
@@ -391,7 +529,9 @@ def run_felix_workflow(felix_system, task_input: str,
             llm_client=felix_system.lm_client,
             research_domain="task_analysis",
             token_budget_manager=felix_system.token_budget_manager,
-            max_tokens=1200
+            max_tokens=16000,  # Generous budget for 50K context window
+            prompt_manager=felix_system.prompt_manager,
+            prompt_optimizer=felix_system.prompt_optimizer
         )
 
         # Register with agent_manager
@@ -437,14 +577,17 @@ def run_felix_workflow(felix_system, task_input: str,
         active_agents = [research_agent]
 
         # Progress through time steps
+        # Store original total for consistent progress calculation
+        original_total_steps = total_steps
         for step in range(total_steps):
             current_time = step * time_step
-            progress_pct = (step / total_steps) * 100
+            # Use original total for percentage, clamp to 95% to reserve 100% for completion
+            progress_pct = min(95, (step / original_total_steps) * 100)
 
-            logger.info(f"\n--- Time Step {step}/{total_steps} (t={current_time:.2f}) ---")
+            logger.info(f"\n--- Time Step {step}/{original_total_steps} (t={current_time:.2f}) ---")
 
             if progress_callback:
-                progress_callback(f"Processing time step {step+1}/{total_steps}", progress_pct)
+                progress_callback(f"Processing time step {step+1}/{original_total_steps}", progress_pct)
 
             # Process each agent that can spawn at this time
             for agent in active_agents:
@@ -475,7 +618,7 @@ def run_felix_workflow(felix_system, task_input: str,
                                 agent_type=agent.agent_type,
                                 agent_id=agent.agent_id,
                                 current_time=current_time,
-                                max_context_tokens=agent.max_tokens,
+                                max_context_tokens=40000,  # Context window budget (not agent response limit)
                                 message_limit=3,  # Reduced from 10 to fit within token budget
                                 tool_requirements=tool_requirements  # Pass tool requirements for conditional injection
                             )
@@ -485,11 +628,14 @@ def run_felix_workflow(felix_system, task_input: str,
                             task.knowledge_entries = enriched_context.knowledge_entries
                             task.tool_instructions = enriched_context.tool_instructions  # Include conditional tool instructions
                             task.context_inventory = enriched_context.context_inventory  # NEW: Include context inventory for agent comprehension
+                            task.existing_concepts = enriched_context.existing_concepts  # NEW: Include existing concepts for terminology consistency
                             logger.info(f"  ✓ Using collaborative context with {len(enriched_context.context_history)} previous outputs")
                             if enriched_context.tool_instructions:
                                 logger.info(f"  ✓ Tool instructions included ({len(enriched_context.tool_instructions)} chars)")
                             if enriched_context.context_inventory:
                                 logger.info(f"  ✓ Context awareness protocol enabled ({len(enriched_context.context_inventory)} chars)")
+                            if enriched_context.existing_concepts and enriched_context.existing_concepts != "No concepts defined yet in this workflow.":
+                                logger.info(f"  ✓ Concept registry active with terminology consistency enforcement")
 
                             # Track knowledge entry IDs for meta-learning
                             if enriched_context.knowledge_entries:
@@ -512,12 +658,78 @@ def run_felix_workflow(felix_system, task_input: str,
 
                         # Process task through LLM at this checkpoint (with or without collaborative context)
                         # Pass central_post and streaming flag for real-time communication
-                        result = agent.process_task_with_llm(
-                            task,
-                            current_time,
-                            central_post=central_post,
-                            enable_streaming=felix_system.config.enable_streaming
-                        )
+                        # Phase 3.2: Wrap with failure recovery
+                        try:
+                            result = agent.process_task_with_llm(
+                                task,
+                                current_time,
+                                central_post=central_post,
+                                enable_streaming=felix_system.config.enable_streaming
+                            )
+
+                            # Check for low confidence that might need recovery
+                            if result.confidence < 0.3:
+                                logger.warning(f"⚠️ Agent {agent.agent_id} produced low confidence result: {result.confidence:.2f}")
+                                failure_record = failure_recovery.record_failure(
+                                    FailureType.LOW_CONFIDENCE,
+                                    agent.agent_id,
+                                    f"Confidence {result.confidence:.2f} below threshold 0.3",
+                                    context={'result': result, 'agent_type': agent.agent_type}
+                                )
+                                # Recovery strategy: Spawn critic for validation
+                                recovery_result = failure_recovery.attempt_recovery(failure_record)
+                                if recovery_result['success'] and recovery_result.get('adjusted_parameters', {}).get('spawn_critic'):
+                                    logger.info(f"  🔄 Recovery: {recovery_result['message']}")
+                                    # Let dynamic spawning handle critic creation
+
+                        except Exception as e:
+                            logger.error(f"✗ Agent {agent.agent_id} processing failed: {e}")
+
+                            # Record failure
+                            failure_record = failure_recovery.record_failure(
+                                FailureType.AGENT_ERROR,
+                                agent.agent_id,
+                                str(e),
+                                context={
+                                    'agent_type': agent.agent_type,
+                                    'agent_params': {
+                                        'temperature': getattr(agent, 'temperature', 0.7),
+                                        'max_tokens': agent.max_tokens
+                                    }
+                                }
+                            )
+
+                            # Attempt recovery if not too many failures
+                            if not failure_recovery.should_abandon_recovery(agent.agent_id):
+                                recovery_result = failure_recovery.attempt_recovery(failure_record)
+                                if recovery_result['success']:
+                                    logger.info(f"  🔄 Recovery: {recovery_result['message']}")
+
+                                    # Apply adjusted parameters and retry
+                                    adjusted_params = recovery_result.get('adjusted_parameters', {})
+                                    if adjusted_params.get('temperature'):
+                                        agent.temperature = adjusted_params['temperature']
+                                    if adjusted_params.get('max_tokens'):
+                                        agent.max_tokens = int(adjusted_params['max_tokens'])
+
+                                    # Retry processing
+                                    try:
+                                        result = agent.process_task_with_llm(
+                                            task,
+                                            current_time,
+                                            central_post=central_post,
+                                            enable_streaming=felix_system.config.enable_streaming
+                                        )
+                                        logger.info(f"  ✓ Recovery successful! Agent produced result with confidence {result.confidence:.2f}")
+                                    except Exception as retry_error:
+                                        logger.error(f"  ✗ Recovery failed: {retry_error}")
+                                        continue  # Skip this agent and move on
+                                else:
+                                    logger.error(f"  ✗ Recovery not possible: {recovery_result['message']}")
+                                    continue  # Skip this agent
+                            else:
+                                logger.error(f"  ✗ Abandoning recovery for {agent.agent_id} (too many failures)")
+                                continue  # Skip this agent
 
                         # Mark checkpoint as processed
                         agent.mark_checkpoint_processed()
@@ -538,8 +750,141 @@ def run_felix_workflow(felix_system, task_input: str,
                         # Track REAL message for dynamic spawning analysis
                         all_processed_messages.append(message)
 
-                        # Store in knowledge base
-                        if knowledge_store:
+                        # MULTI-STEP REASONING LOOP (Intelligent Agent Discovery)
+                        # Agents can now perform multi-step reasoning: find → read → analyze
+                        # This enables handling incomplete paths like "read central_post.py"
+                        import re
+                        reasoning_iteration = 0
+                        reasoning_history = []  # Track outputs for stall detection
+                        max_iterations = felix_system.config.agent_reasoning_max_iterations
+                        confidence_threshold = felix_system.config.agent_reasoning_confidence_threshold
+
+                        while reasoning_iteration < max_iterations:
+                            # === EXIT CONDITION 1: Agent signals COMPLETE ===
+                            if "REASONING_STATE: COMPLETE" in result.content:
+                                logger.info(f"  ✓ Agent {agent.agent_id} signaled COMPLETE - reasoning finished")
+                                break
+
+                            # === EXIT CONDITION 2: Agent signals BLOCKED ===
+                            if "REASONING_STATE: BLOCKED" in result.content:
+                                logger.warning(f"  ⚠️ Agent {agent.agent_id} signaled BLOCKED - task may be impossible")
+                                break
+
+                            # === EXIT CONDITION 3: No more system actions needed ===
+                            if "SYSTEM_ACTION_NEEDED:" not in result.content:
+                                if reasoning_iteration > 0:
+                                    logger.info(f"  ✓ No more system actions - reasoning complete after {reasoning_iteration} iteration(s)")
+                                break
+
+                            reasoning_iteration += 1
+                            logger.info(f"  🧠 Reasoning iteration {reasoning_iteration}/{max_iterations} for agent {agent.agent_id}")
+
+                            # === EXIT CONDITION 4: Stall detection (duplicate output) ===
+                            content_hash = hash(result.content[:500])  # Hash first 500 chars for comparison
+                            if content_hash in reasoning_history:
+                                logger.warning(f"  ⚠️ Duplicate output detected - breaking reasoning loop to prevent infinite loop")
+                                break
+                            reasoning_history.append(content_hash)
+
+                            # === EXIT CONDITION 5: Confidence threshold reached ===
+                            if result.confidence >= confidence_threshold:
+                                logger.info(f"  ✓ Confidence {result.confidence:.2f} >= {confidence_threshold} - reasoning complete")
+                                break
+
+                            # Process the system action
+                            logger.debug(f"🐛 DEBUG: Agent output contains SYSTEM_ACTION_NEEDED:")
+                            logger.debug(f"🐛 DEBUG: Full agent output:\n{result.content[:500]}")
+
+                            # Let CentralPost process the system action message
+                            logger.debug(f"🐛 DEBUG: Calling central_post.process_next_message() to execute command...")
+                            central_post.process_next_message()
+                            logger.debug(f"🐛 DEBUG: central_post.process_next_message() completed")
+
+                            # Extract commands that were requested
+                            pattern = r'SYSTEM_ACTION_NEEDED:\s*([^\n]+)'
+                            commands = re.findall(pattern, result.content, re.IGNORECASE)
+                            logger.debug(f"🐛 DEBUG: Extracted {len(commands)} command(s): {commands}")
+
+                            if not commands:
+                                logger.warning(f"  ⚠️ SYSTEM_ACTION_NEEDED: found but no commands extracted")
+                                break
+
+                            logger.info(f"  📋 Processing {len(commands)} system action(s): {', '.join(commands[:3])}{'...' if len(commands) > 3 else ''}")
+
+                            # PHASE 2: Store file discoveries from find commands (meta-learning)
+                            # This enables the system to remember where files are located
+                            _store_file_discoveries(
+                                result_content=result.content,
+                                knowledge_store=knowledge_store,
+                                agent_id=agent.agent_id,
+                                task_id=task.task_id if hasattr(task, 'task_id') else 'workflow'
+                            )
+
+                            # Build updated context with command results
+                            logger.debug(f"🐛 DEBUG: Building enriched context with command results...")
+                            enriched_context = context_builder.build_agent_context(
+                                original_task=task_input,
+                                agent_type=agent.agent_type,
+                                agent_id=agent.agent_id,
+                                current_time=current_time,
+                                max_context_tokens=40000,  # Context window budget (not agent response limit)
+                                message_limit=3,
+                                tool_requirements=tool_requirements
+                            )
+
+                            logger.debug(f"🐛 DEBUG: Enriched context built:")
+                            logger.debug(f"🐛   - context_history length: {len(enriched_context.context_history)} chars")
+                            logger.debug(f"🐛   - knowledge_entries: {len(enriched_context.knowledge_entries)} entries")
+                            logger.debug(f"🐛   - tool_instructions: {len(enriched_context.tool_instructions)} chars")
+
+                            # Update task with command results in context
+                            task.context_history = enriched_context.context_history
+                            task.knowledge_entries = enriched_context.knowledge_entries
+                            task.tool_instructions = enriched_context.tool_instructions
+                            task.context_inventory = enriched_context.context_inventory
+
+                            logger.info(f"  🔄 Re-invoking agent {agent.agent_id} with command results...")
+
+                            # Re-invoke the SAME agent with updated context
+                            followup_result = agent.process_task_with_llm(
+                                task,
+                                current_time,
+                                central_post=central_post,
+                                enable_streaming=felix_system.config.enable_streaming
+                            )
+
+                            logger.info(f"  ✓ Iteration {reasoning_iteration} complete: confidence={followup_result.confidence:.2f}")
+                            logger.debug(f"🐛 DEBUG: Does followup contain SYSTEM_ACTION_NEEDED?: {'SYSTEM_ACTION_NEEDED:' in followup_result.content}")
+
+                            # Replace result with followup for next iteration
+                            result = followup_result
+
+                            # Share the followup result
+                            followup_message = agent.share_result_to_central(result)
+                            central_post.queue_message(followup_message)
+                            results["messages_processed"].append(followup_message.message_id)
+
+                            # Update stored agent output
+                            agent_manager.store_agent_output(
+                                agent_id=agent.agent_id,
+                                result=result
+                            )
+
+                            # Update knowledge with followup result
+                            if knowledge_store:
+                                central_post.store_agent_result_as_knowledge(
+                                    agent_id=agent.agent_id,
+                                    content=result.content,
+                                    confidence=result.confidence,
+                                    domain="workflow_task"
+                                )
+
+                        # Log reasoning summary
+                        if reasoning_iteration > 0:
+                            logger.info(f"  ✓ Agent {agent.agent_id} completed {reasoning_iteration} reasoning iteration(s)")
+
+                        # Store in knowledge base (skip if already stored during re-invocation)
+                        if knowledge_store and "SYSTEM_ACTION_NEEDED:" not in result.content:
                             central_post.store_agent_result_as_knowledge(
                                 agent_id=agent.agent_id,
                                 content=result.content,
@@ -558,6 +903,138 @@ def run_felix_workflow(felix_system, task_input: str,
                             "checkpoint": checkpoint,  # NEW: Track which checkpoint this was
                             "progress": agent.progress   # NEW: Track agent progress
                         })
+
+                        # Phase 7: Inter-agent Collaboration
+                        # Agents assess collaboration opportunities and influence compatible peers
+                        if len(active_agents) > 1:
+                            try:
+                                other_agents = [a for a in active_agents if a.agent_id != agent.agent_id]
+                                if other_agents and hasattr(agent, 'assess_collaboration_opportunities'):
+                                    opportunities = agent.assess_collaboration_opportunities(other_agents, current_time)
+                                    collaboration_count = 0
+
+                                    for opp in opportunities[:2]:  # Limit to top 2 opportunities
+                                        if opp.get('compatibility', 0) > 0.6:
+                                            target = opp.get('target_agent')
+                                            if target and hasattr(agent, 'influence_agent_behavior'):
+                                                influence_strength = opp['compatibility'] * 0.5
+                                                agent.influence_agent_behavior(
+                                                    target,
+                                                    opp.get('recommended_influence', 'guidance'),
+                                                    influence_strength
+                                                )
+                                                collaboration_count += 1
+                                                logger.debug(f"  🤝 {agent.agent_id} → {target.agent_id}: "
+                                                           f"{opp['recommended_influence']} (strength: {influence_strength:.2f})")
+
+                                    if collaboration_count > 0:
+                                        logger.info(f"  🤝 Inter-agent collaboration: {collaboration_count} peer influences applied")
+                            except Exception as collab_error:
+                                logger.debug(f"  Collaboration assessment skipped: {collab_error}")
+
+                        # NEW: Extract and register concepts from agent response (Phase 1.4)
+                        if concept_registry:
+                            try:
+                                import re
+
+                                # Pattern 1: **Term**: Definition or **Term** - Definition
+                                # Matches bold markdown terms followed by definition
+                                pattern1 = r'\*\*([^*]+)\*\*[:\-]\s*([^\n]+(?:\n(?!\*\*)[^\n]+)*)'
+                                matches1 = re.findall(pattern1, result.content, re.MULTILINE)
+
+                                # Pattern 2: Term: Definition (at line start, title case)
+                                # More conservative: only matches capitalized terms at line start
+                                pattern2 = r'^([A-Z][A-Za-z\s]{2,30}):\s*([^\n]+(?:\n(?![A-Z])[^\n]+)*)'
+                                matches2 = re.findall(pattern2, result.content, re.MULTILINE)
+
+                                # Combine and deduplicate matches
+                                all_concepts = {}
+                                for name, definition in matches1 + matches2:
+                                    name = name.strip()
+                                    definition = definition.strip()
+                                    # Filter out obviously non-conceptual patterns
+                                    if len(name) > 2 and len(definition) > 10 and not name.lower().startswith('http'):
+                                        # Keep longest definition if duplicate
+                                        if name not in all_concepts or len(definition) > len(all_concepts[name]):
+                                            all_concepts[name] = definition
+
+                                # Register extracted concepts
+                                if all_concepts:
+                                    logger.info(f"  📚 Extracting {len(all_concepts)} concept(s) from {agent.agent_id}...")
+                                    for name, definition in all_concepts.items():
+                                        # Truncate very long definitions (likely false positives)
+                                        if len(definition) > 300:
+                                            definition = definition[:300] + "..."
+
+                                        registered = concept_registry.register_concept(
+                                            name=name,
+                                            definition=definition,
+                                            source_agent=agent.agent_id,
+                                            confidence=result.confidence
+                                        )
+                                        if registered:
+                                            logger.info(f"    ✓ Registered: '{name}'")
+                                        else:
+                                            logger.info(f"    ℹ️ Duplicate detected: '{name}'")
+
+                            except Exception as e:
+                                logger.error(f"  ✗ Concept extraction failed: {e}")
+
+                        # NEW: Reasoning process evaluation for CriticAgent (Phase 1.2)
+                        # Phase 6: Track reasoning evals for weighted synthesis contributions
+                        if agent.agent_type == "critic" and len(results["llm_responses"]) > 1:
+                            try:
+                                # Evaluate the most recent non-critic agent's reasoning
+                                previous_outputs = [r for r in results["llm_responses"] if r["agent_type"] != "critic"]
+                                if previous_outputs:
+                                    last_output = previous_outputs[-1]
+                                    evaluated_agent_id = last_output["agent_id"]
+                                    agent_output = {
+                                        "result": last_output["response"],
+                                        "confidence": last_output["confidence"],
+                                        "agent_id": evaluated_agent_id
+                                    }
+                                    agent_metadata = {
+                                        "agent_type": last_output["agent_type"],
+                                        "checkpoint": last_output["checkpoint"],
+                                        "time": last_output["time"]
+                                    }
+
+                                    logger.info(f"  🧠 CriticAgent evaluating reasoning process of {evaluated_agent_id}...")
+                                    reasoning_eval = agent.evaluate_reasoning_process(agent_output, agent_metadata)
+
+                                    logger.info(f"  ✓ Reasoning evaluation complete:")
+                                    logger.info(f"    Quality score: {reasoning_eval['reasoning_quality_score']:.2f}")
+                                    logger.info(f"    Logical coherence: {reasoning_eval['logical_coherence']:.2f}")
+                                    logger.info(f"    Evidence quality: {reasoning_eval['evidence_quality']:.2f}")
+                                    if reasoning_eval['identified_issues']:
+                                        logger.info(f"    Issues: {', '.join(reasoning_eval['identified_issues'])}")
+                                    if reasoning_eval['re_evaluation_needed']:
+                                        logger.warning(f"    ⚠ Re-evaluation recommended")
+
+                                    # Phase 6: Store reasoning eval for weighted synthesis
+                                    reasoning_evals[evaluated_agent_id] = reasoning_eval
+
+                                    # Phase 6: Store reasoning issues in task metadata for downstream agents
+                                    if reasoning_eval.get('re_evaluation_needed'):
+                                        if hasattr(task, 'metadata'):
+                                            task.metadata['reasoning_issues'] = reasoning_eval['identified_issues']
+                                            task.metadata['improvement_recommendations'] = reasoning_eval['improvement_recommendations']
+                                        logger.info(f"    📋 Stored reasoning issues in task metadata for agent improvement")
+
+                                    # Store reasoning evaluation in knowledge for meta-learning
+                                    if knowledge_store:
+                                        central_post.store_agent_result_as_knowledge(
+                                            agent_id=f"{agent.agent_id}_reasoning_eval",
+                                            content=f"Reasoning evaluation of {evaluated_agent_id}:\n" +
+                                                   f"Quality: {reasoning_eval['reasoning_quality_score']:.2f}\n" +
+                                                   f"Issues: {', '.join(reasoning_eval['identified_issues'])}\n" +
+                                                   f"Recommendations: {', '.join(reasoning_eval['improvement_recommendations'])}",
+                                            confidence=reasoning_eval['reasoning_quality_score'],
+                                            domain="reasoning_evaluation"
+                                        )
+                            except Exception as e:
+                                logger.error(f"  ✗ Reasoning evaluation failed: {e}")
 
                         # ADAPTIVE THRESHOLD: Assess knowledge quality after research agent checkpoints
                         if agent.agent_type == "research" and knowledge_store:
@@ -634,7 +1111,7 @@ def run_felix_workflow(felix_system, task_input: str,
                         # Note: Synthesis now performed by CentralPost, not synthesis agents
 
                         if progress_callback:
-                            progress_callback(f"{agent.agent_type} checkpoint {checkpoint:.1f}", progress_pct + 5)
+                            progress_callback(f"{agent.agent_type} checkpoint {checkpoint:.1f}", min(99, progress_pct + 5))
 
                     except Exception as e:
                         logger.error(f"Error processing agent {agent.agent_id} at checkpoint {checkpoint:.1f}: {e}", exc_info=True)
@@ -807,7 +1284,7 @@ def run_felix_workflow(felix_system, task_input: str,
                             logger.warning(f"⚠ Agent cap reached during fallback spawning - skipping {critic_agent.agent_id}")
 
                     if progress_callback:
-                        progress_callback(f"Spawned fallback agents", progress_pct + 2)
+                        progress_callback(f"Spawned fallback agents", min(99, progress_pct + 2))
 
                 # Normal spawning with messages
                 elif all_processed_messages:
@@ -861,7 +1338,7 @@ def run_felix_workflow(felix_system, task_input: str,
                             logger.info(f"  → {new_agent.agent_type} agent: {new_agent.agent_id}")
 
                             if progress_callback:
-                                progress_callback(f"Spawned {new_agent.agent_type} agent", progress_pct + 2)
+                                progress_callback(f"Spawned {new_agent.agent_type} agent", min(99, progress_pct + 2))
                         else:
                             # Agent cap reached - stop trying to spawn more agents
                             logger.warning(f"⚠ Agent cap reached - cannot spawn {new_agent.agent_id}")
@@ -869,6 +1346,37 @@ def run_felix_workflow(felix_system, task_input: str,
                             break
                 else:
                     logger.info(f"✗ No spawning needed (sufficient confidence or at capacity)")
+
+            # Phase 3.1: Check for agent extension requests (dynamic checkpoint injection)
+            if step >= total_steps - 2:  # Near end of workflow
+                extension_requests = central_post.get_extension_requests()
+                if extension_requests and not hasattr(results, '_extensions_granted'):
+                    results['_extensions_granted'] = 0
+
+                # Grant up to 2 extensions per workflow
+                if extension_requests and results.get('_extensions_granted', 0) < 2:
+                    logger.info("\n" + "="*60)
+                    logger.info("🔄 AGENT PROCESSING EXTENSION REQUESTS")
+                    logger.info("="*60)
+                    logger.info(f"  Requests: {len(extension_requests)}")
+                    for req in extension_requests:
+                        logger.info(f"    - {req['agent_id']}: {req['reason']}")
+
+                    # Add 3 additional steps
+                    additional_steps = 3
+                    old_total = total_steps
+                    total_steps += additional_steps
+                    time_step = 1.0 / total_steps  # Recalculate
+
+                    results['_extensions_granted'] = results.get('_extensions_granted', 0) + 1
+
+                    logger.info(f"  ✓ Extension granted ({results['_extensions_granted']}/2)")
+                    logger.info(f"  ✓ Total steps extended: {old_total} → {total_steps}")
+                    logger.info(f"  ✓ Time step recalculated: {time_step:.4f}")
+                    logger.info("="*60)
+
+                    # Clear requests after processing
+                    central_post.clear_extension_requests()
 
             # Advance simulation time
             felix_system.advance_time(time_step)
@@ -902,21 +1410,35 @@ def run_felix_workflow(felix_system, task_input: str,
                         logger.info(f"  Team size: {len(results['agents_spawned'])} >= minimum (3)")
 
                         try:
+                            # Phase 6: Pass reasoning evaluations for weighted synthesis
+                            # Phase 7: Pass coverage report for meta-confidence
                             synthesis_result = central_post.synthesize_agent_outputs(
                                 task_description=task_input,
                                 max_messages=20,
-                                task_complexity=task_complexity
+                                task_complexity=task_complexity,
+                                reasoning_evals=reasoning_evals if reasoning_evals else None,
+                                coverage_report=coverage_report
                             )
                             results["centralpost_synthesis"] = synthesis_result
                             logger.info(f"✓ CentralPost synthesis complete!")
                             logger.info(f"  Synthesis confidence: {synthesis_result['confidence']:.2f}")
+                            if synthesis_result.get('meta_confidence') != synthesis_result.get('confidence'):
+                                logger.info(f"  Meta-confidence: {synthesis_result.get('meta_confidence', 0):.2f}")
                             logger.info(f"  Agents synthesized: {synthesis_result['agents_synthesized']}")
                             logger.info(f"  Tokens used: {synthesis_result['tokens_used']} / {synthesis_result['max_tokens']}")
+                            if reasoning_evals:
+                                logger.info(f"  Reasoning evals applied: {len(reasoning_evals)} agents weighted")
+                            if synthesis_result.get('epistemic_caveats'):
+                                logger.info(f"  Epistemic caveats: {len(synthesis_result['epistemic_caveats'])}")
 
                             # NEW: Broadcast synthesis feedback to agents for learning
+                            # Pass knowledge IDs and task type for meta-learning boost
                             central_post.broadcast_synthesis_feedback(
                                 synthesis_result=synthesis_result,
-                                task_description=task_input
+                                task_description=task_input,
+                                workflow_id=workflow_id,
+                                task_type=classified_task_type,
+                                knowledge_entry_ids=results.get("knowledge_entry_ids", [])
                             )
 
                             if progress_callback:
@@ -953,18 +1475,32 @@ def run_felix_workflow(felix_system, task_input: str,
         if results["centralpost_synthesis"] is None:
             logger.info("Triggering final CentralPost synthesis...")
             try:
+                # Phase 6: Pass reasoning evaluations for weighted synthesis
+                # Phase 7: Pass coverage report for meta-confidence
                 synthesis_result = central_post.synthesize_agent_outputs(
                     task_description=task_input,
                     max_messages=20,
-                    task_complexity=task_complexity
+                    task_complexity=task_complexity,
+                    reasoning_evals=reasoning_evals if reasoning_evals else None,
+                    coverage_report=coverage_report
                 )
                 results["centralpost_synthesis"] = synthesis_result
                 logger.info(f"✓ Final CentralPost synthesis complete")
+                if synthesis_result.get('meta_confidence') != synthesis_result.get('confidence'):
+                    logger.info(f"  Meta-confidence: {synthesis_result.get('meta_confidence', 0):.2f}")
+                if reasoning_evals:
+                    logger.info(f"  Reasoning evals applied: {len(reasoning_evals)} agents weighted")
+                if synthesis_result.get('epistemic_caveats'):
+                    logger.info(f"  Epistemic caveats: {len(synthesis_result['epistemic_caveats'])}")
 
                 # NEW: Broadcast synthesis feedback to agents for learning
+                # Pass knowledge IDs and task type for meta-learning boost
                 central_post.broadcast_synthesis_feedback(
                     synthesis_result=synthesis_result,
-                    task_description=task_input
+                    task_description=task_input,
+                    workflow_id=workflow_id,
+                    task_type=classified_task_type,
+                    knowledge_entry_ids=results.get("knowledge_entry_ids", [])
                 )
             except Exception as e:
                 logger.error(f"✗ CentralPost synthesis failed: {e}")
@@ -982,12 +1518,54 @@ def run_felix_workflow(felix_system, task_input: str,
                 else:
                     logger.error(f"✗ ERROR: No agent outputs available for synthesis!")
 
+        # NEW: Task completion detection (Phase 2.3)
+        if results["centralpost_synthesis"]:
+            try:
+                from src.workflows.task_completion_detector import TaskCompletionDetector, CompletionStatus
+
+                detector = TaskCompletionDetector()
+                completion_status, completion_score, completion_reason = detector.detect_completion(
+                    task_description=task_input,
+                    synthesis_output=results["centralpost_synthesis"]["synthesis_content"],
+                    synthesis_confidence=results["centralpost_synthesis"]["confidence"],
+                    agent_count=len(results["agents_spawned"])
+                )
+
+                # Store completion analysis in results
+                results["task_completion"] = {
+                    "status": completion_status.value,
+                    "score": completion_score,
+                    "reason": completion_reason
+                }
+
+                logger.info("\n--- Task Completion Analysis ---")
+                logger.info(f"Status: {completion_status.value.upper()}")
+                logger.info(f"Score: {completion_score:.2f}")
+                logger.info(f"Reason: {completion_reason}")
+
+                # If task incomplete, log recommendation
+                if completion_status == CompletionStatus.INCOMPLETE:
+                    logger.warning("⚠️ Task appears INCOMPLETE - consider:")
+                    logger.warning("  - Increasing max_steps for more processing time")
+                    logger.warning("  - Clarifying task requirements")
+                    logger.warning("  - Checking if agents had necessary tools/context")
+
+            except Exception as e:
+                logger.error(f"Task completion detection failed: {e}")
+                results["task_completion"] = {
+                    "status": "error",
+                    "score": 0.0,
+                    "reason": str(e)
+                }
+
         logger.info("="*60)
         logger.info("FELIX WORKFLOW COMPLETED")
         logger.info(f"Agents spawned: {len(results['agents_spawned'])}")
         logger.info(f"Messages processed: {len(results['messages_processed'])}")
         logger.info(f"Knowledge entries: {len(results['knowledge_entries'])}")
         logger.info(f"LLM responses: {len(results['llm_responses'])}")
+        if results.get("task_completion"):
+            logger.info(f"Task completion: {results['task_completion']['status']} ({results['task_completion']['score']:.2f})")
         logger.info("="*60)
 
         if progress_callback:
@@ -1027,7 +1605,7 @@ def run_felix_workflow(felix_system, task_input: str,
                 # Record execution
                 felix_system.task_memory.record_task_execution(
                     task_description=task_input,
-                    task_type="workflow_task",
+                    task_type=classified_task_type,
                     complexity=complexity,
                     outcome=outcome,
                     duration=workflow_duration,
@@ -1089,7 +1667,7 @@ def run_felix_workflow(felix_system, task_input: str,
                 task_complexity_enum = _map_synthesis_complexity_to_task_complexity(task_complexity)
                 recommendation_engine.record_workflow_outcome(
                     workflow_id=workflow_id,
-                    task_type="workflow_task",
+                    task_type=classified_task_type,
                     task_complexity=task_complexity_enum,
                     agents_used=agents_used_info,
                     workflow_success=workflow_success,
@@ -1134,7 +1712,7 @@ def run_felix_workflow(felix_system, task_input: str,
                 felix_system.knowledge_store.record_knowledge_usage(
                     workflow_id=workflow_id,
                     knowledge_ids=results["knowledge_entry_ids"],
-                    task_type="workflow_task",  # Could be made more specific
+                    task_type=classified_task_type,  # Now properly classified for meta-learning
                     task_complexity=task_complexity,
                     useful_score=useful_score,
                     retrieval_method="adaptive"  # Using our new adaptive system

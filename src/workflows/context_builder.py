@@ -9,6 +9,7 @@ Builds enriched context for agents by:
 """
 
 import logging
+import threading
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 
@@ -29,6 +30,8 @@ class EnrichedContext:
     tool_instructions: str = ""  # Conditional tool instructions based on task requirements
     tool_instruction_ids: List[str] = None  # IDs of tool instruction knowledge entries (for meta-learning)
     context_inventory: str = ""  # NEW: Explicit inventory of available resources for agent comprehension
+    existing_concepts: str = ""  # NEW: Existing concepts from concept registry for terminology consistency
+    version: int = 0  # Phase 2.4: Context version number for race-free synchronization
 
     def __post_init__(self):
         if self.tool_instruction_ids is None:
@@ -70,6 +73,11 @@ class CollaborativeContextBuilder:
         # Track context building statistics
         self.contexts_built = 0
         self.total_compression_ratio = 0.0
+
+        # Phase 2.4: Context versioning for race-free synchronization
+        self._context_version = 0
+        self._context_lock = threading.RLock()  # Reentrant lock for nested calls
+        self._last_message_count = 0  # Track when context needs updating
 
         # NEW: Concept registry for terminology consistency
         from src.workflows.concept_registry import ConceptRegistry
@@ -117,64 +125,72 @@ class CollaborativeContextBuilder:
         else:  # COMPLEX
             return 25  # 5x for deep analytical work
 
-    @staticmethod
-    def _classify_task_complexity(task_description: str) -> str:
+    def _get_known_file_locations(self, task_description: str) -> str:
         """
-        Classify task complexity to optimize knowledge retrieval.
+        Retrieve known file locations relevant to task.
 
-        Mirrors the classification logic from synthesis_engine.py to ensure
-        consistent complexity assessment throughout the workflow.
+        This enables meta-learning: files discovered by previous find commands
+        are remembered and provided to agents to avoid redundant discovery.
 
         Args:
-            task_description: The task description from user
+            task_description: The task that may mention filenames
 
         Returns:
-            Task complexity: "SIMPLE_FACTUAL", "MEDIUM", or "COMPLEX"
+            Formatted string of known file locations, or empty string if none
         """
         import re
 
-        task_lower = task_description.lower()
+        # Extract filenames mentioned in task (e.g., "central_post.py", "config.yaml")
+        filename_pattern = r'[\w_-]+\.(?:py|js|ts|java|cpp|c|h|go|rs|rb|txt|md|json|yaml|yml|xml|html|css|sh)'
+        filenames = re.findall(filename_pattern, task_description, re.IGNORECASE)
 
-        # Simple factual patterns
-        simple_patterns = [
-            r'\b(what|when|who|where)\s+(is|are|was|were)\s+(the\s+)?current',
-            r'\bwhat\s+time\b',
-            r'\bwhat\s+date\b',
-            r'\btoday\'?s?\s+(date|time)',
-            r'\bcurrent\s+(time|date|datetime)',
-            r'\bwho\s+(won|is|was)\b',
-            r'\bwhen\s+(did|is|was)\b',
-            r'\bhow\s+many\b.*\b(now|current|today)',
-            r'\blatest\s+(news|update)\b',
-        ]
+        if not filenames:
+            return ""
 
-        for pattern in simple_patterns:
-            if re.search(pattern, task_lower):
-                return "SIMPLE_FACTUAL"
+        # Get access to knowledge store
+        memory_system = self.memory_facade if self.memory_facade else self.knowledge_store
+        if not memory_system:
+            return ""
 
-        # Medium complexity patterns
-        medium_patterns = [
-            r'\bexplain\b',
-            r'\bcompare\b',
-            r'\bwhat\s+are\s+the\s+(benefits|advantages|disadvantages)',
-            r'\bhow\s+does\b',
-            r'\bhow\s+to\b',
-            r'\blist\b',
-            r'\bsummarize\b',
-        ]
+        known_paths = []
+        try:
+            from src.memory.knowledge_store import KnowledgeQuery
 
-        for pattern in medium_patterns:
-            if re.search(pattern, task_lower):
-                return "MEDIUM"
+            for filename in set(filenames):  # Deduplicate
+                # Query for file_locations domain
+                query = KnowledgeQuery(
+                    domains=["file_locations"],
+                    content_keywords=[filename],
+                    limit=3
+                )
 
-        # Default to complex for open-ended, analytical tasks
-        return "COMPLEX"
+                if self.memory_facade:
+                    entries = self.memory_facade.retrieve_knowledge_with_query(query)
+                else:
+                    entries = self.knowledge_store.retrieve_knowledge(query)
+
+                for entry in entries:
+                    if isinstance(entry.content, dict):
+                        full_path = entry.content.get('full_path', '')
+                        if full_path:
+                            known_paths.append(f"  {filename} → {full_path}")
+                            break  # Take first match per filename
+
+        except Exception as e:
+            logger.debug(f"Failed to retrieve file locations: {e}")
+            return ""
+
+        if known_paths:
+            return "📁 KNOWN FILE LOCATIONS (from previous discoveries):\n" + "\n".join(known_paths)
+        return ""
 
     def build_context_inventory(self,
                                 tool_instructions: str,
                                 tool_instruction_ids: List[str],
                                 knowledge_entries: List[Any],
-                                context_history: List[Dict[str, Any]]) -> str:
+                                context_history: List[Dict[str, Any]],
+                                task_description: str = "",
+                                coverage_report: Optional[Any] = None) -> str:
         """
         Build explicit context inventory for agent prompts to improve comprehension.
 
@@ -186,6 +202,8 @@ class CollaborativeContextBuilder:
             tool_instruction_ids: IDs of tool instructions
             knowledge_entries: Knowledge entries retrieved
             context_history: Previous agent outputs
+            task_description: Original task for file location lookup (meta-learning)
+            coverage_report: Optional CoverageReport for epistemic awareness (Phase 5)
 
         Returns:
             Formatted inventory string for prompt injection
@@ -197,14 +215,11 @@ class CollaborativeContextBuilder:
         ]
 
         # Tool availability
-        if tool_instructions:
-            tool_count = len(tool_instruction_ids)
-            inventory_lines.append(f"✅ TOOLS AVAILABLE: {tool_count} tool instruction(s) loaded")
-            inventory_lines.append("   DO NOT request tools - you already have them")
-            inventory_lines.append(f"   Review the tool instructions section below")
-        else:
-            inventory_lines.append("❌ TOOLS: None available for this task")
-            inventory_lines.append("   If you need tools, this task doesn't require them")
+        # Tools are always available via explicit retrieval or fallback (MINIMAL_TOOLS_FALLBACK)
+        # Never say "None available" since fallback provides system commands
+        tool_count = len(tool_instruction_ids) if tool_instruction_ids else "system"
+        inventory_lines.append(f"✅ TOOLS AVAILABLE: {tool_count} tool instruction(s) loaded")
+        inventory_lines.append("   Review the tool instructions section above")
 
         # Knowledge availability (web search and workflow data)
         web_search_entries = [k for k in knowledge_entries if k.domain == "web_search"]
@@ -240,6 +255,31 @@ class CollaborativeContextBuilder:
             inventory_lines.append(f"📚 WORKFLOW KNOWLEDGE: {len(workflow_entries)} stored insight(s)")
             inventory_lines.append("   Previous workflows have relevant information")
 
+        # Known file locations (meta-learning from previous discoveries)
+        if task_description:
+            known_locations = self._get_known_file_locations(task_description)
+            if known_locations:
+                inventory_lines.append("")
+                inventory_lines.append(known_locations)
+                inventory_lines.append("   USE THESE PATHS DIRECTLY - no need to search again")
+
+        # Knowledge coverage gaps (Phase 5 - Epistemic Awareness)
+        if coverage_report:
+            inventory_lines.append("")
+            if coverage_report.missing_domains or coverage_report.weak_domains:
+                inventory_lines.append("⚠️ KNOWLEDGE GAPS DETECTED:")
+                if coverage_report.missing_domains:
+                    inventory_lines.append(f"   ❌ Missing: {', '.join(coverage_report.missing_domains)}")
+                if coverage_report.weak_domains:
+                    inventory_lines.append(f"   ⚠️ Weak: {', '.join(coverage_report.weak_domains)}")
+                inventory_lines.append(f"   Overall coverage: {coverage_report.overall_coverage_score:.1%}")
+                if "trigger_web_search" in coverage_report.recommendations:
+                    inventory_lines.append("   → Consider web search for missing domain knowledge")
+            else:
+                inventory_lines.append(f"✅ KNOWLEDGE COVERAGE: {coverage_report.overall_coverage_score:.1%}")
+                if coverage_report.covered_domains:
+                    inventory_lines.append(f"   Covered: {', '.join(coverage_report.covered_domains)}")
+
         inventory_lines.append("=" * 60)
 
         return "\n".join(inventory_lines)
@@ -249,11 +289,14 @@ class CollaborativeContextBuilder:
                            agent_type: str,
                            agent_id: str,
                            current_time: float,
-                           max_context_tokens: int = 2000,
+                           max_context_tokens: int = 40000,
                            message_limit: int = 10,
                            tool_requirements: Optional[Dict[str, bool]] = None) -> EnrichedContext:
         """
         Build enriched context for agent including previous agent outputs.
+
+        Phase 2.4: Context versioning ensures race-free synchronization.
+        Lock prevents concurrent context building that could miss recent messages.
 
         Args:
             original_task: The original user task
@@ -306,12 +349,32 @@ class CollaborativeContextBuilder:
         # CRITICAL: Also retrieve ALL system commands executed in this workflow
         # This ensures agents can see what's already been done, even if messages were processed
         workflow_system_actions = []
-        if hasattr(self.central_post, '_current_workflow_id') and self.central_post._current_workflow_id:
+
+        # DEBUG: Trace workflow_id retrieval
+        has_workflow_attr = hasattr(self.central_post, '_current_workflow_id')
+        workflow_id_value = self.central_post._current_workflow_id if has_workflow_attr else None
+        logger.debug(f"🐛 DEBUG context_builder: has_workflow_attr={has_workflow_attr}, workflow_id_value={workflow_id_value}")
+
+        if has_workflow_attr and workflow_id_value:
             workflow_id = self.central_post._current_workflow_id
             try:
+                # DEBUG: Check what's in the cache before retrieval
+                scm = self.central_post.system_command_manager
+                all_workflow_ids = list(scm._executed_commands.keys()) if hasattr(scm, '_executed_commands') else []
+                logger.debug(f"🐛 DEBUG context_builder: available workflow_ids in cache = {all_workflow_ids}")
+                if workflow_id in scm._executed_commands:
+                    cached_count = len(scm._executed_commands[workflow_id])
+                    logger.debug(f"🐛 DEBUG context_builder: found {cached_count} cached commands for workflow_id={workflow_id}")
+                else:
+                    logger.debug(f"🐛 DEBUG context_builder: workflow_id={workflow_id} NOT FOUND in cache!")
+
                 executed_commands = self.central_post.system_command_manager.get_workflow_executed_commands(workflow_id)
                 workflow_system_actions = executed_commands
                 logger.info(f"  Retrieved {len(executed_commands)} executed system commands for workflow {workflow_id}")
+                logger.debug(f"🐛 DEBUG: workflow_system_actions length after assignment = {len(workflow_system_actions)}")
+                if executed_commands:
+                    logger.debug(f"🐛 DEBUG: First command info keys = {list(executed_commands[0].keys())}")
+                    logger.debug(f"🐛 DEBUG: First command = {executed_commands[0].get('command', 'NO COMMAND KEY')[:100]}")
                 for i, cmd_info in enumerate(executed_commands, 1):
                     result = cmd_info['result']
                     status = "✓" if result.success else "✗"
@@ -345,8 +408,18 @@ class CollaborativeContextBuilder:
                 # Format as readable context entry
                 agent_response = f"System Command Execution:\nCommand: {command}\nSuccess: {success}\nExit Code: {exit_code}"
                 if stdout:
+                    # Intelligent truncation: preserve head + tail for large outputs (match Path 2 limit)
+                    max_output = 50000  # 50KB limit to prevent context overflow
+                    if len(stdout) > max_output:
+                        head_size = 40000
+                        tail_size = 10000
+                        truncated_chars = len(stdout) - max_output
+                        stdout = f"{stdout[:head_size]}\n\n... [truncated {truncated_chars} chars] ...\n\n{stdout[-tail_size:]}"
                     agent_response += f"\nOutput: {stdout}"
                 if stderr:
+                    # Same truncation for stderr
+                    if len(stderr) > 5000:
+                        stderr = f"{stderr[:4000]}\n... [truncated] ...\n{stderr[-1000:]}"
                     agent_response += f"\nErrors: {stderr}"
 
                 agent_conf = 1.0  # High confidence for actual command results
@@ -373,6 +446,8 @@ class CollaborativeContextBuilder:
 
         # Add workflow system actions to context (if not already included in messages)
         # These are commands that were executed but might have been processed before this agent spawned
+        logger.debug(f"🐛 DEBUG: BEFORE check - workflow_system_actions is {'TRUTHY' if workflow_system_actions else 'EMPTY/FALSY'}, len={len(workflow_system_actions) if workflow_system_actions else 0}")
+        logger.debug(f"🐛 DEBUG: context_history has {len(context_history)} entries BEFORE adding system actions")
         if workflow_system_actions:
             logger.info(f"  Adding {len(workflow_system_actions)} executed system commands to context...")
             for cmd_info in workflow_system_actions:
@@ -382,9 +457,23 @@ class CollaborativeContextBuilder:
                 # Create a formatted context entry for the system action
                 action_response = f"System Command Executed:\nCommand: {command}\nSuccess: {result.success}\nExit Code: {result.exit_code}"
                 if hasattr(result, 'stdout') and result.stdout:
-                    action_response += f"\nOutput: {result.stdout[:200]}"  # Truncate long output
+                    # Intelligent truncation: preserve head + tail for large outputs
+                    max_output = 50000  # 50KB limit to prevent context overflow
+                    stdout = result.stdout
+                    if len(stdout) > max_output:
+                        head_size = 40000
+                        tail_size = 10000
+                        truncated_chars = len(stdout) - max_output
+                        action_response += f"\nOutput: {stdout[:head_size]}\n\n... [truncated {truncated_chars} chars] ...\n\n{stdout[-tail_size:]}"
+                    else:
+                        action_response += f"\nOutput: {stdout}"
                 if hasattr(result, 'stderr') and result.stderr:
-                    action_response += f"\nErrors: {result.stderr[:200]}"
+                    # Same intelligent truncation for stderr
+                    stderr = result.stderr
+                    if len(stderr) > 5000:
+                        action_response += f"\nErrors: {stderr[:4000]}\n... [truncated] ...\n{stderr[-1000:]}"
+                    else:
+                        action_response += f"\nErrors: {stderr}"
 
                 context_entry = {
                     "agent_id": "system_executor",
@@ -400,25 +489,51 @@ class CollaborativeContextBuilder:
                 status_emoji = "✓" if result.success else "✗"
                 logger.info(f"    {status_emoji} {command[:50]}...")
 
-        # ENFORCE TOKEN BUDGET: Ensure context never exceeds agent capacity
-        # Reserve space for collaborative instructions (~150 tokens after 4:1 ratio)
-        available_tokens = max_context_tokens - 150  # Reserve for instructions (600 chars / 4)
+        logger.debug(f"🐛 DEBUG: context_history has {len(context_history)} entries AFTER adding system actions")
+
+        # TOKEN BUDGET: With 50K context window, we have generous budgets
+        # Reserve space for collaborative instructions (~500 tokens)
+        available_tokens = max_context_tokens - 500
         cumulative_tokens = self.estimate_tokens(original_task)
 
-        # Build context from MOST RECENT messages first, staying within budget
+        # Add all context entries - with 40K budget we shouldn't need to drop anything
         enforced_context_history = []
         for entry in reversed(context_history):  # Newest first
             entry_size = self.estimate_tokens(str(entry['response']))
+            entry_type = entry.get('agent_type', 'unknown')
+
             if cumulative_tokens + entry_size <= available_tokens:
+                # Entry fits within budget - add it
                 enforced_context_history.insert(0, entry)  # Maintain chronological order
                 cumulative_tokens += entry_size
+                logger.debug(f"  ✓ Added {entry_type} entry ({entry_size} tokens)")
             else:
-                # Stop adding messages when budget would be exceeded
-                break
+                # Don't skip system_action entries - truncate to fit remaining budget
+                remaining_tokens = available_tokens - cumulative_tokens - 100  # Buffer for safety
 
-        # Report enforcement results
+                if remaining_tokens > 1000 and entry_type == 'system_action':
+                    # Truncate to fit: agents should always see SOMETHING from file reads
+                    max_chars = remaining_tokens * 4  # ~4 chars per token
+                    response = entry['response']
+
+                    if len(response) > max_chars:
+                        head_size = int(max_chars * 0.8)
+                        tail_size = int(max_chars * 0.2)
+                        truncated_chars = len(response) - max_chars
+                        entry['response'] = f"{response[:head_size]}\n\n... [truncated {truncated_chars} chars to fit budget] ...\n\n{response[-tail_size:]}"
+
+                    enforced_context_history.insert(0, entry)
+                    cumulative_tokens = available_tokens - 100
+                    logger.info(f"  ⚠ Truncated {entry_type} entry to fit budget ({remaining_tokens} tokens available)")
+                else:
+                    # Only skip if truly no space or not a system_action
+                    logger.warning(f"  ⚠️ Skipped {entry_type} entry: {entry_size} tokens would exceed budget ({cumulative_tokens}/{available_tokens})")
+
+        # Report results
         if len(enforced_context_history) < len(context_history):
-            logger.info(f"  Token budget enforcement: kept {len(enforced_context_history)}/{len(context_history)} messages ({cumulative_tokens}/{available_tokens} tokens)")
+            logger.info(f"  Token budget: kept {len(enforced_context_history)}/{len(context_history)} entries ({cumulative_tokens}/{available_tokens} tokens)")
+        else:
+            logger.debug(f"  Token budget: all {len(context_history)} entries fit ({cumulative_tokens}/{available_tokens} tokens)")
 
         context_history = enforced_context_history
         original_size = cumulative_tokens
@@ -494,7 +609,8 @@ class CollaborativeContextBuilder:
                 from src.workflows.truth_assessment import detect_query_type, QueryType
 
                 # Detect task complexity for adaptive knowledge limits
-                task_complexity = self._classify_task_complexity(original_task)
+                # Use SynthesisEngine's classification for consistency (YAML-configurable patterns)
+                task_complexity = self.central_post.synthesis_engine.classify_task_complexity(original_task)
                 knowledge_limit = self._get_knowledge_limit_for_complexity(task_complexity)
 
                 # Detect query type to determine appropriate freshness window
@@ -527,9 +643,9 @@ class CollaborativeContextBuilder:
                     logger.info("  → Using MemoryFacade.retrieve_knowledge_with_query()")
                     relevant_knowledge = self.memory_facade.retrieve_knowledge_with_query(
                         KnowledgeQuery(
-                            domains=["web_search", "workflow_task"],  # Include web search results!
+                            domains=None,  # Query ALL domains (Knowledge Brain + workflow)
                             min_confidence=ConfidenceLevel.MEDIUM,
-                            time_range=(time_window_start, current_time),  # Dynamic freshness based on query type
+                            time_range=None,  # No time restriction - include indexed Knowledge Brain docs
                             limit=knowledge_limit,  # Adaptive limit based on task complexity
                             task_type=agent_type,  # For meta-learning boost
                             task_complexity=task_complexity  # For future semantic search
@@ -540,9 +656,9 @@ class CollaborativeContextBuilder:
                     logger.info("  → Using knowledge_store.retrieve_knowledge() (fallback)")
                     relevant_knowledge = self.knowledge_store.retrieve_knowledge(
                         KnowledgeQuery(
-                            domains=["web_search", "workflow_task"],
+                            domains=None,  # Query ALL domains (Knowledge Brain + workflow)
                             min_confidence=ConfidenceLevel.MEDIUM,
-                            time_range=(time_window_start, current_time),
+                            time_range=None,  # No time restriction - include indexed Knowledge Brain docs
                             limit=knowledge_limit,  # Adaptive limit based on task complexity
                             task_type=agent_type,
                             task_complexity=task_complexity
@@ -649,12 +765,25 @@ class CollaborativeContextBuilder:
             tool_instructions=tool_instructions,
             tool_instruction_ids=tool_instruction_ids,
             knowledge_entries=knowledge_entries,
-            context_history=context_history
+            context_history=context_history,
+            task_description=original_task  # For meta-learning file location lookup
         )
         logger.info("  ✓ Context inventory generated for agent prompt")
-        logger.info(f"    - Tools: {'Available' if tool_instructions else 'None'}")
+        logger.info(f"    - Tools: {'Retrieved' if tool_instructions else 'Fallback will be used'}")
+        logger.info(f"    - Tool requirements: {tool_requirements if tool_requirements else 'All (fallback)'}")
         logger.info(f"    - Web search data: {len([k for k in knowledge_entries if k.domain == 'web_search'])} entries")
         logger.info(f"    - Previous outputs: {len(context_history)} messages")
+
+        # Get existing concepts from concept registry for terminology consistency
+        existing_concepts = self.get_existing_concepts_for_prompt(max_concepts=10)
+        logger.info(f"  ✓ Retrieved {len(self.concept_registry.get_all_concepts())} existing concepts from registry")
+
+        # Phase 2.4: Increment version if new messages processed
+        current_message_count = len(recent_messages) + len(workflow_system_actions)
+        if current_message_count > self._last_message_count:
+            self._context_version += 1
+            self._last_message_count = current_message_count
+            logger.info(f"  📌 Context version incremented to {self._context_version} ({current_message_count} messages)")
 
         enriched = EnrichedContext(
             task_description=original_task,
@@ -666,10 +795,13 @@ class CollaborativeContextBuilder:
             message_count=len(recent_messages),
             tool_instructions=tool_instructions,  # Include conditional tool instructions
             tool_instruction_ids=tool_instruction_ids,  # Include IDs for meta-learning
-            context_inventory=context_inventory  # NEW: Include inventory for agent comprehension
+            context_inventory=context_inventory,  # NEW: Include inventory for agent comprehension
+            existing_concepts=existing_concepts,  # NEW: Include existing concepts for terminology consistency
+            version=self._context_version  # Phase 2.4: Include version number
         )
 
         logger.info(f"  ✓ Collaborative context built successfully:")
+        logger.info(f"    - Version: {self._context_version}")
         logger.info(f"    - Messages: {len(context_history)}")
         logger.info(f"    - Knowledge entries: {len(knowledge_entries)}")
         logger.info(f"    - Context size: {compressed_size} tokens (budget: {max_context_tokens})")

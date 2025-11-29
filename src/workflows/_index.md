@@ -39,6 +39,38 @@ Conversation continuity for multi-turn workflows.
 - **`ConversationContextLoader`**: Loads previous conversation context for continuity
 - **Features**: Context compression, relevance filtering, turn tracking
 
+### [concept_registry.py](concept_registry.py)
+Workflow-scoped concept tracking for terminology consistency (referenced in CLAUDE.md).
+- **`ConceptRegistry`**: Tracks concept definitions across agents to prevent conflicting interpretations
+- **`ConceptDefinition`**: Data class for concept metadata (name, definition, source_agent, confidence)
+- **`ConceptConflict`**: Detected conflict between concept definitions
+- **Features**:
+  - Check if concepts already defined before registering new ones
+  - Detect duplicate, contradictory, or overlapping definitions
+  - Query related concepts and relationships
+  - Export to `analysis/improvement_registry.md` for review
+
+### [context_relevance.py](context_relevance.py)
+Contextual relevance evaluation for filtering irrelevant facts (referenced in CLAUDE.md).
+- **`ContextRelevanceEvaluator`**: Distinguishes factual accuracy from contextual relevance
+- **`RelevanceScore`**: Score and explanation for context relevance (0.0-1.0)
+- **Purpose**: Prevents agents from providing accurate but irrelevant facts
+- **Integration**: Used in `ContextBuilder.build_agent_context()` for filtering knowledge
+
+### [failure_recovery.py](failure_recovery.py)
+Adaptive failure recovery system (Phase 3.2).
+- **`FailureRecoveryManager`**: Manages failure detection and recovery strategies
+- **`FailureType`**: Enum for failure types (AGENT_ERROR, COMMAND_ERROR, TIMEOUT, LOW_CONFIDENCE, INSUFFICIENT_DATA)
+- **`FailureRecord`**: Record of failure context and recovery attempts
+- **Strategies**: Agent respawning with adjusted parameters, command retry with alternatives, pattern-based learning
+
+### [task_completion_detector.py](task_completion_detector.py)
+Task completion analysis system (Phase 2.3).
+- **`TaskCompletionDetector`**: Distinguishes "task solved" from "ran out of time"
+- **`CompletionStatus`**: Enum (COMPLETE, INCOMPLETE, UNCLEAR, ERROR)
+- **Heuristics**: Question answering coverage, request fulfillment, confidence alignment, content sufficiency
+- **Pattern matching**: Detects incomplete answer phrases vs completion indicators
+
 ## Key Concepts
 
 ### Workflow Lifecycle
