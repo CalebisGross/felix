@@ -147,6 +147,10 @@ Agents move down the helix from exploration to synthesis, with their behavior (t
    - `LLMAgent`: Agents with LLM integration and position-aware prompting
    - `specialized_agents.py`: Role-specific agents (Research, Analysis, Critic)
    - `dynamic_spawning.py`: Confidence-based agent spawning (threshold: 0.80)
+   - **Adaptive Features**:
+     - Token learning via `_learn_from_token_usage()` - agents adapt budget requests based on efficiency
+     - Direct answer mode for simple factual queries (ResearchAgent)
+     - Helical checkpoints (0.0, 0.3, 0.5, 0.7, 0.9) for continuous progress reporting
    - **Plugin System** ([src/agents/](src/agents/)):
      - `base_specialized_agent.py`: Plugin API interface (`SpecializedAgentPlugin`, `AgentMetadata`)
      - `agent_plugin_registry.py`: Auto-discovery and loading of agent plugins
@@ -233,15 +237,23 @@ Agents move down the helix from exploration to synthesis, with their behavior (t
    - `ConceptRegistry`: Workflow-scoped concept tracking for terminology consistency
    - `ContextRelevanceEvaluator`: Filters knowledge by contextual relevance (not just accuracy)
    - `TruthAssessment`: Framework for validating workflow outputs
+   - `task_completion_detector.py`: Determines if task was solved vs timed out (COMPLETE/INCOMPLETE/UNCLEAR)
+   - `failure_recovery.py`: Adaptive retry with pattern learning and alternative command generation
 
 7. **Knowledge Brain System** ([src/knowledge/](src/knowledge/))
    - `DocumentReader`: Multi-format document reading (PDF, TXT, MD, Python, JS, Java, C++) with semantic chunking
    - `EmbeddingProvider`: 3-tier embedding system with automatic fallback (LM Studio 768-dim → TF-IDF → FTS5 BM25)
    - `KnowledgeComprehensionEngine`: Agentic document understanding using Research, Analysis, and Critic agents
    - `KnowledgeGraphBuilder`: Relationship discovery via explicit mentions, embedding similarity (0.75), co-occurrence (5-chunk)
-   - `KnowledgeDaemon`: Autonomous processor with 3 concurrent modes (batch, hourly refinement, file watching)
+   - `KnowledgeDaemon`: Autonomous processor with 5 modes (batch, refinement, file watching, scheduled backups, gap-directed learning)
    - `KnowledgeRetriever`: Semantic search with meta-learning boost tracking historical usefulness
    - `WorkflowIntegration`: Bridge connecting knowledge brain to Felix workflows
+   - **Quality & Maintenance**:
+     - `quality_checker.py`: Duplicate detection (embedding/text/concept-based), contradiction finding
+     - `coverage_analyzer.py`: Pre-workflow knowledge gap analysis (epistemic self-awareness)
+     - `gap_tracker.py`: Tracks knowledge gaps with severity and workflow correlation
+     - `backup_manager_extended.py`: Selective JSON export/import with gzip compression
+     - `directory_index.py`: Per-directory tracking via `.felix_index.json` files
    - **Meta-Learning System**:
      - Tracks which knowledge entries are useful for specific task types
      - Stores usage patterns in `knowledge_usage` table with usefulness scores (0.0-1.0)
@@ -254,6 +266,11 @@ Agents move down the helix from exploration to synthesis, with their behavior (t
 8. **Utilities** ([src/utils/](src/utils/))
    - `MarkdownFormatter`: Professional markdown formatting for synthesis results
    - Functions for detailed reports with agent metrics and performance summaries
+
+9. **Prompt Pipeline** ([src/prompts/prompt_pipeline.py](src/prompts/prompt_pipeline.py))
+   - Unified 8-stage prompt construction (base → tools → knowledge → concepts → protocol → collaboration → verbosity → metadata)
+   - Stage skipping for SIMPLE_FACTUAL tasks to reduce token noise
+   - Effectiveness logging with signal-to-noise tracking
 
 ### Self-Improvement Architecture
 
@@ -334,11 +351,14 @@ knowledge_brain:
 ## Database Schema
 
 ### felix_knowledge.db
-- `knowledge_entries` table: Stores agent insights with domains, confidence scores, and abstractive summaries (extended with embedding, source_doc_id, chunk_index for Knowledge Brain)
+- `knowledge_entries` table: Stores agent insights with domains, confidence scores, and abstractive summaries (extended with embedding, source_doc_id, chunk_index for Knowledge Brain). Has CASCADE DELETE on source_doc_id.
 - `document_sources` table: Tracks ingested documents with file paths, status, processing timestamps
 - `knowledge_relationships` table: Bidirectional relationships between concepts (explicit mentions, similarity, co-occurrence)
-- `knowledge_fts` virtual table: FTS5 full-text search index for BM25-ranked content retrieval
+- `knowledge_fts` virtual table: FTS5 full-text search index for BM25-ranked content retrieval (auto-synced via triggers)
 - `knowledge_usage` table: Meta-learning data tracking which knowledge helps which workflows
+- `knowledge_audit_log` table: CRUD operation tracking with before/after state
+- `watch_directories` table: Daemon directory monitoring with scan metadata
+- `knowledge_gaps` table: Gap tracking with severity and workflow correlation
 - Auto-compresses entries when context exceeds limits
 
 ### felix_memory.db
@@ -381,6 +401,13 @@ Additional features:
 
 Requires LM Studio running before starting Felix system via GUI.
 
+### Alternative GUI: CustomTkinter (`src/gui_ctk/`)
+
+Modern UI using `customtkinter` library with same functionality:
+- Native dark/light theme support
+- Same 10-tab layout as Tkinter GUI
+- Run with: `python -m src.gui_ctk`
+
 ## REST API Interface
 
 The FastAPI REST API ([src/api/](src/api/)) provides programmatic access to Felix functionality:
@@ -420,6 +447,15 @@ See [docs/API_QUICKSTART.md](docs/API_QUICKSTART.md) for detailed usage examples
 - `test_felix_advanced.py`: Integration tests with mock LLM
 - `test_agents_integration.py`: Agent spawning and communication tests
 - `test_knowledge_brain_system.py`: Comprehensive Knowledge Brain tests (6 tests covering ingestion, comprehension, graph building, retrieval, meta-learning, daemon)
+- `test_cascade_delete.py`: CASCADE DELETE foreign key constraint tests
+- `test_context_awareness_protocol.py`: Context protocol injection and validation
+- `test_destructive_command_blocking.py`: Security command blocking tests
+- `test_entry_lifecycle.py`: Knowledge entry CRUD and merge operations
+- `test_fts5_triggers.py`: FTS5 auto-sync trigger tests
+- `test_tool_memory_basic.py`: Conditional tool memory ("subconscious memory") tests
+- `test_integration_phase1_2_3_fixes.py`: Phase 1/2/3 integration tests
+- `test_synthesis_refactoring.py`: Synthesis engine and pattern loading tests
+- `test_verbosity_fixes.py`: Output verbosity constraint tests
 
 No formal test framework (pytest/unittest) - uses direct script execution.
 
@@ -440,3 +476,5 @@ No formal test framework (pytest/unittest) - uses direct script execution.
 7. **Knowledge Brain System**: Fully optional - zero external dependencies through tiered fallback (LM Studio → TF-IDF → FTS5). Enable via GUI Settings tab. Monitors watch directories, uses agentic comprehension for document understanding, builds knowledge graphs, and provides semantic retrieval with meta-learning. Requires PyPDF2 for PDF support and watchdog for file monitoring (both optional - system adapts if missing)
 
 8. **Custom Agent Plugins**: Felix supports custom agent plugins without modifying core code. Create agent classes inheriting from `LLMAgent` and wrap them in `SpecializedAgentPlugin`. See [docs/PLUGIN_API.md](docs/PLUGIN_API.md) for full documentation and [examples/custom_agents/](examples/custom_agents/) for examples. Plugins are auto-discovered from configured directories and integrate with AgentFactory for dynamic spawning.
+
+9. **Destructive Command Blocking**: Commands like `rm -rf`, `truncate`, `dd` with output redirection, and direct device writes require manual approval regardless of trust level. Handled by `TrustManager.classify_command()`.
