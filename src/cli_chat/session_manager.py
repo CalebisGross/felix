@@ -6,6 +6,7 @@ Handles session persistence, message history, and conversation threading.
 
 import sqlite3
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
@@ -40,6 +41,26 @@ class Message:
         }
 
 
+@dataclass
+class Folder:
+    """Represents a folder for organizing sessions."""
+    folder_id: str
+    name: str
+    parent_folder_id: Optional[str] = None
+    position: int = 0
+    created_at: Optional[datetime] = None
+
+    def to_dict(self) -> Dict:
+        """Convert folder to dictionary format."""
+        return {
+            'folder_id': self.folder_id,
+            'name': self.name,
+            'parent_folder_id': self.parent_folder_id,
+            'position': self.position,
+            'created_at': self.created_at.isoformat() if self.created_at else None
+        }
+
+
 class Session:
     """Represents a chat session with metadata."""
 
@@ -50,7 +71,12 @@ class Session:
         last_active: datetime,
         message_count: int,
         title: Optional[str] = None,
-        tags: Optional[List[str]] = None
+        tags: Optional[List[str]] = None,
+        folder_id: Optional[str] = None,
+        pinned: bool = False,
+        position: int = 0,
+        mode: str = 'simple',
+        knowledge_enabled: bool = True
     ):
         self.session_id = session_id
         self.created_at = created_at
@@ -58,6 +84,11 @@ class Session:
         self.message_count = message_count
         self.title = title
         self.tags = tags or []
+        self.folder_id = folder_id
+        self.pinned = pinned
+        self.position = position
+        self.mode = mode
+        self.knowledge_enabled = knowledge_enabled
 
     def to_dict(self) -> Dict:
         """Convert session to dictionary format."""
@@ -67,7 +98,12 @@ class Session:
             'last_active': self.last_active.isoformat(),
             'message_count': self.message_count,
             'title': self.title,
-            'tags': self.tags
+            'tags': self.tags,
+            'folder_id': self.folder_id,
+            'pinned': self.pinned,
+            'position': self.position,
+            'mode': self.mode,
+            'knowledge_enabled': self.knowledge_enabled
         }
 
 
@@ -95,7 +131,19 @@ class SessionManager:
             )
         ''')
 
-        # Migrate existing databases: Add title and tags columns if they don't exist
+        # Folders table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS folders (
+                folder_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                parent_folder_id TEXT,
+                position INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (parent_folder_id) REFERENCES folders(folder_id)
+            )
+        ''')
+
+        # Migrate existing databases: Add columns if they don't exist
         cursor.execute("PRAGMA table_info(sessions)")
         columns = [row[1] for row in cursor.fetchall()]
 
@@ -104,6 +152,21 @@ class SessionManager:
 
         if 'tags' not in columns:
             cursor.execute("ALTER TABLE sessions ADD COLUMN tags TEXT DEFAULT '[]'")
+
+        if 'folder_id' not in columns:
+            cursor.execute('ALTER TABLE sessions ADD COLUMN folder_id TEXT')
+
+        if 'pinned' not in columns:
+            cursor.execute('ALTER TABLE sessions ADD COLUMN pinned INTEGER DEFAULT 0')
+
+        if 'position' not in columns:
+            cursor.execute('ALTER TABLE sessions ADD COLUMN position INTEGER DEFAULT 0')
+
+        if 'mode' not in columns:
+            cursor.execute("ALTER TABLE sessions ADD COLUMN mode TEXT DEFAULT 'simple'")
+
+        if 'knowledge_enabled' not in columns:
+            cursor.execute('ALTER TABLE sessions ADD COLUMN knowledge_enabled INTEGER DEFAULT 1')
 
         # Messages table
         cursor.execute('''
@@ -135,6 +198,18 @@ class SessionManager:
             ON sessions(title)
         ''')
 
+        # Create index for folder_id
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_sessions_folder
+            ON sessions(folder_id)
+        ''')
+
+        # Create index for pinned sessions
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_sessions_pinned
+            ON sessions(pinned, position)
+        ''')
+
         conn.commit()
         conn.close()
 
@@ -162,7 +237,9 @@ class SessionManager:
         cursor = conn.cursor()
 
         cursor.execute(
-            'SELECT session_id, created_at, last_active, message_count, title, tags FROM sessions WHERE session_id = ?',
+            '''SELECT session_id, created_at, last_active, message_count, title, tags,
+                      folder_id, pinned, position, mode, knowledge_enabled
+               FROM sessions WHERE session_id = ?''',
             (session_id,)
         )
 
@@ -180,7 +257,12 @@ class SessionManager:
             last_active=datetime.fromisoformat(row[2]),
             message_count=row[3],
             title=row[4],
-            tags=tags
+            tags=tags,
+            folder_id=row[6],
+            pinned=bool(row[7]),
+            position=row[8],
+            mode=row[9] or 'simple',
+            knowledge_enabled=bool(row[10])
         )
 
     def list_sessions(self, limit: int = 20) -> List[Session]:
@@ -189,7 +271,9 @@ class SessionManager:
         cursor = conn.cursor()
 
         cursor.execute(
-            'SELECT session_id, created_at, last_active, message_count, title, tags FROM sessions ORDER BY last_active DESC LIMIT ?',
+            '''SELECT session_id, created_at, last_active, message_count, title, tags,
+                      folder_id, pinned, position, mode, knowledge_enabled
+               FROM sessions ORDER BY last_active DESC LIMIT ?''',
             (limit,)
         )
 
@@ -203,7 +287,12 @@ class SessionManager:
                 last_active=datetime.fromisoformat(row[2]),
                 message_count=row[3],
                 title=row[4],
-                tags=json.loads(row[5]) if row[5] else []
+                tags=json.loads(row[5]) if row[5] else [],
+                folder_id=row[6],
+                pinned=bool(row[7]),
+                position=row[8],
+                mode=row[9] or 'simple',
+                knowledge_enabled=bool(row[10])
             )
             for row in rows
         ]
@@ -493,7 +582,8 @@ class SessionManager:
 
         # Search in titles and get session IDs from messages
         cursor.execute('''
-            SELECT DISTINCT s.session_id, s.created_at, s.last_active, s.message_count, s.title, s.tags
+            SELECT DISTINCT s.session_id, s.created_at, s.last_active, s.message_count, s.title, s.tags,
+                   s.folder_id, s.pinned, s.position, s.mode, s.knowledge_enabled
             FROM sessions s
             LEFT JOIN messages m ON s.session_id = m.session_id
             WHERE s.title LIKE ? OR m.content LIKE ?
@@ -511,7 +601,12 @@ class SessionManager:
                 last_active=datetime.fromisoformat(row[2]),
                 message_count=row[3],
                 title=row[4],
-                tags=json.loads(row[5]) if row[5] else []
+                tags=json.loads(row[5]) if row[5] else [],
+                folder_id=row[6],
+                pinned=bool(row[7]),
+                position=row[8],
+                mode=row[9] or 'simple',
+                knowledge_enabled=bool(row[10])
             )
             for row in rows
         ]
@@ -532,7 +627,9 @@ class SessionManager:
         cursor = conn.cursor()
 
         cursor.execute(
-            'SELECT session_id, created_at, last_active, message_count, title, tags FROM sessions ORDER BY last_active DESC',
+            '''SELECT session_id, created_at, last_active, message_count, title, tags,
+                      folder_id, pinned, position, mode, knowledge_enabled
+               FROM sessions ORDER BY last_active DESC'''
         )
 
         rows = cursor.fetchall()
@@ -556,7 +653,12 @@ class SessionManager:
                         last_active=datetime.fromisoformat(row[2]),
                         message_count=row[3],
                         title=row[4],
-                        tags=session_tags
+                        tags=session_tags,
+                        folder_id=row[6],
+                        pinned=bool(row[7]),
+                        position=row[8],
+                        mode=row[9] or 'simple',
+                        knowledge_enabled=bool(row[10])
                     ))
             else:
                 # Session must have ANY of the specified tags
@@ -567,7 +669,12 @@ class SessionManager:
                         last_active=datetime.fromisoformat(row[2]),
                         message_count=row[3],
                         title=row[4],
-                        tags=session_tags
+                        tags=session_tags,
+                        folder_id=row[6],
+                        pinned=bool(row[7]),
+                        position=row[8],
+                        mode=row[9] or 'simple',
+                        knowledge_enabled=bool(row[10])
                     ))
 
         return matching_sessions
@@ -580,7 +687,9 @@ class SessionManager:
         today = datetime.now().date()
 
         cursor.execute(
-            'SELECT session_id, created_at, last_active, message_count, title, tags FROM sessions WHERE DATE(last_active) = ? ORDER BY last_active DESC',
+            '''SELECT session_id, created_at, last_active, message_count, title, tags,
+                      folder_id, pinned, position, mode, knowledge_enabled
+               FROM sessions WHERE DATE(last_active) = ? ORDER BY last_active DESC''',
             (today.isoformat(),)
         )
 
@@ -594,7 +703,12 @@ class SessionManager:
                 last_active=datetime.fromisoformat(row[2]),
                 message_count=row[3],
                 title=row[4],
-                tags=json.loads(row[5]) if row[5] else []
+                tags=json.loads(row[5]) if row[5] else [],
+                folder_id=row[6],
+                pinned=bool(row[7]),
+                position=row[8],
+                mode=row[9] or 'simple',
+                knowledge_enabled=bool(row[10])
             )
             for row in rows
         ]
@@ -665,3 +779,269 @@ class SessionManager:
         conn.close()
 
         return session_id
+
+    # ========== Folder Management Methods ==========
+
+    def create_folder(self, name: str, parent_id: Optional[str] = None) -> str:
+        """
+        Create a new folder for organizing sessions.
+
+        Args:
+            name: Folder name
+            parent_id: Optional parent folder ID for nested folders
+
+        Returns:
+            The new folder ID
+        """
+        folder_id = str(uuid.uuid4())[:8]
+        now = datetime.now()
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute(
+            'INSERT INTO folders (folder_id, name, parent_folder_id, position, created_at) VALUES (?, ?, ?, ?, ?)',
+            (folder_id, name, parent_id, 0, now)
+        )
+
+        conn.commit()
+        conn.close()
+
+        return folder_id
+
+    def get_folders(self) -> List[Folder]:
+        """
+        Get all folders ordered by position.
+
+        Returns:
+            List of all folders
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute(
+            'SELECT folder_id, name, parent_folder_id, position, created_at FROM folders ORDER BY position ASC'
+        )
+
+        rows = cursor.fetchall()
+        conn.close()
+
+        return [
+            Folder(
+                folder_id=row[0],
+                name=row[1],
+                parent_folder_id=row[2],
+                position=row[3],
+                created_at=datetime.fromisoformat(row[4]) if row[4] else None
+            )
+            for row in rows
+        ]
+
+    def get_folder(self, folder_id: str) -> Optional[Folder]:
+        """
+        Get a single folder by ID.
+
+        Args:
+            folder_id: The folder ID
+
+        Returns:
+            Folder object or None if not found
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute(
+            'SELECT folder_id, name, parent_folder_id, position, created_at FROM folders WHERE folder_id = ?',
+            (folder_id,)
+        )
+
+        row = cursor.fetchone()
+        conn.close()
+
+        if not row:
+            return None
+
+        return Folder(
+            folder_id=row[0],
+            name=row[1],
+            parent_folder_id=row[2],
+            position=row[3],
+            created_at=datetime.fromisoformat(row[4]) if row[4] else None
+        )
+
+    def update_folder(self, folder_id: str, name: Optional[str] = None, parent_id: Optional[str] = None):
+        """
+        Update folder properties.
+
+        Args:
+            folder_id: The folder ID to update
+            name: New folder name (optional)
+            parent_id: New parent folder ID (optional)
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        if name is not None:
+            cursor.execute(
+                'UPDATE folders SET name = ? WHERE folder_id = ?',
+                (name, folder_id)
+            )
+
+        if parent_id is not None:
+            cursor.execute(
+                'UPDATE folders SET parent_folder_id = ? WHERE folder_id = ?',
+                (parent_id, folder_id)
+            )
+
+        conn.commit()
+        conn.close()
+
+    def delete_folder(self, folder_id: str):
+        """
+        Delete a folder. Sessions in the folder are moved to root (folder_id = NULL).
+
+        Args:
+            folder_id: The folder ID to delete
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        # Move all sessions in this folder to root
+        cursor.execute(
+            'UPDATE sessions SET folder_id = NULL WHERE folder_id = ?',
+            (folder_id,)
+        )
+
+        # Delete the folder
+        cursor.execute(
+            'DELETE FROM folders WHERE folder_id = ?',
+            (folder_id,)
+        )
+
+        conn.commit()
+        conn.close()
+
+    def move_session_to_folder(self, session_id: str, folder_id: Optional[str]):
+        """
+        Move a session to a folder (or root if folder_id is None).
+
+        Args:
+            session_id: The session ID to move
+            folder_id: Target folder ID (None for root)
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute(
+            'UPDATE sessions SET folder_id = ? WHERE session_id = ?',
+            (folder_id, session_id)
+        )
+
+        conn.commit()
+        conn.close()
+
+    def set_session_pinned(self, session_id: str, pinned: bool):
+        """
+        Pin or unpin a session.
+
+        Args:
+            session_id: The session ID
+            pinned: True to pin, False to unpin
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute(
+            'UPDATE sessions SET pinned = ? WHERE session_id = ?',
+            (1 if pinned else 0, session_id)
+        )
+
+        conn.commit()
+        conn.close()
+
+    def get_sessions_in_folder(self, folder_id: Optional[str]) -> List[Session]:
+        """
+        Get all sessions in a specific folder.
+
+        Args:
+            folder_id: The folder ID (None for root/unorganized sessions)
+
+        Returns:
+            List of sessions in the folder
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        if folder_id is None:
+            cursor.execute(
+                '''SELECT session_id, created_at, last_active, message_count, title, tags,
+                          folder_id, pinned, position, mode, knowledge_enabled
+                   FROM sessions WHERE folder_id IS NULL
+                   ORDER BY pinned DESC, position ASC, last_active DESC'''
+            )
+        else:
+            cursor.execute(
+                '''SELECT session_id, created_at, last_active, message_count, title, tags,
+                          folder_id, pinned, position, mode, knowledge_enabled
+                   FROM sessions WHERE folder_id = ?
+                   ORDER BY pinned DESC, position ASC, last_active DESC''',
+                (folder_id,)
+            )
+
+        rows = cursor.fetchall()
+        conn.close()
+
+        return [
+            Session(
+                session_id=row[0],
+                created_at=datetime.fromisoformat(row[1]),
+                last_active=datetime.fromisoformat(row[2]),
+                message_count=row[3],
+                title=row[4],
+                tags=json.loads(row[5]) if row[5] else [],
+                folder_id=row[6],
+                pinned=bool(row[7]),
+                position=row[8],
+                mode=row[9] or 'simple',
+                knowledge_enabled=bool(row[10])
+            )
+            for row in rows
+        ]
+
+    def update_session_mode(self, session_id: str, mode: str):
+        """
+        Update the chat mode for a session.
+
+        Args:
+            session_id: The session ID
+            mode: Chat mode (e.g., 'simple', 'advanced', 'workflow')
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute(
+            'UPDATE sessions SET mode = ? WHERE session_id = ?',
+            (mode, session_id)
+        )
+
+        conn.commit()
+        conn.close()
+
+    def update_session_knowledge_enabled(self, session_id: str, enabled: bool):
+        """
+        Enable or disable knowledge system for a session.
+
+        Args:
+            session_id: The session ID
+            enabled: True to enable, False to disable
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute(
+            'UPDATE sessions SET knowledge_enabled = ? WHERE session_id = ?',
+            (1 if enabled else 0, session_id)
+        )
+
+        conn.commit()
+        conn.close()
