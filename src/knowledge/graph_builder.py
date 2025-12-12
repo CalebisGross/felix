@@ -11,6 +11,7 @@ Uses existing KnowledgeStore.related_entries field for graph storage.
 """
 
 import logging
+import re
 import sqlite3
 from typing import List, Dict, Any, Optional, Tuple, Set
 from dataclasses import dataclass
@@ -71,6 +72,22 @@ class KnowledgeGraphBuilder:
         self.embedding_provider = embedding_provider
         self.similarity_threshold = similarity_threshold
         self.cooccurrence_window = cooccurrence_window
+
+    def _normalize_concept_name(self, name: str) -> str:
+        """
+        Normalize concept name for matching.
+
+        Strips markdown formatting and normalizes whitespace/case.
+        This fixes the bug where concept names stored with markdown
+        (e.g., **Confidence Scoring**) wouldn't match related_concepts
+        stored without markdown (e.g., Confidence Scoring).
+        """
+        if not name:
+            return ""
+        # Strip markdown formatting: **bold**, *italic*, __underline__, `code`
+        name = re.sub(r'\*\*|\*|__|_|`', '', name)
+        # Normalize whitespace and lowercase
+        return name.lower().strip()
 
     def build_graph_for_document(self, document_id: str) -> Dict[str, Any]:
         """
@@ -235,11 +252,19 @@ class KnowledgeGraphBuilder:
         Discover relationships explicitly mentioned in concept metadata.
 
         Concepts list related_concepts in their content.
+
+        Uses normalized names for matching to handle markdown formatting
+        differences between stored concept names and related_concepts lists.
         """
         relationships = []
 
-        # Build name-to-id mapping
-        name_to_id = {c.concept_name.lower(): c.knowledge_id for c in concepts}
+        # Build name-to-id mapping using NORMALIZED names
+        # This fixes the bug where **Confidence Scoring** wouldn't match Confidence Scoring
+        name_to_id = {}
+        for c in concepts:
+            normalized = self._normalize_concept_name(c.concept_name)
+            if normalized:  # Skip empty names
+                name_to_id[normalized] = c.knowledge_id
 
         for concept in concepts:
             # Check if concept has related_concepts in its content
@@ -256,10 +281,11 @@ class KnowledgeGraphBuilder:
                     content = json.loads(row[0])
                     related_concepts = content.get('related_concepts', [])
 
-                    # Match related concept names to IDs
+                    # Match related concept names to IDs using NORMALIZED names
                     for related_name in related_concepts:
-                        related_id = name_to_id.get(related_name.lower())
-                        if related_id:
+                        normalized_related = self._normalize_concept_name(related_name)
+                        related_id = name_to_id.get(normalized_related)
+                        if related_id and related_id != concept.knowledge_id:
                             relationships.append(RelationshipEdge(
                                 source_id=concept.knowledge_id,
                                 target_id=related_id,
@@ -312,9 +338,14 @@ class KnowledgeGraphBuilder:
 
     def _discover_cooccurrence_relationships(self, concepts: List[ConceptNode]) -> List[RelationshipEdge]:
         """
-        Discover relationships via co-occurrence in same document/section.
+        Discover relationships via co-occurrence in the SAME chunk only.
 
-        Concepts from nearby chunks are likely related.
+        This is a high-precision approach: concepts mentioned in the same chunk
+        have the strongest semantic connection. The previous O(n²) algorithm
+        connected all concepts within 5 chunks, creating 272k+ noise relationships.
+
+        Now we only connect concepts that appear in the SAME chunk, which provides
+        actual semantic signal rather than proximity noise.
         """
         relationships = []
 
@@ -322,7 +353,7 @@ class KnowledgeGraphBuilder:
             # Group concepts by chunk_index
             conn = sqlite3.connect(self.knowledge_store.storage_path)
 
-            concept_chunks = {}
+            concept_chunks = defaultdict(list)
             for concept in concepts:
                 cursor = conn.execute("""
                     SELECT chunk_index FROM knowledge_entries
@@ -331,32 +362,27 @@ class KnowledgeGraphBuilder:
                 row = cursor.fetchone()
                 if row and row[0] is not None:
                     chunk_idx = row[0]
-                    if chunk_idx not in concept_chunks:
-                        concept_chunks[chunk_idx] = []
                     concept_chunks[chunk_idx].append(concept.knowledge_id)
 
             conn.close()
 
-            # Find concepts within window
-            chunk_indices = sorted(concept_chunks.keys())
-            for i, chunk_a in enumerate(chunk_indices):
-                for chunk_b in chunk_indices[i:]:
-                    if abs(chunk_b - chunk_a) <= self.cooccurrence_window:
-                        # Concepts in these chunks are related
-                        for id_a in concept_chunks[chunk_a]:
-                            for id_b in concept_chunks[chunk_b]:
-                                if id_a != id_b:
-                                    # Strength inversely proportional to distance
-                                    distance = abs(chunk_b - chunk_a)
-                                    strength = 1.0 - (distance / self.cooccurrence_window)
+            # Only connect concepts in the SAME chunk (high precision)
+            # This eliminates the O(n²) explosion from connecting across chunks
+            for chunk_idx, concept_ids in concept_chunks.items():
+                # Skip chunks with only one concept (no relationships to create)
+                if len(concept_ids) < 2:
+                    continue
 
-                                    relationships.append(RelationshipEdge(
-                                        source_id=id_a,
-                                        target_id=id_b,
-                                        relationship_type='cooccurs_with',
-                                        strength=strength,
-                                        basis='cooccurrence'
-                                    ))
+                # Connect all concepts within this chunk
+                for i, id_a in enumerate(concept_ids):
+                    for id_b in concept_ids[i + 1:]:
+                        relationships.append(RelationshipEdge(
+                            source_id=id_a,
+                            target_id=id_b,
+                            relationship_type='cooccurs_with',
+                            strength=0.7,  # Same chunk = strong semantic signal
+                            basis='same_chunk'
+                        ))
 
         except Exception as e:
             logger.error(f"Failed to discover co-occurrence relationships: {e}")
@@ -365,22 +391,33 @@ class KnowledgeGraphBuilder:
 
     def _store_relationships(self, relationships: List[RelationshipEdge]) -> int:
         """
-        Store relationships in KnowledgeStore.
-
-        Uses add_related_entry method to create bidirectional links.
+        Store relationships in knowledge_relationships table.
         """
+        if not relationships:
+            return 0
+
         stored_count = 0
 
-        for rel in relationships:
-            try:
-                # Add bidirectional relationship
-                self.knowledge_store.add_related_entry(
-                    rel.source_id,
-                    rel.target_id
-                )
-                stored_count += 1
-            except Exception as e:
-                logger.warning(f"Failed to store relationship {rel.source_id} -> {rel.target_id}: {e}")
+        try:
+            conn = sqlite3.connect(self.knowledge_store.storage_path)
+            cursor = conn.cursor()
+
+            # Batch insert all relationships
+            for rel in relationships:
+                try:
+                    cursor.execute("""
+                        INSERT OR IGNORE INTO knowledge_relationships
+                        (source_id, target_id, relationship_type, confidence)
+                        VALUES (?, ?, ?, ?)
+                    """, (rel.source_id, rel.target_id, rel.relationship_type, rel.strength))
+                    stored_count += 1
+                except sqlite3.Error:
+                    pass  # Skip duplicates silently
+
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.error(f"Failed to store relationships: {e}")
 
         return stored_count
 

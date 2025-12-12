@@ -504,6 +504,7 @@ class KnowledgeRetriever:
         Get concepts related to a given knowledge entry.
 
         Traverses relationship graph up to max_depth hops.
+        Uses knowledge_relationships table (preferred) with fallback to related_entries_json.
 
         Args:
             knowledge_id: Starting knowledge ID
@@ -517,18 +518,25 @@ class KnowledgeRetriever:
             conn.row_factory = sqlite3.Row
 
             visited = set()
-            queue = [(knowledge_id, 0)]  # (id, depth)
+            queue = [(knowledge_id, 0, 1.0)]  # (id, depth, inherited_strength)
             related = []
 
+            # Check if knowledge_relationships table exists
+            cursor = conn.execute("""
+                SELECT name FROM sqlite_master
+                WHERE type='table' AND name='knowledge_relationships'
+            """)
+            use_relationships_table = cursor.fetchone() is not None
+
             while queue:
-                current_id, depth = queue.pop(0)
+                current_id, depth, inherited_strength = queue.pop(0)
 
                 if current_id in visited or depth > max_depth:
                     continue
 
                 visited.add(current_id)
 
-                # Get entry
+                # Get entry details
                 cursor = conn.execute("""
                     SELECT knowledge_id, content_json, domain, confidence_level,
                            tags_json, source_doc_id, related_entries_json
@@ -541,29 +549,68 @@ class KnowledgeRetriever:
                     import json
 
                     if depth > 0:  # Don't include the starting node
-                        content = json.loads(row['content_json'])
-                        tags = json.loads(row['tags_json']) if row['tags_json'] else []
+                        try:
+                            content = json.loads(row['content_json']) if row['content_json'] else {}
+                        except (json.JSONDecodeError, TypeError):
+                            content = {"concept": "Unknown", "definition": ""}
+
+                        try:
+                            tags = json.loads(row['tags_json']) if row['tags_json'] else []
+                        except (json.JSONDecodeError, TypeError):
+                            tags = []
+
+                        # Relevance decays with depth and is weighted by relationship strength
+                        relevance = inherited_strength * (1.0 - (depth * 0.2))
 
                         result = SearchResult(
                             knowledge_id=row['knowledge_id'],
                             content=content,
-                            domain=row['domain'],
-                            confidence_level=row['confidence_level'],
-                            relevance_score=1.0 - (depth * 0.3),  # Decay with distance
+                            domain=row['domain'] or "unknown",
+                            confidence_level=row['confidence_level'] or "medium",
+                            relevance_score=relevance,
                             source_doc_id=row['source_doc_id'],
                             tags=tags,
                             reasoning=f"related_depth_{depth}"
                         )
                         related.append(result)
 
-                    # Queue related entries
+                    # Queue related entries - prefer relationships table
                     if depth < max_depth:
-                        related_ids = json.loads(row['related_entries_json']) if row['related_entries_json'] else []
-                        for related_id in related_ids:
+                        related_ids_with_strength = []
+
+                        if use_relationships_table:
+                            # Get relationships from knowledge_relationships table
+                            rel_cursor = conn.execute("""
+                                SELECT target_id, confidence
+                                FROM knowledge_relationships
+                                WHERE source_id = ?
+                                UNION
+                                SELECT source_id, confidence
+                                FROM knowledge_relationships
+                                WHERE target_id = ?
+                            """, (current_id, current_id))
+
+                            for rel_row in rel_cursor:
+                                related_ids_with_strength.append(
+                                    (rel_row['target_id'] or rel_row[0], rel_row['confidence'] or rel_row[1] or 0.5)
+                                )
+
+                        # Fallback to related_entries_json if no relationships found
+                        if not related_ids_with_strength:
+                            legacy_ids = json.loads(row['related_entries_json']) if row['related_entries_json'] else []
+                            for related_id in legacy_ids:
+                                related_ids_with_strength.append((related_id, 0.7))  # Default strength
+
+                        # Add to queue
+                        for related_id, strength in related_ids_with_strength:
                             if related_id not in visited:
-                                queue.append((related_id, depth + 1))
+                                queue.append((related_id, depth + 1, strength))
 
             conn.close()
+
+            # Sort by relevance
+            related.sort(key=lambda r: r.relevance_score, reverse=True)
+
             return related
 
         except Exception as e:

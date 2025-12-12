@@ -12,6 +12,7 @@ agents) since document processing doesn't fit the helix progression model.
 """
 
 import logging
+import re
 import time
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass, field
@@ -21,6 +22,62 @@ from src.memory.knowledge_store import KnowledgeStore, KnowledgeType, Confidence
 from .document_ingest import DocumentChunk
 
 logger = logging.getLogger(__name__)
+
+
+def clean_concept_name(name: str) -> str:
+    """
+    Clean concept name before storage.
+
+    Removes markdown formatting artifacts that leak into concept names
+    from LLM output. This is critical for relationship matching later -
+    if names have markdown, they won't match related_concepts lists.
+
+    Examples:
+        "**Confidence Scoring**" -> "Confidence Scoring"
+        "*italic concept*" -> "italic concept"
+        "`code_name`" -> "code_name"
+    """
+    if not name:
+        return ""
+    # Remove markdown formatting: **bold**, *italic*, __underline__, `code`
+    name = re.sub(r'\*\*|\*|__|_|`', '', name)
+    # Remove leading/trailing punctuation and whitespace
+    name = name.strip(' .,;:')
+    return name
+
+
+def validate_concept(concept_name: str, definition: str) -> bool:
+    """
+    Validate concept before storage.
+
+    Returns True if concept passes quality checks.
+    Rejects:
+    - Empty/short names
+    - Empty/short definitions
+    - Placeholder definitions (auto-generated garbage)
+    """
+    # Reject if name is empty after cleaning
+    if not concept_name or len(concept_name) < 3:
+        return False
+
+    # Reject if definition is too short (increased from 10 to 20)
+    if not definition or len(definition) < 20:
+        return False
+
+    # Reject placeholder definitions (auto-generated garbage)
+    placeholder_patterns = [
+        "a concept mentioned",
+        "mentioned in relation to",
+        "a function named",
+        "a concept from",
+        "related to this section",
+    ]
+    definition_lower = definition.lower()
+    for pattern in placeholder_patterns:
+        if pattern in definition_lower:
+            return False
+
+    return True
 
 
 @dataclass
@@ -107,6 +164,7 @@ class KnowledgeComprehensionEngine:
     def __init__(self,
                  knowledge_store: KnowledgeStore,
                  llm_client,
+                 embedding_provider=None,
                  min_quality_threshold: float = 0.6,
                  max_retries: int = 2):
         """
@@ -115,11 +173,13 @@ class KnowledgeComprehensionEngine:
         Args:
             knowledge_store: KnowledgeStore for storing extracted knowledge
             llm_client: LLM client for agents
+            embedding_provider: Optional embedding provider for generating concept embeddings
             min_quality_threshold: Minimum quality score to accept (0.0-1.0)
             max_retries: Maximum retries if quality insufficient
         """
         self.knowledge_store = knowledge_store
         self.llm_client = llm_client
+        self.embedding_provider = embedding_provider
         self.min_quality_threshold = min_quality_threshold
         self.max_retries = max_retries
 
@@ -381,15 +441,24 @@ Be concise but precise. Extract 3-10 concepts maximum.
                 elif '|' in line and current_section == 'concepts':
                     parts = [p.strip() for p in line.split('|')]
                     if len(parts) >= 4:
-                        concept_name = parts[0]
+                        # Clean concept name to remove markdown artifacts
+                        concept_name = clean_concept_name(parts[0])
                         definition = parts[1]
+
+                        # Validate before creating - skip invalid concepts
+                        if not validate_concept(concept_name, definition):
+                            logger.debug(f"Skipping invalid concept: '{parts[0]}' -> '{concept_name}'")
+                            continue
+
                         importance = float(parts[2]) if parts[2].replace('.', '').isdigit() else 0.5
                         confidence = float(parts[3]) if parts[3].replace('.', '').isdigit() else 0.5
 
                         related = []
                         if len(parts) > 4 and 'Related:' in parts[4]:
                             related_str = parts[4].replace('Related:', '').strip()
-                            related = [r.strip() for r in related_str.split(',')]
+                            # Also clean related concept names for consistency
+                            related = [clean_concept_name(r.strip()) for r in related_str.split(',')]
+                            related = [r for r in related if r]  # Remove empty strings
 
                         concept = ConceptExtraction(
                             concept_name=concept_name,
@@ -524,6 +593,17 @@ Be concise but precise. Extract 3-10 concepts maximum.
             # Store each concept as a knowledge entry
             for concept in result.concepts:
                 try:
+                    # Generate embedding for this specific concept
+                    # Embedding is based on concept name + definition for semantic meaning
+                    concept_embedding = None
+                    if self.embedding_provider:
+                        try:
+                            text_for_embedding = f"{concept.concept_name}: {concept.definition}"
+                            concept_embedding = self.embedding_provider.get_embedding(text_for_embedding)
+                        except Exception as emb_e:
+                            logger.warning(f"Failed to generate embedding for concept '{concept.concept_name}': {emb_e}")
+                            # Continue without embedding - it's optional
+
                     knowledge_id = self.knowledge_store.store_knowledge(
                         knowledge_type=KnowledgeType.DOMAIN_EXPERTISE,
                         content=concept.to_dict(),
@@ -535,12 +615,13 @@ Be concise but precise. Extract 3-10 concepts maximum.
                             'concept',
                             concept.concept_name.lower().replace(' ', '_')
                         ],
-                        embedding=embedding,
+                        embedding=concept_embedding,  # Now stores concept-specific embedding
                         source_doc_id=result.document_id,
                         chunk_index=int(result.chunk_id.split('_')[-2]) if '_' in result.chunk_id else 0
                     )
                     stored_count += 1
-                    logger.debug(f"Stored concept: {concept.concept_name} ({knowledge_id})")
+                    has_embedding = "with embedding" if concept_embedding else "no embedding"
+                    logger.debug(f"Stored concept: {concept.concept_name} ({knowledge_id}) [{has_embedding}]")
                 except Exception as e:
                     logger.error(f"Failed to store concept {concept.concept_name}: {e}")
 

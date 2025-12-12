@@ -119,7 +119,7 @@ class KnowledgeBackupManager:
                 params.append(end_date.timestamp())
 
             # Execute query
-            conn = sqlite3.connect(self.knowledge_store.db_path)
+            conn = sqlite3.connect(self.knowledge_store.storage_path)
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(query, params)
@@ -282,7 +282,7 @@ class KnowledgeBackupManager:
     def _import_entry(self, entry_data: Dict[str, Any]):
         """Import a new knowledge entry."""
         # Reconstruct entry and insert
-        conn = sqlite3.connect(self.knowledge_store.db_path)
+        conn = sqlite3.connect(self.knowledge_store.storage_path)
         cursor = conn.cursor()
 
         # Build INSERT statement (excluding embedding which is not portable)
@@ -326,7 +326,7 @@ class KnowledgeBackupManager:
 
     def _import_relationships(self, relationships: List[Dict[str, Any]]):
         """Import knowledge relationships."""
-        conn = sqlite3.connect(self.knowledge_store.db_path)
+        conn = sqlite3.connect(self.knowledge_store.storage_path)
         cursor = conn.cursor()
 
         for rel in relationships:
@@ -369,7 +369,7 @@ class KnowledgeBackupManager:
         try:
             # SQLite backup
             if include_database:
-                db_path = Path(self.knowledge_store.db_path)
+                db_path = Path(self.knowledge_store.storage_path)
                 backup_path = self.db_backup_manager.create_backup(
                     db_path,
                     prefix="scheduled"

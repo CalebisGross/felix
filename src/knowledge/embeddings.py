@@ -62,9 +62,9 @@ class LMStudioEmbedder:
             return False
 
         try:
-            # Try to generate a test embedding
-            test_result = self.embed("test")
-            return test_result is not None
+            # Use quick test with 5-second timeout to avoid blocking GUI
+            # This bypasses the main OpenAI client which has 120s timeout
+            return self.client.test_embedding_availability(timeout=5.0)
         except Exception as e:
             logger.info(f"LM Studio embeddings not available: {e}")
             return False

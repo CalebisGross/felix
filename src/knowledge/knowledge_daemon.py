@@ -38,6 +38,14 @@ from .graph_builder import KnowledgeGraphBuilder
 from .embeddings import EmbeddingProvider
 from src.memory.knowledge_store import KnowledgeStore
 
+# Strategic comprehension (efficiency improvements)
+try:
+    from .strategic_comprehension import StrategicComprehensionEngine
+    STRATEGIC_COMPREHENSION_AVAILABLE = True
+except ImportError:
+    STRATEGIC_COMPREHENSION_AVAILABLE = False
+    StrategicComprehensionEngine = None
+
 # Optional backup manager (Phase 5 feature)
 try:
     from .backup_manager_extended import KnowledgeBackupManager
@@ -58,6 +66,7 @@ class DaemonConfig:
     enable_file_watching: bool = True
     enable_scheduled_backup: bool = False  # Enable automatic backups
     enable_gap_learning: bool = False  # Mode E: Gap-directed learning (OPT-IN)
+    use_strategic_comprehension: bool = True  # Use optimized comprehension (50-70% fewer LLM calls)
     refinement_interval: int = 3600  # seconds (1 hour)
     backup_interval: int = 86400  # seconds (24 hours)
     gap_learning_interval: int = 1800  # seconds (30 minutes) for gap acquisition
@@ -253,10 +262,27 @@ class KnowledgeDaemon:
             chunk_size=config.chunk_size,
             chunk_overlap=config.chunk_overlap
         )
-        self.comprehension_engine = KnowledgeComprehensionEngine(
-            knowledge_store=knowledge_store,
-            llm_client=llm_client
-        )
+
+        # Initialize comprehension engine (strategic or original)
+        self.use_strategic = config.use_strategic_comprehension and STRATEGIC_COMPREHENSION_AVAILABLE
+        if self.use_strategic:
+            self.strategic_engine = StrategicComprehensionEngine(
+                knowledge_store=knowledge_store,
+                llm_client=llm_client,
+                embedding_provider=embedding_provider
+            )
+            self.comprehension_engine = None  # Not used in strategic mode
+            logger.info("✓ Strategic comprehension enabled (50-70% fewer LLM calls)")
+        else:
+            self.strategic_engine = None
+            self.comprehension_engine = KnowledgeComprehensionEngine(
+                knowledge_store=knowledge_store,
+                llm_client=llm_client,
+                embedding_provider=embedding_provider  # Now generates embeddings for each concept
+            )
+            if config.use_strategic_comprehension and not STRATEGIC_COMPREHENSION_AVAILABLE:
+                logger.warning("Strategic comprehension requested but not available, using original")
+
         self.graph_builder = KnowledgeGraphBuilder(
             knowledge_store=knowledge_store,
             embedding_provider=embedding_provider
@@ -272,6 +298,7 @@ class KnowledgeDaemon:
         self.last_refinement = None
         self.last_backup = None
         self.last_activity = None
+        self._stop_event = threading.Event()  # For interruptible shutdown
 
         # File watching
         self.observer = None
@@ -314,6 +341,7 @@ class KnowledgeDaemon:
 
         logger.info("Starting Knowledge Daemon...")
         self.running = True
+        self._stop_event.clear()  # Reset stop event for fresh start
         self.start_time = time.time()
 
         # Mode A: Batch Processing
@@ -365,6 +393,10 @@ class KnowledgeDaemon:
             self.threads.append(gap_thread)
             logger.info("✓ Mode E: Gap-directed learning started (opt-in)")
 
+        # Load any pending documents from database into queue
+        # This ensures documents that were pending before a restart get processed
+        self._load_pending_from_database()
+
         logger.info("Knowledge Daemon fully operational")
 
     def stop(self):
@@ -374,6 +406,7 @@ class KnowledgeDaemon:
 
         logger.info("Stopping Knowledge Daemon...")
         self.running = False
+        self._stop_event.set()  # Signal all threads to stop immediately
 
         # Stop file watching
         if self.observer:
@@ -427,13 +460,23 @@ class KnowledgeDaemon:
 
         uptime = time.time() - self.start_time if self.start_time else 0
 
+        # Get both queue count and database count
+        # Queue count: documents added but not yet pulled for processing
+        # Database count: documents with pending/processing status (persistent)
+        db_pending = self._get_database_pending_count()
+        queue_pending = queue_stats['pending']
+
+        # Use max to capture both newly queued and persistent state
+        # This handles the case where docs are in queue but DB not yet updated
+        total_pending = max(queue_pending, db_pending)
+
         return DaemonStatus(
             running=self.running,
             batch_processor_active=self.config.enable_batch_processing,
             refiner_active=self.config.enable_refinement,
             file_watcher_active=self.config.enable_file_watching and self.observer is not None,
             backup_active=self.config.enable_scheduled_backup and self.backup_manager is not None,
-            documents_pending=queue_stats['pending'],
+            documents_pending=total_pending,  # Max of queue and database
             documents_processed=queue_stats['completed'],
             documents_failed=queue_stats['failed'],
             last_refinement=self.last_refinement,
@@ -451,7 +494,7 @@ class KnowledgeDaemon:
         """
         try:
             import sqlite3
-            conn = sqlite3.connect(self.knowledge_store.storage_path)
+            conn = sqlite3.connect(self.knowledge_store.storage_path, timeout=30.0)
             cursor = conn.execute("""
                 SELECT file_path FROM document_sources
                 WHERE ingestion_status = 'completed'
@@ -463,6 +506,102 @@ class KnowledgeDaemon:
         except Exception as e:
             logger.error(f"Failed to load completed documents: {e}")
             return set()
+
+    def _get_database_pending_count(self) -> int:
+        """
+        Get count of documents that need processing from database.
+
+        Returns:
+            Number of documents with ingestion_status='pending' or 'processing'
+            (processing means stuck from a previous crashed/restarted session)
+        """
+        try:
+            import sqlite3
+            conn = sqlite3.connect(self.knowledge_store.storage_path, timeout=30.0)
+            cursor = conn.execute(
+                "SELECT COUNT(*) FROM document_sources WHERE ingestion_status IN ('pending', 'processing')"
+            )
+            count = cursor.fetchone()[0]
+            conn.close()
+            return count
+        except Exception:
+            return 0
+
+    def _load_pending_from_database(self):
+        """
+        Load pending/stuck documents from database into processing queue.
+
+        Called on daemon start to restore queue state from persistent storage.
+        This ensures documents that were pending or stuck in 'processing' status
+        from a previous session get (re)processed.
+        """
+        try:
+            import sqlite3
+            conn = sqlite3.connect(self.knowledge_store.storage_path, timeout=30.0)
+            # Load both 'pending' and 'processing' - the latter are stuck from previous runs
+            cursor = conn.execute(
+                "SELECT file_path FROM document_sources WHERE ingestion_status IN ('pending', 'processing')"
+            )
+            loaded = 0
+            for row in cursor:
+                file_path = row[0]
+                if Path(file_path).exists():
+                    self.document_queue.add(file_path)
+                    loaded += 1
+                else:
+                    logger.warning(f"Pending document no longer exists: {file_path}")
+            conn.close()
+            if loaded > 0:
+                logger.info(f"Loaded {loaded} pending/stuck documents from database into queue")
+        except Exception as e:
+            logger.error(f"Failed to load pending documents from database: {e}")
+
+    def _create_pending_entries_batch(self, file_paths: list):
+        """
+        Create or update database entries for multiple pending documents in a single transaction.
+
+        Called when documents are queued via process_directory_now() to ensure
+        the database reflects the queue state immediately.
+
+        Uses UPSERT logic: inserts new files, updates existing files to 'pending' status.
+        Batches all operations in a single transaction for performance.
+        """
+        import sqlite3
+        import hashlib
+
+        if not file_paths:
+            return
+
+        # File type mapping (extension -> database value)
+        file_type_map = {
+            '.pdf': 'pdf', '.txt': 'text', '.md': 'markdown',
+            '.py': 'python', '.js': 'javascript', '.java': 'java',
+            '.c': 'c', '.cpp': 'cpp', '.h': 'c', '.hpp': 'cpp',
+        }
+
+        try:
+            conn = sqlite3.connect(self.knowledge_store.storage_path, timeout=30.0)
+
+            # Prepare batch data with file_type
+            batch_data = []
+            for file_path in file_paths:
+                path = Path(file_path)
+                doc_id = hashlib.md5(file_path.encode()).hexdigest()[:16]
+                file_type = file_type_map.get(path.suffix.lower(), 'text')
+                batch_data.append((doc_id, file_path, path.name, file_type))
+
+            # Execute all inserts in a single transaction
+            conn.executemany("""
+                INSERT INTO document_sources (doc_id, file_path, file_name, file_type, ingestion_status)
+                VALUES (?, ?, ?, ?, 'pending')
+                ON CONFLICT(file_path) DO UPDATE SET ingestion_status = 'pending'
+            """, batch_data)
+
+            conn.commit()
+            conn.close()
+            logger.info(f"Created/updated {len(file_paths)} pending entries in database")
+        except Exception as e:
+            logger.warning(f"Failed to create pending entries: {e}")
 
     def _batch_processing_loop(self):
         """
@@ -500,18 +639,17 @@ class KnowledgeDaemon:
                    f"({len(already_processed)} already processed)")
 
         # Process queue
-        while self.running:
+        while self.running and not self._stop_event.is_set():
             file_path = self.document_queue.get(timeout=0.5)  # Shorter timeout for responsive shutdown
 
             if file_path is None:
-                # Queue empty - check if we should stop before sleeping
-                if not self.running:
+                # Queue empty - use interruptible wait instead of sleep
+                if self._stop_event.wait(timeout=0.5):  # Returns True if stop signaled
                     break
-                time.sleep(0.5)  # Shorter sleep for responsive shutdown
                 continue
 
             # Check stop flag before processing
-            if not self.running:
+            if not self.running or self._stop_event.is_set():
                 break
 
             try:
@@ -524,9 +662,9 @@ class KnowledgeDaemon:
                     stats = self.document_queue.get_stats()
                     self.progress_callback('batch_progress', stats)
 
-                # Brief yield between documents to allow user-initiated requests through
-                # Works in conjunction with is_background semaphore in LLM clients
-                time.sleep(0.2)
+                # Brief yield between documents - interruptible
+                if self._stop_event.wait(timeout=0.2):
+                    break
 
             except Exception as e:
                 logger.error(f"Failed to process {file_path}: {e}")
@@ -542,14 +680,10 @@ class KnowledgeDaemon:
         """
         logger.info("Refinement: Starting continuous refinement loop")
 
-        while self.running:
-            # Wait for refinement interval with interruptible sleep
-            # Sleep in 1-second increments to check self.running frequently
-            sleep_remaining = self.config.refinement_interval
-            while sleep_remaining > 0 and self.running:
-                sleep_time = min(1.0, sleep_remaining)
-                time.sleep(sleep_time)
-                sleep_remaining -= sleep_time
+        while self.running and not self._stop_event.is_set():
+            # Wait for refinement interval - interruptible via _stop_event
+            if self._stop_event.wait(timeout=self.config.refinement_interval):
+                break  # Stop was signaled
 
             if not self.running:
                 break
@@ -612,13 +746,10 @@ class KnowledgeDaemon:
         except Exception as e:
             logger.error(f"Initial backup failed: {e}")
 
-        while self.running:
-            # Wait for backup interval with interruptible sleep
-            sleep_remaining = self.config.backup_interval
-            while sleep_remaining > 0 and self.running:
-                sleep_time = min(1.0, sleep_remaining)
-                time.sleep(sleep_time)
-                sleep_remaining -= sleep_time
+        while self.running and not self._stop_event.is_set():
+            # Wait for backup interval - interruptible via _stop_event
+            if self._stop_event.wait(timeout=self.config.backup_interval):
+                break  # Stop was signaled
 
             if not self.running:
                 break
@@ -702,13 +833,10 @@ class KnowledgeDaemon:
         # Track last run time
         last_gap_check = 0
 
-        while self.running:
-            # Wait for gap learning interval with interruptible sleep
-            sleep_remaining = self.config.gap_learning_interval
-            while sleep_remaining > 0 and self.running:
-                sleep_time = min(1.0, sleep_remaining)
-                time.sleep(sleep_time)
-                sleep_remaining -= sleep_time
+        while self.running and not self._stop_event.is_set():
+            # Wait for gap learning interval - interruptible via _stop_event
+            if self._stop_event.wait(timeout=self.config.gap_learning_interval):
+                break  # Stop was signaled
 
             if not self.running:
                 break
@@ -802,34 +930,47 @@ class KnowledgeDaemon:
                 chunk_texts = [chunk.content for chunk in ingestion_result.chunks]
                 self.embedding_provider.fit_tfidf(chunk_texts)  # Update TF-IDF model
 
-            # Step 3: Comprehend each chunk
-            total_concepts = 0
-            for chunk in ingestion_result.chunks:
-                try:
-                    # Comprehend chunk
-                    comprehension_result = self.comprehension_engine.comprehend_chunk(
-                        chunk=chunk,
-                        document_metadata=ingestion_result.metadata.to_dict()
-                    )
+            # Step 3: Comprehend chunks (strategic or original approach)
+            if self.use_strategic and self.strategic_engine:
+                # STRATEGIC: Process entire document at once with intelligent routing
+                stats = self.strategic_engine.process_and_store(
+                    chunks=ingestion_result.chunks,
+                    document_id=ingestion_result.document_id,
+                    document_metadata=ingestion_result.metadata.to_dict()
+                )
+                total_concepts = stats.total_concepts
+                logger.info(f"Strategic processing: {stats.llm_processed} LLM calls, "
+                           f"{stats.code_extracted} code-extracted, {stats.skipped} skipped "
+                           f"(saved {stats.llm_calls_saved} LLM calls)")
+            else:
+                # ORIGINAL: Process each chunk individually with 2 LLM calls per chunk
+                total_concepts = 0
+                for chunk in ingestion_result.chunks:
+                    try:
+                        # Comprehend chunk
+                        comprehension_result = self.comprehension_engine.comprehend_chunk(
+                            chunk=chunk,
+                            document_metadata=ingestion_result.metadata.to_dict()
+                        )
 
-                    # Generate embedding for chunk if available
-                    embedding = None
-                    if self.embedding_provider:
-                        embed_result = self.embedding_provider.embed(chunk.content)
-                        embedding = embed_result.embedding
+                        # Generate embedding for chunk if available
+                        embedding = None
+                        if self.embedding_provider:
+                            embed_result = self.embedding_provider.embed(chunk.content)
+                            embedding = embed_result.embedding
 
-                    # Store in knowledge base
-                    concepts_stored = self.comprehension_engine.store_comprehension_result(
-                        result=comprehension_result,
-                        document_metadata=ingestion_result.metadata.to_dict(),
-                        embedding=embedding
-                    )
+                        # Store in knowledge base
+                        concepts_stored = self.comprehension_engine.store_comprehension_result(
+                            result=comprehension_result,
+                            document_metadata=ingestion_result.metadata.to_dict(),
+                            embedding=embedding
+                        )
 
-                    total_concepts += concepts_stored
+                        total_concepts += concepts_stored
 
-                except Exception as e:
-                    logger.error(f"Failed to comprehend chunk {chunk.chunk_index}: {e}")
-                    continue
+                    except Exception as e:
+                        logger.error(f"Failed to comprehend chunk {chunk.chunk_index}: {e}")
+                        continue
 
             # Step 4: Build knowledge graph for this document
             graph_stats = self.graph_builder.build_graph_for_document(ingestion_result.document_id)
@@ -864,7 +1005,7 @@ class KnowledgeDaemon:
         """Store document metadata in document_sources table."""
         try:
             import sqlite3
-            conn = sqlite3.connect(self.knowledge_store.storage_path)
+            conn = sqlite3.connect(self.knowledge_store.storage_path, timeout=30.0)
 
             metadata = ingestion_result.metadata
 
@@ -902,7 +1043,7 @@ class KnowledgeDaemon:
         """Update document processing status."""
         try:
             import sqlite3
-            conn = sqlite3.connect(self.knowledge_store.storage_path)
+            conn = sqlite3.connect(self.knowledge_store.storage_path, timeout=30.0)
 
             conn.execute("""
                 UPDATE document_sources
@@ -946,7 +1087,7 @@ class KnowledgeDaemon:
             # Get entry IDs from database
             entry_ids = []
             try:
-                conn = sqlite3.connect(self.knowledge_store.storage_path)
+                conn = sqlite3.connect(self.knowledge_store.storage_path, timeout=30.0)
                 cursor = conn.execute("""
                     SELECT knowledge_id FROM knowledge_entries
                     WHERE source_doc_id = ?
@@ -1004,6 +1145,8 @@ class KnowledgeDaemon:
         queued_count = 0
         excluded_count = 0
 
+        # Collect all files first
+        files_to_queue = []
         for pattern in patterns:
             for file_path in path.rglob(pattern):
                 # Skip excluded paths
@@ -1011,8 +1154,16 @@ class KnowledgeDaemon:
                     excluded_count += 1
                     continue
 
-                self.document_queue.add(str(file_path))
-                queued_count += 1
+                files_to_queue.append(str(file_path))
+
+        # Batch create database entries (single transaction)
+        if files_to_queue:
+            self._create_pending_entries_batch(files_to_queue)
+
+        # Add to in-memory queue
+        for file_path_str in files_to_queue:
+            self.document_queue.add(file_path_str)
+            queued_count += 1
 
         return {
             'queued': queued_count,
@@ -1119,7 +1270,7 @@ class KnowledgeDaemon:
                 current_hash = hashlib.md5(f.read()).hexdigest()
 
             # Check if document exists in database
-            with sqlite3.connect(self.knowledge_store.storage_path) as conn:
+            with sqlite3.connect(self.knowledge_store.storage_path, timeout=30.0) as conn:
                 cursor = conn.execute("""
                     SELECT doc_id, file_hash, ingestion_status
                     FROM document_sources

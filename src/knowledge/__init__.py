@@ -35,6 +35,24 @@ from .comprehension import (
     EntityExtraction
 )
 
+from .document_outline import (
+    DocumentOutlineBuilder,
+    DocumentOutline,
+    ChunkAnalysis,
+    ChunkComplexity,
+    ContentType
+)
+
+from .basic_extraction import (
+    BasicExtractionEngine,
+    extract_without_llm
+)
+
+from .strategic_comprehension import (
+    StrategicComprehensionEngine,
+    ProcessingStats
+)
+
 from .graph_builder import (
     KnowledgeGraphBuilder,
     ConceptNode,
@@ -78,6 +96,21 @@ __all__ = [
     'ComprehensionResult',
     'ConceptExtraction',
     'EntityExtraction',
+
+    # Document Outline (strategic analysis)
+    'DocumentOutlineBuilder',
+    'DocumentOutline',
+    'ChunkAnalysis',
+    'ChunkComplexity',
+    'ContentType',
+
+    # Basic Extraction (no LLM)
+    'BasicExtractionEngine',
+    'extract_without_llm',
+
+    # Strategic Comprehension (optimized processing)
+    'StrategicComprehensionEngine',
+    'ProcessingStats',
 
     # Graph Builder
     'KnowledgeGraphBuilder',
