@@ -284,6 +284,33 @@ class LMStudioClient:
                 "Ensure LM Studio is running with a model loaded."
             )
 
+    def test_embedding_availability(self, timeout: float = 5.0) -> bool:
+        """
+        Quick test if embedding capability is available.
+
+        Uses a short timeout suitable for initialization checks.
+        Does not use the main OpenAI client to avoid long timeouts.
+
+        Args:
+            timeout: Maximum seconds to wait for response
+
+        Returns:
+            True if embeddings are available, False otherwise
+        """
+        if not self.test_connection():
+            return False
+
+        try:
+            response = httpx.post(
+                f"{self.base_url}/embeddings",
+                json={"model": "local-model", "input": "test"},
+                timeout=timeout
+            )
+            return response.status_code == 200
+        except Exception as e:
+            logger.debug(f"Embedding availability check failed: {e}")
+            return False
+
     def signal_user_activity(self, active: bool = True) -> None:
         """
         Signal that user is actively using the system.
