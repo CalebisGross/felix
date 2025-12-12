@@ -11,9 +11,11 @@ Main chat interface with LM Studio-style layout:
 """
 
 import customtkinter as ctk
-from typing import Optional, Callable, Dict, Any
+from typing import Optional, Callable, Dict, Any, List, Tuple, Set
 import logging
 import threading
+import re
+import uuid
 from queue import Queue
 
 from ..base_tab import ResponsiveTab
@@ -27,10 +29,19 @@ from ...styles import (
     RADIUS_MD, SIDEBAR_WIDTH
 )
 
-# Import chat components (will be created by subagents)
+# Import chat components
 from .chat_session import ChatSession, ChatSessionManager, ChatMessage
+from .action_bubble import ActionBubble, ActionStatus
+from .prompt_loader import load_system_prompt, get_prompt_info
 
 logger = logging.getLogger(__name__)
+
+# Pattern for detecting system action requests in Felix responses
+# Uses ^ anchor with MULTILINE to only match at start of line (not mid-code)
+SYSTEM_ACTION_PATTERN = re.compile(
+    r'^SYSTEM_ACTION_NEEDED:\s*([^\n]+)',
+    re.IGNORECASE | re.MULTILINE
+)
 
 # Sidebar width constants
 SIDEBAR_COMPACT = 0  # Hidden in compact mode
@@ -83,6 +94,13 @@ class ChatTab(ResponsiveTab):
         # LLM client reference (from main_app)
         self._llm_client = None
         self._felix_system = None
+
+        # Workflow and approval tracking
+        self._current_workflow_id: Optional[str] = None
+        self._displayed_approvals: Set[str] = set()
+        self._approval_bubbles: Dict[str, ActionBubble] = {}
+        self._content_buffer: str = ""  # Accumulated streaming content
+        self._is_continuation = False   # Skip pattern detection on continuations
 
         # Components (will be set in _setup_ui)
         self._sidebar = None
@@ -392,6 +410,12 @@ class ChatTab(ResponsiveTab):
         if self._input_area:
             self._input_area.set_streaming(False)
 
+        # Clear workflow and approval state
+        self._current_workflow_id = None
+        self._displayed_approvals.clear()
+        self._approval_bubbles.clear()
+        self._content_buffer = ""
+
         self.current_session = self.session_manager.create_session()
 
         # Update mode and knowledge settings
@@ -526,6 +550,9 @@ class ChatTab(ResponsiveTab):
         if self._input_area:
             self._input_area.set_streaming(True)
 
+        # Reset continuation flag - new user message = fresh start
+        self._is_continuation = False
+
         # Process based on mode
         mode = self.current_session.mode
         if mode == 'simple':
@@ -534,86 +561,12 @@ class ChatTab(ResponsiveTab):
             self._process_workflow_mode(content)
 
     def _process_simple_mode(self, content: str):
-        """Process message in simple (direct LLM) mode."""
-        # Update status to sending
-        self._update_connection_status("sending")
+        """Process message in simple (direct Felix) mode.
 
-        # Start streaming message
-        streaming_msg = self.current_session.start_assistant_message()
-
-        # Add streaming bubble to UI
-        streaming_bubble = None
-        if self._message_area:
-            streaming_bubble = self._message_area.add_streaming_message()
-
-        # Get LLM client from main app
-        llm_client = self._get_llm_client()
-
-        if not llm_client:
-            # No LLM available - show error
-            error_content = "LLM not available. Please ensure LM Studio is running."
-            self.current_session.append_to_streaming(error_content)
-            self.current_session.finish_streaming()
-
-            if streaming_bubble:
-                streaming_bubble.update_content(error_content)
-                streaming_bubble.finish_streaming()
-
-            if self._input_area:
-                self._input_area.set_streaming(False)
-            return
-
-        # Build context
-        context_messages = self.current_session.get_context_messages(limit=10)
-
-        # Get knowledge context if enabled
-        knowledge_context = ""
-        if self.current_session.knowledge_enabled:
-            knowledge_context = self._get_knowledge_context(content)
-
-        # Build system prompt
-        system_prompt = self._build_system_prompt(knowledge_context)
-
-        # Run in background thread
-        def process():
-            try:
-                # Streaming callback
-                def on_chunk(chunk):
-                    self._result_queue.put(('chunk', chunk.content if hasattr(chunk, 'content') else str(chunk)))
-
-                # Call LLM with streaming
-                if hasattr(llm_client, 'complete_streaming'):
-                    response = llm_client.complete_streaming(
-                        agent_id="chat_simple",
-                        system_prompt=system_prompt,
-                        user_prompt=content,
-                        temperature=0.7,
-                        callback=on_chunk,
-                        batch_interval=0.1
-                    )
-                else:
-                    # Fallback to non-streaming
-                    response = llm_client.complete(
-                        agent_id="chat_simple",
-                        system_prompt=system_prompt,
-                        user_prompt=content,
-                        temperature=0.7
-                    )
-                    self._result_queue.put(('chunk', response.content))
-
-                self._result_queue.put(('done', None))
-
-            except Exception as e:
-                logger.error(f"LLM error: {e}")
-                self._result_queue.put(('error', str(e)))
-            finally:
-                # Thread-safe GUI update: force reset streaming state
-                self.after_idle(self._force_reset_streaming)
-
-        self.thread_manager.start_thread(process)
-
-    def _process_workflow_mode(self, content: str):
-        """Process message in workflow (multi-agent) mode."""
+        Uses FelixAgent for direct inference - Felix responds AS Felix,
+        not as the raw underlying LLM. This maintains Felix's identity
+        while being lightweight (no multi-agent orchestration).
+        """
         # Update status to sending
         self._update_connection_status("sending")
 
@@ -641,22 +594,99 @@ class ChatTab(ResponsiveTab):
                 self._input_area.set_streaming(False)
             return
 
+        # Get conversation history for context
+        conversation_history = self.current_session.get_context_messages(limit=10)
+
+        # Run in background thread
+        def process():
+            try:
+                from src.workflows.felix_inference import run_felix
+
+                # Streaming callback for direct mode
+                def on_chunk(chunk_text):
+                    self._result_queue.put(('chunk', chunk_text))
+
+                # Run Felix in direct mode
+                result = run_felix(
+                    felix_system=felix_system,
+                    user_input=content,
+                    mode="direct",
+                    streaming_callback=on_chunk,
+                    knowledge_enabled=self.current_session.knowledge_enabled,
+                    conversation_history=conversation_history
+                )
+
+                # Signal completion
+                self._result_queue.put(('done', None))
+
+            except Exception as e:
+                logger.error(f"Felix error: {e}")
+                self._result_queue.put(('error', str(e)))
+            finally:
+                # Thread-safe GUI update: force reset streaming state
+                self.after_idle(self._force_reset_streaming)
+
+        self.thread_manager.start_thread(process)
+
+    def _process_workflow_mode(self, content: str):
+        """Process message in workflow (multi-agent) mode.
+
+        Uses FelixAgent for full orchestration - Felix spawns specialist
+        agents (Research, Analysis, Critic) and synthesizes their outputs.
+        The response still comes FROM Felix as the unified identity.
+        """
+        # Update status to sending
+        self._update_connection_status("sending")
+
+        # Start streaming message
+        streaming_msg = self.current_session.start_assistant_message()
+
+        # Add streaming bubble to UI
+        streaming_bubble = None
+        if self._message_area:
+            streaming_bubble = self._message_area.add_streaming_message()
+
+        # Get Felix system from main app
+        felix_system = self._get_felix_system()
+
+        if not felix_system:
+            error_content = "Felix system not available. Please start the system first."
+            self.current_session.append_to_streaming(error_content)
+            self.current_session.finish_streaming()
+
+            if streaming_bubble:
+                streaming_bubble.update_content(error_content)
+                streaming_bubble.finish_streaming()
+
+            if self._input_area:
+                self._input_area.set_streaming(False)
+            return
+
+        # Get conversation history for context
+        conversation_history = self.current_session.get_context_messages(limit=10)
+
         # Run workflow in background
         def process():
             try:
-                # Run Felix workflow
-                from src.workflows.workflow_engine import run_felix_workflow
+                from src.workflows.felix_inference import run_felix
 
-                result = run_felix_workflow(
+                # Streaming callback for workflow mode (receives agent name and chunk)
+                def on_thinking(agent_name, chunk_text):
+                    self._result_queue.put(('thinking', (agent_name, chunk_text)))
+
+                # Run Felix in full workflow mode
+                result = run_felix(
                     felix_system=felix_system,
-                    task_input=content,
-                    streaming_callback=lambda agent, chunk: self._result_queue.put(('thinking', (agent, chunk)))
+                    user_input=content,
+                    mode="full",
+                    streaming_callback=on_thinking,
+                    knowledge_enabled=self.current_session.knowledge_enabled,
+                    conversation_history=conversation_history
                 )
 
-                # Extract synthesis
-                synthesis = result.get("centralpost_synthesis", {})
-                final_content = synthesis.get("synthesis_content", "No response generated.")
-                confidence = synthesis.get("confidence", 0.0)
+                # Extract final content and confidence
+                final_content = result.get('content', 'No response generated.')
+                confidence = result.get('confidence', 0.0)
 
                 self._result_queue.put(('workflow_done', (final_content, confidence)))
 
@@ -686,7 +716,7 @@ class ChatTab(ResponsiveTab):
             logger.info("Generation stopped by user")
 
     def _poll_results(self):
-        """Poll the result queue for updates."""
+        """Poll the result queue for updates and check for pending approvals."""
         try:
             while not self._result_queue.empty():
                 msg_type, data = self._result_queue.get_nowait()
@@ -695,13 +725,19 @@ class ChatTab(ResponsiveTab):
                     # Update status to streaming on first chunk
                     self._update_connection_status("streaming")
 
-                    # Append streaming content
-                    if self.current_session:
-                        self.current_session.append_to_streaming(data)
+                    # Just accumulate and display - NO pattern detection during streaming
+                    # Pattern detection happens AFTER streaming completes (in 'done' handler)
+                    # This prevents false positives from partial/incomplete content
+                    self._content_buffer += data
 
-                    # Update UI
+                    # Append chunk to UI (incremental, no re-render - fixes X11 BadAlloc)
                     if self._message_area and self._message_area._streaming_bubble:
                         self._message_area._streaming_bubble.append_content(data)
+
+                    # Update session with full buffer for persistence
+                    if self.current_session:
+                        if self.current_session.state.current_streaming_message:
+                            self.current_session.state.current_streaming_message.content = self._content_buffer
 
                 elif msg_type == 'thinking':
                     agent, content = data
@@ -715,6 +751,29 @@ class ChatTab(ResponsiveTab):
                     # Finish streaming (simple mode)
                     self._update_connection_status("connected")
 
+                    # NOW run pattern detection on COMPLETE content
+                    # This prevents false positives from partial/incomplete content during streaming
+                    # Skip pattern detection on continuation responses (prevents loops)
+                    if self._content_buffer and not self._is_continuation:
+                        cleaned, actions = self._extract_system_actions(self._content_buffer)
+
+                        if actions:
+                            # Update bubble with cleaned content (patterns removed)
+                            if self._message_area and self._message_area._streaming_bubble:
+                                self._message_area._streaming_bubble.set_content(cleaned)
+
+                            # Process detected actions
+                            for action in actions:
+                                self._handle_detected_action(action['command'])
+
+                            # Update session with cleaned content
+                            if self.current_session:
+                                if self.current_session.state.current_streaming_message:
+                                    self.current_session.state.current_streaming_message.content = cleaned
+
+                    self._content_buffer = ""  # Reset buffer
+                    self._is_continuation = False  # Reset continuation flag
+
                     if self.current_session:
                         self.current_session.finish_streaming()
 
@@ -727,6 +786,14 @@ class ChatTab(ResponsiveTab):
                 elif msg_type == 'workflow_done':
                     final_content, confidence = data
                     self._update_connection_status("connected")
+                    self._content_buffer = ""  # Reset buffer
+
+                    # Check final content for patterns too
+                    cleaned, actions = self._extract_system_actions(final_content)
+                    if actions:
+                        for action in actions:
+                            self._handle_detected_action(action['command'])
+                        final_content = cleaned
 
                     if self.current_session:
                         self.current_session.append_to_streaming(final_content)
@@ -742,6 +809,7 @@ class ChatTab(ResponsiveTab):
                 elif msg_type == 'error':
                     error_msg = f"Error: {data}"
                     self._update_connection_status("error", f"● Error: {data[:30]}")
+                    self._content_buffer = ""  # Reset buffer
 
                     if self.current_session:
                         self.current_session.append_to_streaming(error_msg)
@@ -753,6 +821,9 @@ class ChatTab(ResponsiveTab):
 
                     if self._input_area:
                         self._input_area.set_streaming(False)
+
+            # Poll for pending approval requests from Felix
+            self._poll_approval_messages()
 
         except Exception as e:
             logger.error(f"Error polling results: {e}")
@@ -787,6 +858,695 @@ class ChatTab(ResponsiveTab):
             text=message or default_text,
             text_color=self.theme_manager.get_color(color_key)
         )
+
+    # =========================================================================
+    # SYSTEM ACTION HANDLING
+    # =========================================================================
+
+    def _extract_system_actions(self, content: str) -> Tuple[str, List[Dict[str, Any]]]:
+        """
+        Extract SYSTEM_ACTION_NEEDED patterns from content.
+
+        Args:
+            content: Text content that may contain action patterns
+
+        Returns:
+            Tuple of (cleaned_content, list_of_actions)
+            Each action is a dict with 'command' and 'span' keys
+        """
+        actions = []
+
+        for match in SYSTEM_ACTION_PATTERN.finditer(content):
+            command = match.group(1).strip()
+
+            # Strip surrounding quotes if present
+            if len(command) >= 2 and command[0] in '"\'':
+                if command[-1] == command[0]:
+                    command = command[1:-1]
+
+            actions.append({
+                "command": command,
+                "span": match.span()
+            })
+
+        # Remove patterns from content
+        cleaned = SYSTEM_ACTION_PATTERN.sub('', content)
+
+        # Clean up extra whitespace/newlines left behind
+        cleaned = re.sub(r'\n\s*\n', '\n', cleaned).strip()
+
+        return cleaned, actions
+
+    def _poll_approval_messages(self):
+        """Poll for pending approval requests from Felix's SystemCommandManager."""
+        felix_system = self._get_felix_system()
+        if not felix_system:
+            return
+
+        # Get SystemCommandManager
+        scm = getattr(felix_system, 'system_command_manager', None)
+        if not scm:
+            return
+
+        try:
+            # Get pending actions for current workflow
+            pending = scm.get_pending_actions(workflow_id=self._current_workflow_id)
+
+            for action in pending:
+                approval_id = action.get('approval_id')
+                if not approval_id:
+                    continue
+
+                # Skip if already displayed
+                if approval_id in self._displayed_approvals:
+                    continue
+
+                # Mark as displayed
+                self._displayed_approvals.add(approval_id)
+
+                # Show approval bubble
+                self._show_approval_bubble(action)
+
+        except Exception as e:
+            logger.debug(f"Error polling approvals: {e}")
+
+    def _show_approval_bubble(self, action: dict):
+        """Display an ActionBubble for a pending approval from Felix."""
+        if not self._message_area:
+            return
+
+        approval_id = action.get('approval_id')
+        command = action.get('command', '')
+        trust_level = action.get('trust_level', 'review')
+
+        # Convert TrustLevel enum to string if needed
+        if hasattr(trust_level, 'value'):
+            trust_level = trust_level.value
+
+        logger.info(f"Showing approval bubble: {command[:50]}... (approval_id: {approval_id})")
+
+        # Create the action bubble with approval_id bound to callbacks
+        bubble = self._message_area.add_action_bubble(
+            command=command,
+            trust_level=trust_level,
+            on_approve=lambda b, cmd: self._approve_felix_action(approval_id, b),
+            on_deny=lambda b, cmd: self._deny_felix_action(approval_id, b)
+        )
+
+        # Track the bubble
+        self._approval_bubbles[approval_id] = bubble
+
+    def _handle_detected_action(self, command: str):
+        """
+        Route a detected SYSTEM_ACTION_NEEDED pattern through Felix.
+
+        Instead of executing directly via subprocess, we route through
+        Felix's SystemCommandManager which handles trust classification,
+        approval workflow, and proper execution.
+
+        Flow by trust level:
+        - SAFE: Auto-executes immediately, result shown inline
+        - REVIEW: Creates pending approval, picked up by _poll_approval_messages()
+        - BLOCKED: Denied immediately, result shown inline
+
+        Args:
+            command: The command detected in the LLM response
+        """
+        felix_system = self._get_felix_system()
+        if not felix_system:
+            logger.warning("Cannot route action: Felix system not available")
+            self._show_system_message(f"Cannot execute '{command}': Felix system not running")
+            return
+
+        # Get SystemCommandManager
+        scm = getattr(felix_system, 'system_command_manager', None)
+        if not scm:
+            logger.warning("Cannot route action: SystemCommandManager not available")
+            self._show_system_message(f"Cannot execute '{command}': SystemCommandManager not available")
+            return
+
+        # Create workflow ID if not set (for Simple mode)
+        if not self._current_workflow_id:
+            self._current_workflow_id = f"chat_{uuid.uuid4().hex[:8]}"
+            # Set workflow on CentralPost if available
+            central_post = getattr(felix_system, 'central_post', None)
+            if central_post and hasattr(central_post, 'set_current_workflow'):
+                central_post.set_current_workflow(self._current_workflow_id)
+
+        # Run in background thread to not block UI
+        def do_request():
+            try:
+                # Request action through Felix's proper channel
+                # This will classify trust, create approval if needed, or auto-execute if SAFE
+                action_id = scm.request_system_action(
+                    agent_id="chat_user",
+                    command=command,
+                    context="Chat session request",
+                    workflow_id=self._current_workflow_id,
+                    cwd=self._get_project_root()
+                )
+
+                logger.info(f"Routed action through Felix: {action_id}")
+
+                # Check what happened:
+                # 1. SAFE → executed immediately, result available
+                # 2. REVIEW → pending approval created (picked up by _poll_approval_messages)
+                # 3. BLOCKED → denial result available
+
+                result = scm.get_action_result(action_id)
+                if result:
+                    # SAFE or BLOCKED - show result inline (no bubble needed)
+                    self.after(0, lambda r=result: self._show_command_result(command, r))
+                # else: REVIEW - _poll_approval_messages() will pick it up and show bubble
+
+            except Exception as e:
+                logger.error(f"Error routing action through Felix: {e}")
+                self.after(0, lambda: self._show_system_message(f"Error executing '{command}': {e}"))
+
+        thread = threading.Thread(target=do_request, daemon=True)
+        thread.start()
+
+    def _show_command_result(self, command: str, result):
+        """
+        Show command execution result inline in the CURRENT streaming bubble.
+
+        Appends the command output directly to the existing Felix response,
+        creating a seamless Claude Code-like experience where commands and
+        their results appear inline within the assistant's message.
+
+        Args:
+            command: The command that was executed
+            result: CommandResult from Felix's execution
+        """
+        # Extract result data
+        success = getattr(result, 'success', False)
+        stdout = getattr(result, 'stdout', '') or ''
+        stderr = getattr(result, 'stderr', '') or ''
+        exit_code = getattr(result, 'exit_code', -1)
+
+        # Format result as inline code block
+        if success:
+            output = stdout.strip() if stdout.strip() else "(no output)"
+            inline_result = f"\n\n```\n$ {command}\n{output}\n```\n"
+        else:
+            error_msg = stderr.strip() if stderr.strip() else "(command failed)"
+            inline_result = f"\n\n```\n$ {command}\nFailed (exit {exit_code}): {error_msg}\n```\n"
+
+        # Append to EXISTING streaming bubble (not a separate system message)
+        if self._message_area and self._message_area._streaming_bubble:
+            self._content_buffer += inline_result
+            self._message_area._streaming_bubble.update_content(self._content_buffer)
+
+            # Also update session content
+            if self.current_session and self.current_session.state.current_streaming_message:
+                self.current_session.state.current_streaming_message.content = self._content_buffer
+
+        logger.info(f"Appended command result inline: {command[:30]}... success={success}")
+
+        # Feed result back to Felix for continued response
+        result_dict = {
+            'success': success,
+            'stdout': stdout,
+            'stderr': stderr,
+            'exit_code': exit_code
+        }
+        self._feed_result_to_felix(command, result_dict)
+
+    def _show_system_message(self, message: str):
+        """
+        Show a system/error message in chat.
+
+        Args:
+            message: Message to display
+        """
+        if self._message_area:
+            self._message_area.add_system_message(message)
+        logger.info(f"System message: {message[:50]}...")
+
+    def _approve_felix_action(self, approval_id: str, bubble: ActionBubble):
+        """
+        Approve an action through Felix's approval system.
+
+        Args:
+            approval_id: The approval ID from Felix's ApprovalManager
+            bubble: The ActionBubble to update
+        """
+        bubble.set_status(ActionStatus.EXECUTING)
+
+        felix_system = self._get_felix_system()
+        if not felix_system:
+            bubble.set_status(ActionStatus.DENIED, output="Felix system not available")
+            return
+
+        scm = getattr(felix_system, 'system_command_manager', None)
+        if not scm:
+            bubble.set_status(ActionStatus.DENIED, output="SystemCommandManager not available")
+            return
+
+        # Capture command for result feedback
+        command = bubble.command
+
+        # Run approval in background thread (this unblocks waiting workflow)
+        def do_approve():
+            try:
+                # Import ApprovalDecision
+                try:
+                    from src.execution.approval_manager import ApprovalDecision
+                    decision = ApprovalDecision.APPROVE_ONCE
+                except ImportError:
+                    decision = "approve_once"
+
+                # Approve through Felix's system (returns bool, not CommandResult)
+                success = scm.approve_system_action(
+                    approval_id=approval_id,
+                    decision=decision,
+                    decided_by="chat_user"
+                )
+
+                if success:
+                    # Get actual result after execution
+                    result = scm.get_action_result(approval_id)
+                    if result:
+                        stdout = getattr(result, 'stdout', '') or ''
+                        stderr = getattr(result, 'stderr', '') or ''
+                        exit_code = getattr(result, 'exit_code', 0)
+                        output = stdout.strip() if stdout.strip() else (stderr.strip() if stderr.strip() else "(no output)")
+                    else:
+                        stdout, stderr, exit_code = '', '', 0
+                        output = "(command completed)"
+
+                    self.after(0, lambda: bubble.set_status(
+                        ActionStatus.COMPLETE,
+                        output=output,
+                        exit_code=exit_code
+                    ))
+
+                    # Feed result back to Felix for continuation
+                    result_dict = {
+                        'success': exit_code == 0,
+                        'stdout': stdout,
+                        'stderr': stderr,
+                        'exit_code': exit_code
+                    }
+                    self.after(0, lambda: self._feed_result_to_felix(command, result_dict))
+                else:
+                    self.after(0, lambda: bubble.set_status(
+                        ActionStatus.DENIED,
+                        output="Approval failed - see logs for details"
+                    ))
+
+            except Exception as e:
+                logger.error(f"Error approving action: {e}")
+                self.after(0, lambda: bubble.set_status(
+                    ActionStatus.DENIED,
+                    output=f"Error: {e}"
+                ))
+
+        thread = threading.Thread(target=do_approve, daemon=True)
+        thread.start()
+
+    def _deny_felix_action(self, approval_id: str, bubble: ActionBubble):
+        """
+        Deny an action through Felix's approval system.
+
+        Args:
+            approval_id: The approval ID from Felix's ApprovalManager
+            bubble: The ActionBubble to update
+        """
+        felix_system = self._get_felix_system()
+        if felix_system:
+            scm = getattr(felix_system, 'system_command_manager', None)
+            if scm and hasattr(scm, 'deny_system_action'):
+                try:
+                    scm.deny_system_action(approval_id, reason="Denied by user in chat")
+                except Exception as e:
+                    logger.error(f"Error denying action: {e}")
+
+        bubble.set_status(ActionStatus.DENIED)
+        logger.info(f"Denied action: {approval_id}")
+
+    def _handle_felix_approval_result(self, bubble: ActionBubble, result):
+        """
+        Handle the result of a Felix approval/execution.
+
+        Args:
+            bubble: The ActionBubble to update
+            result: CommandResult from Felix's execution
+        """
+        if result is None:
+            bubble.set_status(ActionStatus.DENIED, output="No result returned")
+            return
+
+        # Extract output
+        stdout = getattr(result, 'stdout', '') or ''
+        stderr = getattr(result, 'stderr', '') or ''
+        exit_code = getattr(result, 'exit_code', 0)
+        success = getattr(result, 'success', exit_code == 0)
+
+        # Combine output
+        output = stdout
+        if stderr:
+            if output:
+                output += '\n--- stderr ---\n'
+            output += stderr
+
+        # Update bubble
+        bubble.set_status(
+            ActionStatus.COMPLETE,
+            output=output or "(no output)",
+            exit_code=exit_code
+        )
+
+        logger.info(f"Action completed: exit_code={exit_code}, success={success}")
+
+    def _approve_local_action(self, local_id: str, bubble: ActionBubble, command: str):
+        """
+        Handle approval of a locally-detected action (when Felix wasn't available initially).
+
+        Tries to route through Felix. If Felix is now available, uses proper approval flow.
+        If still unavailable, shows error - no bypass execution allowed.
+
+        Args:
+            local_id: Local tracking ID for the action
+            bubble: The ActionBubble that was approved
+            command: The command to execute
+        """
+        logger.info(f"Local action approved: {command[:50]}...")
+
+        # Try to route through Felix's SystemCommandManager
+        felix_system = self._get_felix_system()
+        if not felix_system:
+            bubble.set_status(ActionStatus.DENIED, output="Felix system not available. Cannot execute commands.")
+            return
+
+        scm = getattr(felix_system, 'system_command_manager', None)
+        if not scm:
+            bubble.set_status(ActionStatus.DENIED, output="SystemCommandManager not available. Cannot execute commands.")
+            return
+
+        bubble.set_status(ActionStatus.EXECUTING)
+
+        # Create workflow ID if needed
+        if not self._current_workflow_id:
+            self._current_workflow_id = f"chat_{uuid.uuid4().hex[:8]}"
+
+        # Run through Felix in background thread
+        def do_execute():
+            try:
+                # Request through Felix (this handles trust classification)
+                action_id = scm.request_system_action(
+                    agent_id="chat_user",
+                    command=command,
+                    context="Chat session - user approved local action",
+                    workflow_id=self._current_workflow_id,
+                    cwd=self._get_project_root()
+                )
+
+                # For SAFE commands, request_system_action executes immediately
+                # Check if result is already available
+                result = scm.get_action_result(action_id)
+                if result:
+                    # SAFE command executed
+                    self.after(0, lambda: self._handle_felix_approval_result(bubble, result))
+                    return
+
+                # For REVIEW commands, we need to approve since user already clicked approve
+                pending = scm.get_pending_actions(workflow_id=self._current_workflow_id)
+                for action in pending:
+                    if action.get('command') == command:
+                        # Import ApprovalDecision
+                        try:
+                            from src.execution.approval_manager import ApprovalDecision
+                            decision = ApprovalDecision.APPROVE_ONCE
+                        except ImportError:
+                            decision = "approve_once"
+
+                        success = scm.approve_system_action(
+                            approval_id=action['approval_id'],
+                            decision=decision,
+                            decided_by="chat_user"
+                        )
+
+                        if success:
+                            # Get the result after approval
+                            result = scm.get_action_result(action_id)
+                            if result:
+                                self.after(0, lambda r=result: self._handle_felix_approval_result(bubble, r))
+                            else:
+                                self.after(0, lambda: bubble.set_status(
+                                    ActionStatus.COMPLETE,
+                                    output="Command executed through Felix (see Terminal tab for output)",
+                                    exit_code=0
+                                ))
+                        else:
+                            self.after(0, lambda: bubble.set_status(
+                                ActionStatus.DENIED,
+                                output="Approval failed"
+                            ))
+                        return
+
+                # No pending action found - command might have been SAFE and auto-executed
+                # Or BLOCKED and denied
+                self.after(0, lambda: bubble.set_status(
+                    ActionStatus.COMPLETE,
+                    output="Command processed through Felix (see Terminal tab for details)",
+                    exit_code=0
+                ))
+
+            except Exception as e:
+                logger.error(f"Error executing local action through Felix: {e}")
+                self.after(0, lambda: bubble.set_status(ActionStatus.DENIED, output=f"Error: {e}"))
+
+        thread = threading.Thread(target=do_execute, daemon=True)
+        thread.start()
+
+    def _deny_local_action(self, local_id: str, bubble: ActionBubble, command: str):
+        """
+        Handle denial of a locally-detected action.
+
+        Args:
+            local_id: Local tracking ID for the action
+            bubble: The ActionBubble that was denied
+            command: The command that was denied
+        """
+        logger.info(f"Local action denied: {command[:50]}...")
+        bubble.set_status(ActionStatus.DENIED)
+
+        # Feed denial back to Felix for continued conversation
+        self._feed_denial_to_felix(command)
+
+    def _create_action_bubble(self, command: str):
+        """
+        Create an action approval bubble for a command (fallback when Felix unavailable).
+
+        Routes through Felix if possible, otherwise creates a disabled bubble
+        showing that Felix system is required.
+
+        Args:
+            command: The command Felix wants to execute
+        """
+        if not self._message_area:
+            logger.warning("Cannot create action bubble: no message area")
+            return
+
+        # Get trust level from TrustManager if available
+        trust_level = self._classify_command_trust(command)
+
+        logger.info(f"Creating action bubble: {command[:50]}... (trust: {trust_level})")
+
+        # Generate a local approval ID for tracking
+        local_approval_id = f"local_{uuid.uuid4().hex[:8]}"
+
+        # Create the action bubble - route through Felix methods
+        bubble = self._message_area.add_action_bubble(
+            command=command,
+            trust_level=trust_level,
+            on_approve=lambda b, cmd: self._approve_local_action(local_approval_id, b, cmd),
+            on_deny=lambda b, cmd: self._deny_local_action(local_approval_id, b, cmd)
+        )
+
+        # Track the bubble
+        self._approval_bubbles[local_approval_id] = bubble
+
+    def _classify_command_trust(self, command: str) -> str:
+        """
+        Classify a command's trust level.
+
+        Args:
+            command: The command to classify
+
+        Returns:
+            Trust level string: 'safe', 'review', or 'blocked'
+        """
+        try:
+            # Try to get TrustManager from Felix system
+            felix_system = self._get_felix_system()
+            if felix_system and hasattr(felix_system, 'trust_manager'):
+                trust_manager = felix_system.trust_manager
+                level = trust_manager.classify_command(command)
+                return level.value  # TrustLevel enum to string
+        except Exception as e:
+            logger.debug(f"Could not use TrustManager: {e}")
+
+        # Fallback: simple pattern-based classification
+        blocked_patterns = [
+            r'rm\s+-rf', r'sudo\s+rm', r'mkfs', r'dd\s+if=',
+            r'>\s*/dev/', r'chmod\s+777', r'curl.*\|\s*sh',
+            r'wget.*\|\s*sh', r'\.ssh/', r'\.aws/', r'password'
+        ]
+
+        safe_patterns = [
+            r'^ls\s', r'^pwd$', r'^cat\s', r'^head\s', r'^tail\s',
+            r'^echo\s', r'^date$', r'^whoami$', r'^hostname$',
+            r'^git\s+status', r'^git\s+log', r'^git\s+diff',
+            r'^pip\s+list', r'^pip\s+show', r'^python\s+--version'
+        ]
+
+        # Check blocked first
+        for pattern in blocked_patterns:
+            if re.search(pattern, command, re.IGNORECASE):
+                return "blocked"
+
+        # Check safe
+        for pattern in safe_patterns:
+            if re.search(pattern, command, re.IGNORECASE):
+                return "safe"
+
+        # Default to review
+        return "review"
+
+    def _get_project_root(self) -> str:
+        """Get the project root directory."""
+        import os
+        # Try to get from Felix system
+        felix_system = self._get_felix_system()
+        if felix_system and hasattr(felix_system, 'project_root'):
+            return str(felix_system.project_root)
+        # Fallback to current directory
+        return os.getcwd()
+
+    def _feed_result_to_felix(self, command: str, result: Dict[str, Any]):
+        """
+        Feed command result back to Felix for continued response.
+
+        Args:
+            command: The executed command
+            result: Execution result dict
+        """
+        # Build context message with result
+        context = f"\n[Command executed: {command}]\n"
+        if result.get('success'):
+            stdout = result.get('stdout', '').strip()
+            if stdout:
+                # Truncate very long output
+                if len(stdout) > 2000:
+                    stdout = stdout[:2000] + "\n... (output truncated)"
+                context += f"Output:\n```\n{stdout}\n```\n"
+            else:
+                context += "(command completed with no output)\n"
+        else:
+            stderr = result.get('stderr', '').strip()
+            context += f"Error (exit {result.get('exit_code', -1)}):\n```\n{stderr}\n```\n"
+
+        # Continue the conversation with this context
+        self._continue_with_context(context)
+
+    def _feed_denial_to_felix(self, command: str):
+        """
+        Notify Felix that a command was denied.
+
+        Args:
+            command: The denied command
+        """
+        context = f"\n[Command denied by user: {command}]\n"
+        context += "The user chose not to execute this command. Please continue without this information or suggest an alternative approach.\n"
+
+        self._continue_with_context(context)
+
+    def _continue_with_context(self, context: str):
+        """
+        Continue Felix's response in the EXISTING streaming bubble.
+
+        Feeds the command result back to the LLM so Felix can use it
+        to complete the answer. The continuation streams into the same
+        bubble, creating a seamless Claude Code-like experience.
+
+        Args:
+            context: Command result context to include
+        """
+        if not self.current_session or not self._message_area:
+            return
+
+        logger.info(f"Continuing with context: {context[:100]}...")
+
+        # Mark this as a continuation - skip pattern detection on response
+        self._is_continuation = True
+
+        # Get the LLM client
+        llm_client = self._get_llm_client()
+        if not llm_client:
+            logger.warning("Cannot continue: no LLM client")
+            return
+
+        # Get original user question
+        original_question = ""
+        for msg in reversed(self.current_session.messages):
+            if msg.role == "user":
+                original_question = msg.content
+                break
+
+        # Build system prompt with command result context
+        system_prompt = self._build_system_prompt() + f"""
+
+COMMAND EXECUTION RESULT:
+{context}
+
+Use this result to answer the user's question.
+
+IF THE COMMAND FAILED OR RETURNED NO RESULTS:
+- Do NOT repeat the same command - try a DIFFERENT approach
+- For file search: use `find . -name "filename"` instead of `ls | grep`
+- For reading files: verify the path exists first with `find` before using `cat`
+- If exit code is non-zero, the command failed - acknowledge and try alternatives"""
+
+        # Build user prompt WITH conversation history for full context
+        conversation_history = self._format_conversation_history(limit=10)
+        if conversation_history:
+            user_prompt = f"{conversation_history}\n\nBased on the command result above, continue answering: {original_question}"
+        else:
+            user_prompt = f"Based on the command result above, please answer: {original_question}"
+
+        # DON'T create new bubble - continue in existing one
+        # The streaming bubble already exists from the initial response
+
+        # Run continuation in background
+        def process_continuation():
+            try:
+                def on_chunk(chunk):
+                    # Handle both string chunks and StreamingChunk objects
+                    if hasattr(chunk, 'content'):
+                        self._result_queue.put(('chunk', chunk.content))
+                    else:
+                        self._result_queue.put(('chunk', str(chunk)))
+
+                # Use streaming completion with correct API
+                llm_client.complete_streaming(
+                    agent_id="chat_continuation",
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    temperature=0.7,
+                    callback=on_chunk,
+                    batch_interval=0.1
+                )
+
+                self._result_queue.put(('done', None))
+
+            except Exception as e:
+                logger.error(f"Continuation error: {e}")
+                self._result_queue.put(('error', str(e)))
+
+        thread = threading.Thread(target=process_continuation, daemon=True)
+        thread.start()
 
     def _get_llm_client(self):
         """Get LLM client - requires Felix system to be running."""
@@ -858,33 +1618,57 @@ class ChatTab(ResponsiveTab):
             logger.debug(f"Could not get knowledge context: {e}")
             return ""
 
+    def _format_conversation_history(self, limit: int = 10) -> str:
+        """
+        Format recent conversation history for inclusion in prompts.
+
+        This enables Felix to maintain context across multiple messages,
+        like knowing which file was discussed when the user says "that file".
+
+        Args:
+            limit: Maximum number of messages to include
+
+        Returns:
+            Formatted conversation history string
+        """
+        if not self.current_session:
+            return ""
+
+        messages = self.current_session.get_context_messages(limit=limit)
+        if not messages:
+            return ""
+
+        history_parts = ["CONVERSATION HISTORY:"]
+        for msg in messages:
+            # get_context_messages() returns dicts, not objects
+            role = "USER" if msg['role'] == "user" else "FELIX"
+            # Truncate long messages to avoid context bloat
+            content = msg['content']
+            if len(content) > 500:
+                content = content[:500] + "..."
+            history_parts.append(f"{role}: {content}")
+
+        return "\n".join(history_parts)
+
     def _build_system_prompt(self, knowledge_context: str = "") -> str:
-        """Build system prompt for simple mode."""
-        base_prompt = """You are Felix, an air-gapped multi-agent AI operating entirely offline with zero external dependencies.
+        """Build system prompt for simple mode.
 
-IDENTITY:
-- Part of a collaborative team progressing from exploration to synthesis along a helical path
-- Your position on the helix determines your focus: broad exploration (top) → precise synthesis (bottom)
-- Trust your fellow agents. Build on their work. Don't repeat what's already been discovered.
-- You are NOT ChatGPT, GPT, Claude, or any OpenAI/Anthropic product. You are Felix.
+        Loads the system prompt from config/chat_system_prompt.md with
+        template variable substitution. Falls back to a minimal prompt
+        if the file is not found.
+        """
+        # Load from external file with variable substitution
+        base_prompt = load_system_prompt()
 
-CONSTRAINTS:
-- OFFLINE-ONLY: No internet, no external APIs, no cloud services. Everything is local.
-- NO HALLUCINATION: Never fabricate file paths, function names, dates, or system details.
-- MATCH VERBOSITY TO TASK: Simple question = direct answer. Complex task = structured response.
+        # Log prompt info on first load for debugging
+        info = get_prompt_info()
+        if info.get("estimated_tokens"):
+            logger.debug(
+                f"System prompt: {info['estimated_tokens']} estimated tokens, "
+                f"{info['size_chars']} chars"
+            )
 
-SYSTEM COMMANDS:
-When you need system information, use: SYSTEM_ACTION_NEEDED: [command]
-- SAFE (auto-execute): ls, pwd, cat, date, pip list
-- REVIEW (needs approval): mkdir, pip install, git commit
-- BLOCKED (never): rm -rf, sudo, credential access
-
-PHILOSOPHY:
-- Precision over verbosity
-- Collaboration over duplication
-- Facts over speculation
-- Action over explanation"""
-
+        # Knowledge context is appended if provided
         if knowledge_context:
             return f"{base_prompt}\n\n{knowledge_context}"
 
@@ -992,15 +1776,26 @@ PHILOSOPHY:
     # =========================================================================
 
     def _setup_keyboard_shortcuts(self):
-        """Setup global keyboard shortcuts for chat tab."""
+        """Setup keyboard shortcuts for chat tab."""
         import platform
         ctrl = "Command" if platform.system() == "Darwin" else "Control"
 
-        # Bind shortcuts (only active when this tab has focus)
-        self.bind_all(f"<{ctrl}-n>", self._on_new_chat_shortcut)
-        self.bind_all(f"<{ctrl}-Shift-N>", self._on_new_folder_shortcut)
-        self.bind_all(f"<{ctrl}-k>", self._on_toggle_knowledge_shortcut)
-        self.bind_all(f"<{ctrl}-m>", self._on_toggle_mode_shortcut)
+        # Bind shortcuts to this widget (CustomTkinter doesn't support bind_all)
+        # These will work when focus is within the chat tab
+        self.bind(f"<{ctrl}-n>", self._on_new_chat_shortcut)
+        self.bind(f"<{ctrl}-Shift-N>", self._on_new_folder_shortcut)
+        self.bind(f"<{ctrl}-k>", self._on_toggle_knowledge_shortcut)
+        self.bind(f"<{ctrl}-m>", self._on_toggle_mode_shortcut)
+
+        # Also bind to the root window for global access
+        try:
+            root = self.winfo_toplevel()
+            root.bind(f"<{ctrl}-n>", self._on_new_chat_shortcut)
+            root.bind(f"<{ctrl}-Shift-N>", self._on_new_folder_shortcut)
+            root.bind(f"<{ctrl}-k>", self._on_toggle_knowledge_shortcut)
+            root.bind(f"<{ctrl}-m>", self._on_toggle_mode_shortcut)
+        except Exception:
+            pass  # Root binding is optional
 
     def _on_new_chat_shortcut(self, event=None):
         """Handle Ctrl/Cmd+N shortcut for new chat."""

@@ -320,20 +320,38 @@ class MessageBubble(ctk.CTkFrame):
 
     def update_content(self, content: str):
         """Update the message content (for streaming)."""
-        self.content = content
-        self._content_label.configure(text=self._format_content(content))
+        try:
+            self.content = content
+            formatted = self._format_content(content)
+            # Ensure we have valid content to display
+            if formatted:
+                self._content_label.configure(text=formatted)
+        except Exception as e:
+            logger.debug(f"Error updating content: {e}")
 
     def append_content(self, chunk: str):
         """Append content to the message (for streaming)."""
-        self.content += chunk
-        logger.info(f"MessageBubble append: total={len(self.content)} chars")
-        self._content_label.configure(text=self.content)
+        try:
+            self.content += chunk
+            logger.debug(f"MessageBubble append: total={len(self.content)} chars")
+            self._content_label.configure(text=self.content)
+        except Exception as e:
+            logger.debug(f"Error appending content: {e}")
 
     def set_wraplength(self, width: int):
         """Update the wrap length for responsive layout."""
-        # Account for padding
-        wrap_width = max(200, width - SPACE_SM * 4)
-        self._content_label.configure(wraplength=wrap_width)
+        try:
+            # Account for padding, ensure minimum of 200 to prevent X11 crash
+            wrap_width = max(200, width - SPACE_SM * 4)
+
+            # Cache to avoid redundant X11 operations
+            if hasattr(self, '_last_wraplength') and self._last_wraplength == wrap_width:
+                return
+
+            self._last_wraplength = wrap_width
+            self._content_label.configure(wraplength=wrap_width)
+        except Exception as e:
+            logger.debug(f"Error setting wraplength: {e}")
 
     def add_thinking_step(self, agent: str, content: str):
         """Add a thinking step (for streaming agent activity)."""
@@ -375,32 +393,125 @@ class StreamingMessageBubble(MessageBubble):
     """
     A message bubble optimized for streaming content.
 
+    Uses CTkTextbox instead of CTkLabel to enable incremental text
+    updates without triggering full pixmap regeneration on each chunk.
+    This prevents X11 BadAlloc crashes during long streaming responses.
+
     Shows a typing indicator while content is being received,
-    and efficiently updates as new chunks arrive.
+    and efficiently appends chunks as they arrive.
     """
+
+    # Height constraints for auto-resize
+    MIN_HEIGHT = 40
+    MAX_HEIGHT = 400
+    LINE_HEIGHT = 20  # Approximate pixels per line
 
     def __init__(self, master, **kwargs):
         """Initialize with empty content."""
         kwargs.setdefault("content", "")
         kwargs.setdefault("role", "assistant")
-        super().__init__(master, **kwargs)
 
         self._is_streaming = True
         self._typing_indicator = None
+        self._content_textbox = None  # Will be set in _setup_ui
+
+        super().__init__(master, **kwargs)
+
         self._show_typing_indicator()
+
+    def _setup_ui(self):
+        """Setup UI with CTkTextbox for streaming content."""
+        # Main container with padding
+        self.grid_columnconfigure(0, weight=1)
+
+        # Row counter for grid placement
+        current_row = 0
+
+        # Header with role label and timestamp
+        header_frame = ctk.CTkFrame(self, fg_color=self._bg_color, corner_radius=0)
+        header_frame.grid(row=current_row, column=0, sticky="ew", padx=SPACE_SM, pady=(SPACE_SM, SPACE_XS))
+        header_frame.grid_columnconfigure(0, weight=1)
+
+        role_label = ctk.CTkLabel(
+            header_frame,
+            text="FELIX",
+            font=ctk.CTkFont(size=FONT_CAPTION, weight="bold"),
+            text_color=self._fg_color,
+            fg_color=self._bg_color,
+            anchor="w"
+        )
+        role_label.grid(row=0, column=0, sticky="w")
+
+        time_label = ctk.CTkLabel(
+            header_frame,
+            text=self.timestamp.strftime("%H:%M"),
+            font=ctk.CTkFont(size=FONT_SMALL),
+            text_color=self._fg_color,
+            fg_color=self._bg_color,
+            anchor="e"
+        )
+        time_label.grid(row=0, column=1, sticky="e", padx=(SPACE_SM, 0))
+
+        # Copy button (hidden by default, shown on hover)
+        self._copy_btn = ctk.CTkButton(
+            header_frame,
+            text="Copy",
+            width=50,
+            height=20,
+            font=ctk.CTkFont(size=FONT_SMALL),
+            fg_color="transparent",
+            hover_color=self.theme_manager.get_color("bg_hover"),
+            text_color=self._fg_color,
+            command=self._copy_content
+        )
+        self._copy_btn.grid(row=0, column=2, sticky="e", padx=(SPACE_XS, 0))
+        self._copy_btn.grid_remove()  # Hide initially
+
+        current_row += 1
+        self._content_row = current_row  # Save for typing indicator placement
+
+        # Use CTkTextbox for streaming content (incremental updates)
+        self._content_textbox = ctk.CTkTextbox(
+            self,
+            font=ctk.CTkFont(size=FONT_BODY),
+            fg_color=self._bg_color,
+            text_color=self._fg_color,
+            wrap="word",
+            height=self.MIN_HEIGHT,
+            border_width=0,
+            activate_scrollbars=False,  # No scrollbars - bubble grows instead
+            state="disabled"
+        )
+        self._content_textbox.grid(
+            row=current_row, column=0, sticky="ew",
+            padx=SPACE_SM, pady=(0, SPACE_SM)
+        )
+
+        # Also create a dummy _content_label for compatibility with parent methods
+        # (some code may reference it, but we won't use it for display)
+        self._content_label = self._content_textbox
+
+        # Bind hover events for copy button
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
 
     def _show_typing_indicator(self):
         """Show typing indicator while waiting for content."""
-        if not self._typing_indicator:
-            self._typing_indicator = ctk.CTkLabel(
-                self,
-                text="●●●",
-                font=ctk.CTkFont(size=FONT_BODY),
-                text_color=self.theme_manager.get_color("fg_muted"),
-                fg_color=self._bg_color
-            )
-            # Place after content label (row 2 for streaming bubbles)
-            self._typing_indicator.grid(row=2, column=0, sticky="w", padx=SPACE_SM, pady=(0, SPACE_SM))
+        if self._typing_indicator or not hasattr(self, '_content_row'):
+            return
+
+        self._typing_indicator = ctk.CTkLabel(
+            self,
+            text="●●●",
+            font=ctk.CTkFont(size=FONT_BODY),
+            text_color=self.theme_manager.get_color("fg_muted"),
+            fg_color=self._bg_color
+        )
+        # Place after content textbox
+        self._typing_indicator.grid(
+            row=self._content_row + 1, column=0, sticky="w",
+            padx=SPACE_SM, pady=(0, SPACE_SM)
+        )
 
     def _hide_typing_indicator(self):
         """Hide typing indicator."""
@@ -409,11 +520,69 @@ class StreamingMessageBubble(MessageBubble):
             self._typing_indicator = None
 
     def append_content(self, chunk: str):
-        """Append streaming content and hide typing indicator."""
+        """
+        Append streaming content incrementally.
+
+        Uses textbox insert() which is O(1) for the new text,
+        unlike CTkLabel.configure(text=...) which re-renders everything.
+        """
         if self._is_streaming and not self.content:
             self._hide_typing_indicator()
 
-        super().append_content(chunk)
+        # Track content for persistence/copy
+        self.content += chunk
+
+        # Incremental insert - doesn't re-render existing text
+        self._content_textbox.configure(state="normal")
+        self._content_textbox.insert("end", chunk)
+        self._content_textbox.configure(state="disabled")
+
+        # Auto-resize height to fit content
+        self._auto_resize()
+
+    def update_content(self, content: str):
+        """
+        Replace entire content (used for SYSTEM_ACTION_NEEDED cleanup).
+
+        This is more expensive than append_content but only called
+        when pattern detection requires content modification.
+        """
+        self.set_content(content)
+
+    def set_content(self, content: str):
+        """
+        Set the entire textbox content, replacing existing text.
+
+        Use sparingly - prefer append_content for streaming.
+        """
+        self.content = content
+
+        self._content_textbox.configure(state="normal")
+        self._content_textbox.delete("1.0", "end")
+        if content:
+            self._content_textbox.insert("1.0", content)
+        self._content_textbox.configure(state="disabled")
+
+        self._auto_resize()
+
+    def _auto_resize(self):
+        """Resize textbox height to fit content."""
+        try:
+            # Get number of display lines (accounts for wrapping)
+            num_lines = int(self._content_textbox.index("end-1c").split(".")[0])
+            new_height = min(self.MAX_HEIGHT, max(self.MIN_HEIGHT, num_lines * self.LINE_HEIGHT))
+            self._content_textbox.configure(height=new_height)
+        except Exception as e:
+            logger.debug(f"Auto-resize error: {e}")
+
+    def set_wraplength(self, width: int):
+        """
+        Handle wrap length updates.
+
+        CTkTextbox handles wrapping automatically based on widget width,
+        so this is a no-op (unlike CTkLabel which needs explicit wraplength).
+        """
+        pass  # Textbox auto-wraps based on width
 
     def finish_streaming(self):
         """Mark streaming as complete."""

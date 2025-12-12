@@ -1,0 +1,736 @@
+"""
+Felix Agent - The Core Identity Layer
+
+This module implements the FelixAgent class, which represents Felix's unified
+identity across all interaction modes. Whether the user is asking a simple
+question or requesting complex multi-agent orchestration, Felix always responds
+AS Felix - not as the raw underlying LLM.
+
+The FelixAgent:
+- Embodies Felix's consistent identity (from config/chat_system_prompt.md)
+- Routes requests based on complexity or explicit mode selection
+- Handles direct inference for simple queries (no specialist agents)
+- Orchestrates specialists for complex tasks (full workflow)
+- Maintains knowledge brain integration
+- Supports system command execution via trust system
+"""
+
+import time
+import logging
+import re
+import uuid
+from pathlib import Path
+from datetime import datetime
+from typing import Optional, Dict, Any, List, Callable
+from dataclasses import dataclass
+
+# Felix framework imports for full integration
+from src.communication.message_types import Message, MessageType
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class FelixResponse:
+    """Response from FelixAgent processing."""
+    content: str
+    mode_used: str  # "direct", "light", "full"
+    complexity: str  # "SIMPLE_FACTUAL", "MEDIUM", "COMPLEX"
+    confidence: float = 0.0
+    thinking_steps: Optional[List[Dict[str, Any]]] = None
+    knowledge_sources: Optional[List[str]] = None
+    execution_time: float = 0.0
+    error: Optional[str] = None
+
+
+class FelixAgent:
+    """
+    The unified Felix persona - always responds AS Felix.
+
+    FelixAgent is the "face" of Felix that users interact with. It:
+    - Maintains Felix's consistent identity regardless of mode
+    - Routes requests to appropriate processing (direct, light, or full)
+    - Integrates with knowledge brain for context
+    - Handles system command execution via trust system
+    - Streams responses back to the UI
+
+    The key insight: Felix is NOT the specialist agents (Research, Analysis,
+    Critic). Felix is the conductor - the specialists are Felix's internal
+    thought processes. The response always comes FROM Felix.
+    """
+
+    def __init__(self, felix_system):
+        """
+        Initialize FelixAgent with access to Felix system components.
+
+        Args:
+            felix_system: Initialized FelixSystem instance providing:
+                - central_post: Hub-spoke communication
+                - lm_client: LLM client for inference
+                - knowledge_store: Knowledge brain
+                - task_memory: Learning system
+                - system_command_manager: Trust-based execution
+                - config: FelixConfig settings
+        """
+        self.felix_system = felix_system
+        self.central_post = felix_system.central_post
+        self.lm_client = felix_system.lm_client
+        self.knowledge_store = getattr(felix_system, 'knowledge_store', None)
+        self.task_memory = getattr(felix_system, 'task_memory', None)
+        self.system_command_manager = getattr(felix_system, 'system_command_manager', None)
+        self.config = felix_system.config
+
+        # Load Felix identity
+        self.identity_prompt = self._load_identity()
+
+        logger.info("FelixAgent initialized - Felix identity layer active")
+
+    def _load_identity(self) -> str:
+        """
+        Load Felix's identity from the system prompt configuration.
+
+        Returns:
+            str: Felix's system prompt defining identity and behavior
+        """
+        # Look for system prompt in config directory
+        project_root = Path(__file__).parent.parent.parent
+        prompt_path = project_root / "config" / "chat_system_prompt.md"
+
+        if prompt_path.exists():
+            try:
+                content = prompt_path.read_text(encoding='utf-8')
+                # Replace datetime placeholder
+                current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                content = content.replace("{{currentDateTime}}", current_datetime)
+                logger.debug(f"Loaded Felix identity from {prompt_path}")
+                return content
+            except Exception as e:
+                logger.warning(f"Failed to load Felix identity: {e}")
+
+        # Fallback minimal identity
+        return """You are Felix, an air-gapped multi-agent AI framework.
+You are NOT ChatGPT, GPT-4, Claude, or any cloud-based AI.
+You are Felix - a local, private, air-gapped AI assistant.
+Always identify yourself as Felix when asked about your identity."""
+
+    def classify_complexity(self, message: str) -> str:
+        """
+        Classify message complexity using SynthesisEngine patterns.
+
+        Args:
+            message: User's input message
+
+        Returns:
+            str: "SIMPLE_FACTUAL", "MEDIUM", or "COMPLEX"
+        """
+        # Use SynthesisEngine's classification if available
+        if hasattr(self.central_post, 'synthesis_engine'):
+            return self.central_post.synthesis_engine.classify_task_complexity(message)
+
+        # Fallback pattern matching
+        message_lower = message.lower()
+
+        # Simple factual patterns
+        simple_patterns = [
+            r'\b(what|when|who|where)\s+(is|are|was|were)\b',
+            r'\bwhat\s+time\b',
+            r'\bwhat\s+date\b',
+            r'\bhello\b',
+            r'\bhi\b',
+            r'\bhow\s+are\s+you\b',
+        ]
+
+        for pattern in simple_patterns:
+            if re.search(pattern, message_lower):
+                return "SIMPLE_FACTUAL"
+
+        # Complex patterns
+        complex_patterns = [
+            r'\b(create|build|implement|design|develop)\b.*\b(system|application|framework)\b',
+            r'\b(analyze|investigate|research)\b.*\b(comprehensive|detailed|thorough)\b',
+            r'\bstep[\s-]by[\s-]step\b',
+            r'\bmulti[\s-]?step\b',
+        ]
+
+        for pattern in complex_patterns:
+            if re.search(pattern, message_lower):
+                return "COMPLEX"
+
+        # Default to medium
+        return "MEDIUM"
+
+    def process(
+        self,
+        message: str,
+        mode: str = "auto",
+        streaming_callback: Optional[Callable] = None,
+        knowledge_enabled: bool = True,
+        conversation_history: Optional[List[Dict[str, str]]] = None
+    ) -> FelixResponse:
+        """
+        Process a message through Felix.
+
+        This is the main entry point for all interactions with Felix.
+        Routes to appropriate processing based on mode and complexity.
+
+        Args:
+            message: User's input message
+            mode: Processing mode:
+                - "auto": Classify and route automatically
+                - "direct": Force direct inference (Simple mode in GUI)
+                - "full": Force full orchestration (Workflow mode in GUI)
+            streaming_callback: Callback for streaming chunks
+                - For direct mode: callback(chunk_text)
+                - For full mode: callback(agent_name, chunk_text)
+            knowledge_enabled: Whether to include knowledge brain context
+            conversation_history: Previous messages for context
+
+        Returns:
+            FelixResponse with results
+        """
+        start_time = time.time()
+
+        # Determine complexity
+        if mode == "auto":
+            complexity = self.classify_complexity(message)
+        elif mode == "direct":
+            complexity = "SIMPLE_FACTUAL"
+        else:  # "full"
+            complexity = "COMPLEX"
+
+        logger.info(f"FelixAgent processing: mode={mode}, complexity={complexity}")
+
+        try:
+            # Gather knowledge context if enabled
+            knowledge_context = ""
+            knowledge_sources = []
+            if knowledge_enabled:
+                knowledge_context, knowledge_sources = self._gather_knowledge(message)
+
+            # Route based on complexity/mode
+            if mode == "direct" or (mode == "auto" and complexity == "SIMPLE_FACTUAL"):
+                response = self._respond_directly(
+                    message=message,
+                    knowledge_context=knowledge_context,
+                    conversation_history=conversation_history,
+                    streaming_callback=streaming_callback
+                )
+                mode_used = "direct"
+
+            elif mode == "auto" and complexity == "MEDIUM":
+                # For medium complexity, still use direct but could be enhanced later
+                response = self._respond_directly(
+                    message=message,
+                    knowledge_context=knowledge_context,
+                    conversation_history=conversation_history,
+                    streaming_callback=streaming_callback
+                )
+                mode_used = "direct"
+
+            else:  # "full" or COMPLEX
+                response = self._full_orchestration(
+                    message=message,
+                    knowledge_context=knowledge_context,
+                    conversation_history=conversation_history,
+                    streaming_callback=streaming_callback
+                )
+                mode_used = "full"
+
+            execution_time = time.time() - start_time
+
+            return FelixResponse(
+                content=response.get('content', ''),
+                mode_used=mode_used,
+                complexity=complexity,
+                confidence=response.get('confidence', 0.0),
+                thinking_steps=response.get('thinking_steps'),
+                knowledge_sources=knowledge_sources if knowledge_sources else None,
+                execution_time=execution_time
+            )
+
+        except Exception as e:
+            logger.error(f"FelixAgent error: {e}", exc_info=True)
+            execution_time = time.time() - start_time
+            return FelixResponse(
+                content=f"Error: {str(e)}",
+                mode_used="error",
+                complexity=complexity,
+                execution_time=execution_time,
+                error=str(e)
+            )
+
+    def _gather_knowledge(self, message: str) -> tuple:
+        """
+        Gather relevant knowledge context for the message.
+
+        Args:
+            message: User's input message
+
+        Returns:
+            tuple: (knowledge_context_string, list_of_sources)
+        """
+        if not self.knowledge_store:
+            return "", []
+
+        try:
+            # Query knowledge store
+            results = self.knowledge_store.query(message, limit=10)
+
+            if not results:
+                return "", []
+
+            # Build context string
+            context_parts = []
+            sources = []
+
+            for entry in results:
+                content = entry.get('content', '')
+                source = entry.get('source', 'Unknown')
+
+                if content:
+                    context_parts.append(f"[From {source}]:\n{content}")
+                    if source not in sources:
+                        sources.append(source)
+
+            knowledge_context = "\n\n".join(context_parts)
+            return knowledge_context, sources
+
+        except Exception as e:
+            logger.warning(f"Knowledge retrieval error: {e}")
+            return "", []
+
+    def _respond_directly(
+        self,
+        message: str,
+        knowledge_context: str = "",
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+        streaming_callback: Optional[Callable] = None
+    ) -> Dict[str, Any]:
+        """
+        Direct Felix inference - single-agent workflow through FULL Felix framework.
+
+        This method uses ALL Felix infrastructure (not just SystemCommandManager):
+        - AgentRegistry: Lifecycle tracking, performance metrics
+        - CentralPost: Hub-spoke message routing (O(N) complexity)
+        - SystemCommandManager: Trust-based command execution (SAFE/REVIEW/BLOCKED)
+        - KnowledgeStore: Result persistence for future queries
+        - TaskMemory: Pattern learning from execution
+        - SynthesisEngine: Consistent output synthesis
+
+        Simple mode = "single-agent Felix workflow" not "bypass Felix entirely"
+
+        Args:
+            message: User's input message
+            knowledge_context: Knowledge brain context
+            conversation_history: Previous messages
+            streaming_callback: Callback for streaming chunks
+
+        Returns:
+            Dict with 'content', 'confidence', 'command_results', 'meta_confidence'
+        """
+        start_time = time.time()
+        workflow_id = f"direct_{uuid.uuid4().hex[:8]}"
+        agent_id = f"felix_direct_{workflow_id[-8:]}"
+        error_occurred = None
+
+        # =========================================================
+        # STEP 1: Register as agent in Felix framework
+        # =========================================================
+        try:
+            self.central_post.agent_registry.register_agent(
+                agent_id=agent_id,
+                metadata={
+                    'agent_type': 'direct',
+                    'spawn_time': time.time(),
+                    'capabilities': {'direct_inference': True, 'command_execution': True},
+                    'workflow_id': workflow_id
+                }
+            )
+            logger.info(f"Registered direct agent: {agent_id}")
+        except Exception as e:
+            logger.warning(f"Agent registration failed (continuing): {e}")
+
+        try:
+            # Build system prompt with Felix identity
+            system_prompt = self.identity_prompt
+
+            # Add knowledge context if available
+            if knowledge_context:
+                system_prompt += f"\n\n<knowledge_context>\nThe following information is relevant to this query:\n\n{knowledge_context}\n</knowledge_context>"
+
+            # Build initial user prompt with history
+            if conversation_history:
+                history_text = self._format_history(conversation_history)
+                base_prompt = f"{history_text}\n\nCURRENT MESSAGE:\nUSER: {message}"
+            else:
+                base_prompt = message
+
+            # Track command execution for context enrichment
+            command_results = []
+            max_iterations = 5  # Safety limit for command loops
+            current_prompt = base_prompt
+            content = ""
+
+            for iteration in range(max_iterations):
+                logger.debug(f"Direct mode iteration {iteration + 1}/{max_iterations}")
+
+                # Get LLM response
+                content = self._get_llm_response(
+                    system_prompt=system_prompt,
+                    user_prompt=current_prompt,
+                    streaming_callback=streaming_callback if iteration == 0 else None
+                )
+
+                # =========================================================
+                # STEP 2: Queue response as Message through CentralPost
+                # =========================================================
+                try:
+                    msg = Message(
+                        sender_id=agent_id,
+                        message_type=MessageType.STATUS_UPDATE,
+                        content={
+                            'response': content[:500],  # Truncate for message
+                            'iteration': iteration,
+                            'workflow_id': workflow_id
+                        },
+                        timestamp=time.time()
+                    )
+                    self.central_post.queue_message(msg)
+                    logger.debug(f"Queued message to CentralPost: {msg.message_id}")
+                except Exception as e:
+                    logger.warning(f"Message queuing failed (continuing): {e}")
+
+                # Check for SYSTEM_ACTION_NEEDED patterns
+                pattern = r'SYSTEM_ACTION_NEEDED:\s*([^\n]+)'
+                commands = re.findall(pattern, content, re.IGNORECASE)
+
+                if not commands:
+                    # No more commands - we're done
+                    logger.debug(f"No SYSTEM_ACTION_NEEDED patterns found, completing")
+                    break
+
+                logger.info(f"Found {len(commands)} SYSTEM_ACTION_NEEDED pattern(s)")
+
+                # =========================================================
+                # STEP 3: Execute commands through SystemCommandManager
+                # =========================================================
+                iteration_results = []
+                for cmd in commands:
+                    cmd = cmd.strip()
+                    logger.info(f"Executing command via Felix framework: {cmd}")
+
+                    try:
+                        # Route through the ACTUAL Felix SystemCommandManager
+                        action_id = self.central_post.system_command_manager.request_system_action(
+                            agent_id=agent_id,
+                            command=cmd,
+                            context=f"Direct mode request: {message[:100]}",
+                            workflow_id=workflow_id,
+                            cwd=self.central_post.project_root
+                        )
+
+                        # Wait for result (handles SAFE auto-execute, REVIEW approval, BLOCKED denial)
+                        result = self.central_post.system_command_manager.wait_for_approval(
+                            action_id=action_id,
+                            timeout=60.0  # 1 minute timeout for commands
+                        )
+
+                        if result:
+                            iteration_results.append({
+                                'command': cmd,
+                                'success': result.success,
+                                'stdout': result.stdout,
+                                'stderr': result.stderr,
+                                'exit_code': result.exit_code
+                            })
+                            command_results.append(iteration_results[-1])
+
+                            # Stream the command result to the user if callback provided
+                            if streaming_callback and result.stdout:
+                                streaming_callback(f"\n\n**Command output ({cmd}):**\n```\n{result.stdout}\n```\n\n")
+
+                    except Exception as e:
+                        logger.error(f"Command execution error: {e}")
+                        iteration_results.append({
+                            'command': cmd,
+                            'success': False,
+                            'stdout': '',
+                            'stderr': str(e),
+                            'exit_code': -1
+                        })
+                        command_results.append(iteration_results[-1])
+
+                # Build enriched context with command results for re-invocation
+                results_context = self._format_command_results(iteration_results)
+
+                # Update prompt with command results for next iteration
+                current_prompt = f"""{base_prompt}
+
+<previous_response>
+{content}
+</previous_response>
+
+<command_execution_results>
+{results_context}
+</command_execution_results>
+
+Based on the command results above, please continue your response. If the task is complete, provide a final summary. Do NOT output another SYSTEM_ACTION_NEEDED unless absolutely necessary for a NEW command."""
+
+                # Stream continuation notice
+                if streaming_callback:
+                    streaming_callback("\n\n*Processing command results...*\n\n")
+
+            # Calculate confidence based on command success rate
+            if command_results:
+                success_rate = sum(1 for r in command_results if r['success']) / len(command_results)
+                confidence = 0.7 + (0.2 * success_rate)  # 0.7-0.9 based on success
+            else:
+                confidence = 0.8  # Default for no-command responses
+
+            # =========================================================
+            # STEP 4: Store result in KnowledgeStore for future queries
+            # =========================================================
+            try:
+                if self.knowledge_store and content:
+                    self.central_post.store_agent_result_as_knowledge(
+                        agent_id=agent_id,
+                        content=content,
+                        confidence=confidence,
+                        domain="direct_inference"
+                    )
+                    logger.debug(f"Stored result in KnowledgeStore")
+            except Exception as e:
+                logger.warning(f"KnowledgeStore storage failed (continuing): {e}")
+
+            # =========================================================
+            # STEP 5: Record in TaskMemory for pattern learning
+            # =========================================================
+            execution_time = time.time() - start_time
+            try:
+                if self.task_memory:
+                    self.task_memory.record_task_execution(
+                        task_description=message[:200],
+                        outcome='success' if not error_occurred else 'failure',
+                        metrics={
+                            'execution_time': execution_time,
+                            'commands_run': len(command_results),
+                            'confidence': confidence
+                        }
+                    )
+                    logger.debug(f"Recorded task in TaskMemory")
+            except Exception as e:
+                logger.warning(f"TaskMemory recording failed (continuing): {e}")
+
+            # =========================================================
+            # STEP 6: Synthesize through SynthesisEngine for consistent output
+            # =========================================================
+            synthesis_result = None
+            meta_confidence = None
+            try:
+                # Only synthesize if we have queued messages
+                synthesis_result = self.central_post.synthesize_agent_outputs(
+                    task_description=message,
+                    max_messages=5,
+                    task_complexity="SIMPLE_FACTUAL"
+                )
+                if synthesis_result:
+                    # Use synthesis if available, otherwise use raw content
+                    synthesized_content = synthesis_result.get('synthesis', '')
+                    if synthesized_content and len(synthesized_content) > 50:
+                        content = synthesized_content
+                        confidence = synthesis_result.get('confidence', confidence)
+                    meta_confidence = synthesis_result.get('meta_confidence')
+                    logger.debug(f"SynthesisEngine produced output with confidence={confidence}")
+            except Exception as e:
+                logger.warning(f"SynthesisEngine failed (using raw content): {e}")
+
+            return {
+                'content': content,
+                'confidence': confidence,
+                'command_results': command_results if command_results else None,
+                'meta_confidence': meta_confidence,
+                'execution_time': execution_time
+            }
+
+        except Exception as e:
+            error_occurred = str(e)
+            logger.error(f"Direct mode error: {e}", exc_info=True)
+            raise
+
+        finally:
+            # =========================================================
+            # STEP 7: Cleanup - Deregister agent
+            # =========================================================
+            try:
+                self.central_post.agent_registry.deregister_agent(agent_id)
+                logger.debug(f"Deregistered direct agent: {agent_id}")
+            except Exception as e:
+                logger.warning(f"Agent deregistration failed: {e}")
+
+    def _get_llm_response(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        streaming_callback: Optional[Callable] = None
+    ) -> str:
+        """
+        Get LLM response with optional streaming.
+
+        Args:
+            system_prompt: System prompt with Felix identity
+            user_prompt: User message/context
+            streaming_callback: Optional callback for streaming
+
+        Returns:
+            str: Complete response content
+        """
+        accumulated_content = []
+
+        def on_chunk(chunk):
+            """Handle streaming chunks."""
+            chunk_text = chunk.content if hasattr(chunk, 'content') else str(chunk)
+            accumulated_content.append(chunk_text)
+            if streaming_callback:
+                streaming_callback(chunk_text)
+
+        try:
+            if hasattr(self.lm_client, 'complete_streaming') and streaming_callback:
+                response = self.lm_client.complete_streaming(
+                    agent_id="felix_direct",
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    temperature=0.7,
+                    callback=on_chunk,
+                    batch_interval=0.1
+                )
+                content = ''.join(accumulated_content) if accumulated_content else (
+                    response.content if hasattr(response, 'content') else str(response)
+                )
+            else:
+                response = self.lm_client.complete(
+                    agent_id="felix_direct",
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    temperature=0.7
+                )
+                content = response.content if hasattr(response, 'content') else str(response)
+                if streaming_callback:
+                    streaming_callback(content)
+
+            return content
+
+        except Exception as e:
+            logger.error(f"LLM response error: {e}")
+            raise
+
+    def _format_command_results(self, results: List[Dict[str, Any]]) -> str:
+        """
+        Format command results for LLM context.
+
+        Args:
+            results: List of command result dictionaries
+
+        Returns:
+            str: Formatted results string
+        """
+        if not results:
+            return "No commands were executed."
+
+        formatted = []
+        for r in results:
+            status = "SUCCESS" if r['success'] else "FAILED"
+            entry = f"Command: {r['command']}\nStatus: {status} (exit code: {r['exit_code']})"
+
+            if r['stdout']:
+                # Truncate very long output
+                stdout = r['stdout'][:2000] + "..." if len(r['stdout']) > 2000 else r['stdout']
+                entry += f"\nOutput:\n{stdout}"
+
+            if r['stderr']:
+                stderr = r['stderr'][:500] + "..." if len(r['stderr']) > 500 else r['stderr']
+                entry += f"\nErrors:\n{stderr}"
+
+            formatted.append(entry)
+
+        return "\n\n---\n\n".join(formatted)
+
+    def _full_orchestration(
+        self,
+        message: str,
+        knowledge_context: str = "",
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+        streaming_callback: Optional[Callable] = None
+    ) -> Dict[str, Any]:
+        """
+        Full multi-agent workflow orchestration.
+
+        This uses the complete Felix framework with specialist agents,
+        helix progression, and synthesis. The final output still comes
+        FROM Felix (via SynthesisEngine).
+
+        Args:
+            message: User's input message
+            knowledge_context: Knowledge brain context
+            conversation_history: Previous messages
+            streaming_callback: Callback for agent thinking steps
+
+        Returns:
+            Dict with 'content', 'confidence', 'thinking_steps'
+        """
+        # Import workflow function
+        from src.workflows.felix_workflow import run_felix_workflow
+
+        thinking_steps = []
+
+        # Wrap callback to collect thinking steps
+        def workflow_callback(agent_name: str, chunk: str):
+            """Handle workflow agent outputs."""
+            thinking_steps.append({
+                'agent': agent_name,
+                'content': chunk,
+                'timestamp': time.time()
+            })
+            if streaming_callback:
+                streaming_callback(agent_name, chunk)
+
+        # Run full workflow
+        result = run_felix_workflow(
+            felix_system=self.felix_system,
+            task_input=message,
+            streaming_callback=workflow_callback
+        )
+
+        # Extract results
+        content = result.get('centralpost_synthesis', result.get('synthesis', ''))
+        confidence = result.get('confidence', 0.0)
+
+        return {
+            'content': content,
+            'confidence': confidence,
+            'thinking_steps': thinking_steps
+        }
+
+    def _format_history(self, history: List[Dict[str, str]], limit: int = 10) -> str:
+        """
+        Format conversation history for context.
+
+        Args:
+            history: List of message dicts with 'role' and 'content'
+            limit: Maximum messages to include
+
+        Returns:
+            str: Formatted history string
+        """
+        if not history:
+            return ""
+
+        # Take last N messages
+        recent = history[-limit:] if len(history) > limit else history
+
+        formatted = ["CONVERSATION HISTORY:"]
+        for msg in recent:
+            role = msg.get('role', 'user').upper()
+            content = msg.get('content', '')
+            formatted.append(f"{role}: {content}")
+
+        return "\n".join(formatted)

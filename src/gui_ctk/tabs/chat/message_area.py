@@ -16,6 +16,7 @@ import logging
 from ...theme_manager import get_theme_manager
 from ...styles import SPACE_SM, SPACE_MD, SPACE_LG
 from .message_bubble import MessageBubble, StreamingMessageBubble
+from .action_bubble import ActionBubble
 
 logger = logging.getLogger(__name__)
 
@@ -67,10 +68,13 @@ class MessageArea(ctk.CTkScrollableFrame):
 
         self.on_load_more = on_load_more
         self._message_bubbles: List[MessageBubble] = []
+        self._action_bubbles: List[ActionBubble] = []
         self._streaming_bubble: Optional[StreamingMessageBubble] = None
         self._auto_scroll = True
         self._is_loading_more = False
         self._scroll_position = 0.0
+        self._last_wrap_width = 0  # Cache for debouncing width updates
+        self._width_update_pending = None  # Debounce timer ID
 
         # Configure grid for message layout
         self.grid_columnconfigure(0, weight=1)
@@ -210,6 +214,147 @@ class MessageArea(ctk.CTkScrollableFrame):
             logger.error(f"Failed to add streaming message: {e}")
             raise
 
+    def add_action_bubble(
+        self,
+        command: str,
+        trust_level: str,
+        on_approve: Optional[Callable[[ActionBubble, str], None]] = None,
+        on_deny: Optional[Callable[[ActionBubble, str], None]] = None
+    ) -> ActionBubble:
+        """
+        Add an action approval bubble to the chat area.
+
+        Action bubbles are displayed inline with messages and allow
+        users to approve or deny system commands that Felix wants to run.
+
+        Args:
+            command: The command Felix wants to execute
+            trust_level: Trust classification ('safe', 'review', 'blocked')
+            on_approve: Callback when Approve is clicked (bubble, command)
+            on_deny: Callback when Deny is clicked (bubble, command)
+
+        Returns:
+            ActionBubble instance for status updates
+
+        Example:
+            bubble = message_area.add_action_bubble(
+                command="cat /path/to/file",
+                trust_level="review",
+                on_approve=handle_approve,
+                on_deny=handle_deny
+            )
+            # Later, update status:
+            bubble.set_status(ActionStatus.COMPLETE, output="file contents...")
+        """
+        try:
+            # Create action bubble
+            bubble = ActionBubble(
+                self,
+                command=command,
+                trust_level=trust_level,
+                on_approve=on_approve,
+                on_deny=on_deny
+            )
+
+            # Position in grid (same as messages)
+            row = len(self._message_bubbles) + len(self._action_bubbles)
+            bubble.grid(
+                row=row,
+                column=0,
+                sticky="ew",
+                padx=SPACE_MD,
+                pady=(SPACE_SM if row > 0 else SPACE_MD, SPACE_SM)
+            )
+
+            # Bind mousewheel to bubble for scroll passthrough
+            bubble.bind("<MouseWheel>", self._on_mousewheel)
+            bubble.bind("<Button-4>", self._on_mousewheel)
+            bubble.bind("<Button-5>", self._on_mousewheel)
+
+            # Store reference
+            self._action_bubbles.append(bubble)
+
+            # Auto-scroll to bottom
+            if self._auto_scroll:
+                self.after(50, self.scroll_to_bottom)
+
+            # Update wrap lengths
+            self.after_idle(self._update_bubble_widths)
+
+            return bubble
+
+        except Exception as e:
+            logger.error(f"Failed to add action bubble: {e}")
+            raise
+
+    def add_system_message(self, content: str) -> ctk.CTkFrame:
+        """
+        Add a system message (command output, errors, etc.) inline in chat.
+
+        System messages are displayed in a compact, monospace format
+        to distinguish them from regular chat messages.
+
+        Args:
+            content: Message content (can include command output)
+
+        Returns:
+            The created frame
+
+        Example:
+            message_area.add_system_message("$ pwd\\n/home/user/project")
+        """
+        try:
+            # Create system message frame
+            frame = ctk.CTkFrame(
+                self,
+                fg_color=self.theme_manager.get_color("bg_tertiary"),
+                corner_radius=8
+            )
+
+            # Position in grid
+            row = len(self._message_bubbles) + len(self._action_bubbles)
+            frame.grid(
+                row=row,
+                column=0,
+                sticky="ew",
+                padx=SPACE_MD,
+                pady=(SPACE_SM if row > 0 else SPACE_MD, SPACE_SM)
+            )
+            frame.grid_columnconfigure(0, weight=1)
+
+            # Add content label (monospace font)
+            # Ensure minimum wraplength of 200 to prevent X11 crash
+            width = self.winfo_width()
+            wrap_width = max(200, width - SPACE_MD * 4) if width > 100 else 400
+            label = ctk.CTkLabel(
+                frame,
+                text=content,
+                font=ctk.CTkFont(family="monospace", size=12),
+                text_color=self.theme_manager.get_color("fg_secondary"),
+                anchor="w",
+                justify="left",
+                wraplength=wrap_width
+            )
+            label.grid(row=0, column=0, sticky="ew", padx=SPACE_SM, pady=SPACE_SM)
+
+            # Bind mousewheel for scroll passthrough
+            frame.bind("<MouseWheel>", self._on_mousewheel)
+            frame.bind("<Button-4>", self._on_mousewheel)
+            frame.bind("<Button-5>", self._on_mousewheel)
+            label.bind("<MouseWheel>", self._on_mousewheel)
+            label.bind("<Button-4>", self._on_mousewheel)
+            label.bind("<Button-5>", self._on_mousewheel)
+
+            # Auto-scroll to bottom
+            if self._auto_scroll:
+                self.after(50, self.scroll_to_bottom)
+
+            return frame
+
+        except Exception as e:
+            logger.error(f"Failed to add system message: {e}")
+            raise
+
     def load_messages(self, messages: List[Dict[str, Any]]):
         """
         Bulk load messages into the chat area.
@@ -262,13 +407,18 @@ class MessageArea(ctk.CTkScrollableFrame):
             self._auto_scroll = original_auto_scroll
 
     def clear(self):
-        """Clear all messages from the chat area."""
+        """Clear all messages and action bubbles from the chat area."""
         try:
             # Destroy all message bubbles
             for bubble in self._message_bubbles:
                 bubble.destroy()
 
+            # Destroy all action bubbles
+            for bubble in self._action_bubbles:
+                bubble.destroy()
+
             self._message_bubbles.clear()
+            self._action_bubbles.clear()
             self._streaming_bubble = None
 
             # Reset grid row counter
@@ -391,19 +541,40 @@ class MessageArea(ctk.CTkScrollableFrame):
         self._sync_canvas_bg()
 
     def _update_bubble_widths(self):
-        """Update wrap lengths for all message bubbles based on current width."""
+        """Update wrap lengths for all message bubbles based on current width.
+
+        Uses debouncing to prevent excessive X11 operations during streaming.
+        """
+        # Cancel any pending update
+        if self._width_update_pending:
+            self.after_cancel(self._width_update_pending)
+            self._width_update_pending = None
+
+        # Schedule debounced update (100ms delay)
+        self._width_update_pending = self.after(100, self._do_update_bubble_widths)
+
+    def _do_update_bubble_widths(self):
+        """Actually update wrap lengths (debounced)."""
+        self._width_update_pending = None
         try:
             # Get current width
             width = self.winfo_width()
 
-            # Only update if we have a valid width
-            if width > 1:
+            # Only update if we have a valid width (minimum 300 to prevent X11 crash)
+            if width > 300:
+                wrap_width = max(200, width - SPACE_MD * 4)
+
+                # Skip if wrap width hasn't changed significantly (within 10px)
+                if abs(wrap_width - self._last_wrap_width) < 10:
+                    return
+
+                self._last_wrap_width = wrap_width
                 for bubble in self._message_bubbles:
                     if hasattr(bubble, "set_wraplength"):
-                        bubble.set_wraplength(width - SPACE_MD * 4)
+                        bubble.set_wraplength(wrap_width)
 
         except Exception as e:
-            logger.error(f"Failed to update bubble widths: {e}")
+            logger.debug(f"Failed to update bubble widths: {e}")
 
     def _check_scroll_for_load_more(self):
         """

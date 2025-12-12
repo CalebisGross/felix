@@ -14,6 +14,7 @@ from .chat_tab import ChatTab
 from .message_bubble import MessageBubble, StreamingMessageBubble
 from .thinking_view import ThinkingView, CompactThinkingView
 from .chat_session import ChatSession, ChatSessionManager, ChatMessage
+from .action_bubble import ActionBubble, ActionStatus
 
 __all__ = [
     "ChatTab",
@@ -24,4 +25,6 @@ __all__ = [
     "StreamingMessageBubble",
     "ThinkingView",
     "CompactThinkingView",
+    "ActionBubble",
+    "ActionStatus",
 ]

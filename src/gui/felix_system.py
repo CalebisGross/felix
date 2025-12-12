@@ -751,6 +751,13 @@ class FelixSystem:
             return self.agent_factory.dynamic_spawner
         return None
 
+    @property
+    def system_command_manager(self):
+        """Get SystemCommandManager from CentralPost for direct command execution."""
+        if self.central_post:
+            return self.central_post.system_command_manager
+        return None
+
     def analyze_team_needs(self, processed_messages: List[Message]) -> List[Any]:
         """
         Analyze current team composition and spawn agents if needed.

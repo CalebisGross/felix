@@ -11,7 +11,7 @@
 # SAFE: Read-only, information gathering commands
 safe:
   # File system info (read-only)
-  - '^ls\s'
+  - '^ls(\s|$)'  # ls alone or with args
   - '^pwd$'
   - '^echo\s(?!.*>)'  # echo for display only (no redirects)
   - '^cat\s(?!.*\.ssh|.*\.aws|.*password|.*secret)'  # cat but not credentials
