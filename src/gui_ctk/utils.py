@@ -45,20 +45,23 @@ class ThreadManager:
         thread.start()
         self.threads.append(thread)
 
-    def join_threads(self, timeout=1.0):
+    def join_threads(self, timeout=0.1):
         """
-        Wait for all threads to complete (with timeout).
+        Brief wait for threads - they're daemon threads so will die with process.
 
         Args:
-            timeout: Maximum time to wait for each thread
+            timeout: Maximum time to wait for each thread (reduced for fast shutdown)
         """
         for thread in self.threads:
-            thread.join(timeout=timeout)
+            if thread.is_alive():
+                thread.join(timeout=timeout)
+        # Clear the list
+        self.threads.clear()
 
     def shutdown(self):
-        """Signal shutdown and join threads."""
+        """Signal shutdown and quickly join threads."""
         self._active = False
-        self.join_threads()
+        self.join_threads(timeout=0.1)
 
     @property
     def is_active(self):
@@ -69,11 +72,12 @@ class ThreadManager:
 class DBHelper:
     """
     Thread-safe database helper for SQLite operations.
+    Uses lazy initialization for faster GUI startup.
     """
 
     def __init__(self, memory_db='felix_memory.db', knowledge_db='felix_knowledge.db'):
         """
-        Initialize DBHelper.
+        Initialize DBHelper with lazy database connections.
 
         Args:
             memory_db: Path to memory database
@@ -83,15 +87,56 @@ class DBHelper:
         self.knowledge_db = knowledge_db
         self.lock = threading.Lock()
 
-        # Try to import Felix memory stores
-        self.ks = None
-        self.tm = None
-        try:
-            from src.memory import knowledge_store, task_memory
-            self.ks = knowledge_store.KnowledgeStore(self.knowledge_db)
-            self.tm = task_memory.TaskMemory(self.memory_db)
-        except ImportError:
-            pass
+        # Lazy initialization - connections created on first use
+        self._ks = None
+        self._tm = None
+        self._initialized = False
+
+    def _lazy_init(self):
+        """Initialize database connections on first use."""
+        if self._initialized:
+            return
+        with self.lock:
+            if self._initialized:  # Double-check after acquiring lock
+                return
+            try:
+                from src.memory import knowledge_store, task_memory
+                self._ks = knowledge_store.KnowledgeStore(self.knowledge_db)
+                self._tm = task_memory.TaskMemory(self.memory_db)
+            except ImportError:
+                pass
+            self._initialized = True
+
+    @property
+    def ks(self):
+        """Lazy-load KnowledgeStore on first access."""
+        if not self._initialized:
+            self._lazy_init()
+        return self._ks
+
+    @property
+    def tm(self):
+        """Lazy-load TaskMemory on first access."""
+        if not self._initialized:
+            self._lazy_init()
+        return self._tm
+
+    def close(self):
+        """Close any open database connections."""
+        with self.lock:
+            if self._ks and hasattr(self._ks, 'close'):
+                try:
+                    self._ks.close()
+                except Exception:
+                    pass
+            if self._tm and hasattr(self._tm, 'close'):
+                try:
+                    self._tm.close()
+                except Exception:
+                    pass
+            self._ks = None
+            self._tm = None
+            self._initialized = False
 
     def connect(self, db_name):
         """

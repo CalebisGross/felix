@@ -15,39 +15,49 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-# Color constants for custom widgets (matches CTk dark/light modes)
+# Color constants for custom widgets - Felix Modern Design System Palette
 COLORS = {
     "dark": {
-        "bg_primary": "#1a1a1a",
-        "bg_secondary": "#242424",
-        "bg_tertiary": "#2b2b2b",
-        "bg_hover": "#333333",
-        "fg_primary": "#ffffff",
-        "fg_secondary": "#b3b3b3",
+        # Background: Obsidian Black - Main app canvas, dark mode base
+        "bg_primary": "#121212",
+        # Surface: Slate Gray - Cards, panels, secondary backgrounds
+        "bg_secondary": "#2A2A2A",
+        # Primary: Deep Indigo - Headers, navigation, agent indicators
+        "bg_tertiary": "#1F2833",
+        "bg_hover": "#3A3A3A",
+        # Text Primary: Soft Silver - Main body text
+        "fg_primary": "#C5C6C7",
+        # Text Secondary: Muted Ash - Subtle labels
+        "fg_secondary": "#969696",
         "fg_muted": "#808080",
-        "accent": "#1f6aa5",
-        "accent_hover": "#144870",
-        "success": "#2fa572",
+        # Accent 1: Helix Blue - Interactive elements, buttons
+        "accent": "#0C7BDC",
+        "accent_hover": "#0A66B8",
+        # Accent 2: Elegant Teal - Highlights, success states
+        "success": "#45A29E",
         "warning": "#d97706",
-        "error": "#dc2626",
+        # Warning/Error: Subdued Crimson - Alerts, BLOCKED indicators
+        "error": "#A94442",
         "border": "#3f3f3f",
-        "selection": "#1f6aa5",
+        "selection": "#0C7BDC",
     },
     "light": {
-        "bg_primary": "#f9f9f9",
-        "bg_secondary": "#ebebeb",
-        "bg_tertiary": "#dbdbdb",
-        "bg_hover": "#d1d1d1",
-        "fg_primary": "#1a1a1a",
-        "fg_secondary": "#4a4a4a",
-        "fg_muted": "#7a7a7a",
-        "accent": "#1f6aa5",
-        "accent_hover": "#144870",
-        "success": "#2fa572",
+        # Light mode uses inverted palette with appropriate contrast
+        "bg_primary": "#FFFFFF",
+        "bg_secondary": "#F5F5F5",
+        "bg_tertiary": "#E8E9ED",
+        "bg_hover": "#E0E0E0",
+        "fg_primary": "#1F2833",
+        "fg_secondary": "#4A4A4A",
+        "fg_muted": "#7A7A7A",
+        # Keep accent colors consistent across modes
+        "accent": "#0C7BDC",
+        "accent_hover": "#0A66B8",
+        "success": "#45A29E",
         "warning": "#d97706",
-        "error": "#dc2626",
-        "border": "#c7c7c7",
-        "selection": "#1f6aa5",
+        "error": "#A94442",
+        "border": "#C7C7C7",
+        "selection": "#0C7BDC",
     }
 }
 
