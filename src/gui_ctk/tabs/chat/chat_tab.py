@@ -93,6 +93,9 @@ class ChatTab(ResponsiveTab):
         # Setup UI
         self._setup_ui()
 
+        # Setup keyboard shortcuts
+        self._setup_keyboard_shortcuts()
+
         # Start a new session by default
         self._start_new_session()
 
@@ -965,6 +968,69 @@ PHILOSOPHY:
                 self._sidebar_width = SIDEBAR_STANDARD
 
             self._sidebar_frame.configure(width=self._sidebar_width)
+
+    # =========================================================================
+    # FEATURE LIFECYCLE (called by main app when Felix system starts/stops)
+    # =========================================================================
+
+    def _enable_features(self):
+        """Enable chat features when Felix system starts."""
+        self._update_connection_status("connected")
+        if self._input_area:
+            self._input_area.set_enabled(True)
+        logger.info("Chat features enabled")
+
+    def _disable_features(self):
+        """Disable chat features when Felix system stops."""
+        self._update_connection_status("disconnected", "○ Start Felix system")
+        if self._input_area:
+            self._input_area.set_enabled(False)
+        logger.info("Chat features disabled")
+
+    # =========================================================================
+    # KEYBOARD SHORTCUTS
+    # =========================================================================
+
+    def _setup_keyboard_shortcuts(self):
+        """Setup global keyboard shortcuts for chat tab."""
+        import platform
+        ctrl = "Command" if platform.system() == "Darwin" else "Control"
+
+        # Bind shortcuts (only active when this tab has focus)
+        self.bind_all(f"<{ctrl}-n>", self._on_new_chat_shortcut)
+        self.bind_all(f"<{ctrl}-Shift-N>", self._on_new_folder_shortcut)
+        self.bind_all(f"<{ctrl}-k>", self._on_toggle_knowledge_shortcut)
+        self.bind_all(f"<{ctrl}-m>", self._on_toggle_mode_shortcut)
+
+    def _on_new_chat_shortcut(self, event=None):
+        """Handle Ctrl/Cmd+N shortcut for new chat."""
+        # Only respond if chat tab is visible
+        if self.winfo_viewable():
+            self._start_new_session()
+            return "break"
+
+    def _on_new_folder_shortcut(self, event=None):
+        """Handle Ctrl/Cmd+Shift+N shortcut for new folder."""
+        if self.winfo_viewable():
+            self._create_folder()
+            return "break"
+
+    def _on_toggle_knowledge_shortcut(self, event=None):
+        """Handle Ctrl/Cmd+K shortcut to toggle knowledge brain."""
+        if self.winfo_viewable():
+            current = self._knowledge_var.get()
+            self._knowledge_var.set(not current)
+            self._on_knowledge_toggled()
+            return "break"
+
+    def _on_toggle_mode_shortcut(self, event=None):
+        """Handle Ctrl/Cmd+M shortcut to toggle mode."""
+        if self.winfo_viewable():
+            current = self._mode_selector.get()
+            new_mode = "Workflow" if current == "Simple" else "Simple"
+            self._mode_selector.set(new_mode)
+            self._on_mode_changed(new_mode)
+            return "break"
 
     def destroy(self):
         """Cleanup when tab is destroyed."""

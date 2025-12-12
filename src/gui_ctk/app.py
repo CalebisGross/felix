@@ -714,7 +714,7 @@ class FelixApp(ctk.CTk):
 
         # Enable all tabs
         tabs_to_enable = [
-            'dashboard_tab', 'workflows_tab', 'agents_tab', 'memory_tab',
+            'dashboard_tab', 'workflows_tab', 'chat_tab', 'agents_tab', 'memory_tab',
             'approvals_tab', 'terminal_tab', 'prompts_tab', 'settings_tab',
             'learning_tab', 'knowledge_brain_tab'
         ]
@@ -731,7 +731,7 @@ class FelixApp(ctk.CTk):
         """Disable features in all tabs when system is not running."""
         # Disable all tabs
         tabs_to_disable = [
-            'dashboard_tab', 'workflows_tab', 'agents_tab', 'memory_tab',
+            'dashboard_tab', 'workflows_tab', 'chat_tab', 'agents_tab', 'memory_tab',
             'approvals_tab', 'terminal_tab', 'prompts_tab', 'settings_tab',
             'learning_tab', 'knowledge_brain_tab'
         ]
