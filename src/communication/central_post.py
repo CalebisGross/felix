@@ -7,15 +7,14 @@ implementing the hub of the spoke-based communication model from thefelix.md.
 Mathematical Foundation:
 - Spoke communication: O(N) message complexity vs O(N²) mesh topology
 - Maximum communication distance: R_top (helix outer radius)
-- Performance metrics for Hypothesis H2 validation and statistical analysis
+- Performance metrics for efficiency benchmarking and statistical analysis
 
 Key Features:
 - Agent registration and connection management
 - FIFO message queuing with guaranteed ordering
 - Performance metrics collection (throughput, latency, overhead ratios)
-- Scalability up to 133 agents (matching OpenSCAD model parameters)
 
-Implementation supports rigorous testing of Hypothesis H2 communication efficiency claims.
+Implementation supports rigorous performance testing and communication efficiency measurement.
 """
 
 import time
@@ -23,9 +22,7 @@ import uuid
 import random
 import logging
 import threading
-from enum import Enum
 from typing import Dict, List, Optional, Any, Tuple, TYPE_CHECKING, Callable
-from dataclasses import dataclass, field
 from collections import deque
 from queue import Queue, Empty
 import asyncio
@@ -38,6 +35,17 @@ from src.memory.context_compression import ContextCompressor, CompressionStrateg
 # System execution imports (for system autonomy)
 from src.execution import SystemExecutor, TrustManager, CommandHistory, TrustLevel, CommandResult
 
+# Message types (extracted to avoid circular imports)
+from src.communication.message_types import Message, MessageType
+
+# Extracted component imports
+from src.communication.system_command_manager import SystemCommandManager
+from src.communication.web_search_coordinator import WebSearchCoordinator
+from src.communication.synthesis_engine import SynthesisEngine
+from src.communication.memory_facade import MemoryFacade
+from src.communication.streaming_coordinator import StreamingCoordinator
+from src.communication.performance_monitor import PerformanceMonitor
+
 # Dynamic spawning imports - moved to avoid circular imports
 
 if TYPE_CHECKING:
@@ -48,40 +56,6 @@ if TYPE_CHECKING:
 
 # Set up logging
 logger = logging.getLogger(__name__)
-
-
-class MessageType(Enum):
-    """Types of messages in the communication system."""
-    TASK_REQUEST = "task_request"
-    TASK_ASSIGNMENT = "task_assignment"
-    STATUS_UPDATE = "status_update"
-    TASK_COMPLETE = "task_complete"
-    ERROR_REPORT = "error_report"
-    # Phase-aware message types for agent awareness
-    PHASE_ANNOUNCE = "phase_announce"  # Agent announces entering new phase
-    CONVERGENCE_SIGNAL = "convergence_signal"  # Agent signals convergence readiness
-    COLLABORATION_REQUEST = "collaboration_request"  # Agent seeks peers in same phase
-    SYNTHESIS_READY = "synthesis_ready"  # Signal that synthesis criteria met
-    AGENT_QUERY = "agent_query"  # Agent queries for awareness information
-    AGENT_DISCOVERY = "agent_discovery"  # Response with agent information
-    # System action message types for system autonomy
-    SYSTEM_ACTION_REQUEST = "system_action_request"  # Agent requests command execution
-    SYSTEM_ACTION_RESULT = "system_action_result"  # CentralPost broadcasts execution result
-    SYSTEM_ACTION_APPROVAL_NEEDED = "system_action_approval_needed"  # Command needs approval
-    SYSTEM_ACTION_DENIED = "system_action_denied"  # Command blocked or denied
-    SYSTEM_ACTION_START = "system_action_start"  # Command execution started (for Terminal tab)
-    SYSTEM_ACTION_OUTPUT = "system_action_output"  # Real-time command output line (for Terminal tab)
-    SYSTEM_ACTION_COMPLETE = "system_action_complete"  # Command execution completed (for Terminal tab)
-
-
-@dataclass
-class Message:
-    """Message structure for communication between agents and central post."""
-    sender_id: str
-    message_type: MessageType
-    content: Dict[str, Any]
-    timestamp: float
-    message_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
 
 class AgentRegistry:
@@ -450,7 +424,10 @@ class CentralPost:
                  web_search_confidence_threshold: float = 0.7,
                  web_search_min_samples: int = 1,
                  web_search_cooldown: float = 10.0,
-                 knowledge_store: Optional["KnowledgeStore"] = None):
+                 knowledge_store: Optional["KnowledgeStore"] = None,
+                 config: Optional[Any] = None,
+                 gui_mode: bool = False,
+                 prompt_manager: Optional["PromptManager"] = None):
         """
         Initialize central post with configuration parameters.
 
@@ -465,12 +442,24 @@ class CentralPost:
             web_search_min_samples: Minimum confidence scores before checking average (default: 1)
             web_search_cooldown: Seconds between web searches to prevent spam (default: 10.0)
             knowledge_store: Optional shared KnowledgeStore instance (if None, creates new one)
+            config: Optional FelixConfig for system-wide settings (auto-approval, etc.)
+            gui_mode: Whether running in GUI mode (prevents CLI approval prompts)
+            prompt_manager: Optional prompt manager for synthesis prompts
         """
         self.max_agents = max_agents
         self.enable_metrics = enable_metrics
         self.enable_memory = enable_memory
         self.llm_client = llm_client  # For CentralPost synthesis
         self.web_search_client = web_search_client  # For Research agents
+        self.config = config  # Store config for passing to subsystems
+        self.gui_mode = gui_mode  # Store GUI mode flag for passing to subsystems
+        self.prompt_manager = prompt_manager  # For synthesis prompts
+
+        # Project root directory for command execution
+        # Commands with relative paths will execute from this directory
+        from pathlib import Path
+        self.project_root = Path(__file__).parent.parent.parent.resolve()
+        logger.debug(f"CentralPost project_root: {self.project_root}")
         
         # Connection management
         self._registered_agents: Dict[str, str] = {}  # agent_id -> connection_id
@@ -485,7 +474,7 @@ class CentralPost:
         self._processed_messages: List[Message] = []
         self._async_processors: List[asyncio.Task] = []
         
-        # Performance metrics (for Hypothesis H2)
+        # Performance metrics (for efficiency benchmarking)
         self._metrics_enabled = enable_metrics
         self._start_time = time.time()
         self._total_messages_processed = 0
@@ -549,7 +538,60 @@ class CentralPost:
         # Live command output buffer for Terminal tab streaming
         self._live_command_outputs: Dict[int, List[tuple]] = {}  # execution_id -> [(output_line, stream_type), ...]
 
-        logger.info("System autonomy enabled: SystemExecutor, TrustManager, CommandHistory, ApprovalManager initialized")
+        # ========================================================================
+        # COMPONENT INITIALIZATION - Extracted subsystems for clean separation
+        # ========================================================================
+
+        # 1. Performance Monitor
+        self.performance_monitor = PerformanceMonitor(
+            metrics_enabled=enable_metrics
+        )
+
+        # 2. Memory Facade
+        self.memory_facade = MemoryFacade(
+            knowledge_store=self.knowledge_store,
+            task_memory=self.task_memory,
+            context_compressor=self.context_compressor,
+            memory_enabled=enable_memory
+        )
+
+        # 3. Streaming Coordinator
+        self.streaming_coordinator = StreamingCoordinator()
+
+        # 4. System Command Manager
+        self.system_command_manager = SystemCommandManager(
+            system_executor=self.system_executor,
+            trust_manager=self.trust_manager,
+            command_history=self.command_history,
+            approval_manager=self.approval_manager,
+            agent_registry=self.agent_registry,
+            message_queue_callback=self.queue_message,
+            config=config,  # Pass config for auto-approval flag (CLI mode)
+            gui_mode=self.gui_mode  # Pass GUI mode flag to prevent CLI prompts
+        )
+
+        # 5. Web Search Coordinator
+        self.web_search_coordinator = WebSearchCoordinator(
+            web_search_client=self.web_search_client,
+            knowledge_store=self.knowledge_store,
+            llm_client=llm_client,
+            agent_registry=self.agent_registry,
+            message_queue_callback=self.queue_message,
+            confidence_threshold=web_search_confidence_threshold,
+            search_cooldown=web_search_cooldown,
+            min_samples=web_search_min_samples
+        )
+
+        # 6. Synthesis Engine
+        self.synthesis_engine = SynthesisEngine(
+            llm_client=llm_client,
+            get_recent_messages_callback=self.get_recent_messages,
+            prompt_manager=self.prompt_manager
+        )
+
+        logger.info("✓ CentralPost initialized with 6 extracted components")
+        logger.info("  System autonomy: SystemExecutor, TrustManager, CommandHistory, ApprovalManager")
+        logger.info("  Components: PerformanceMonitor, MemoryFacade, StreamingCoordinator, SystemCommandManager, WebSearchCoordinator, SynthesisEngine")
 
     @property
     def active_connections(self) -> int:
@@ -868,24 +910,9 @@ class CentralPost:
             progress: Agent's progress along helix (0.0-1.0)
             metadata: Additional metadata (agent_type, checkpoint, etc.)
         """
-        # Update accumulated state
-        self._partial_thoughts[agent_id] = accumulated
-        self._streaming_metadata[agent_id] = metadata
-
-        # Emit event for GUI (real-time display)
-        self._emit_streaming_event({
-            "type": "partial_thought",
-            "agent_id": agent_id,
-            "partial": partial_content,
-            "accumulated": accumulated,
-            "progress": progress,
-            "agent_type": metadata.get("agent_type"),
-            "checkpoint": metadata.get("checkpoint"),
-            "tokens_so_far": metadata.get("tokens_so_far", 0),
-            "timestamp": time.time()
-        })
-
-        # Note: Do NOT synthesize here (wait for completion per hybrid approach)
+        return self.streaming_coordinator.receive_partial_thought(
+            agent_id, partial_content, accumulated, progress, metadata
+        )
 
     def finalize_streaming_thought(
         self,
@@ -903,38 +930,9 @@ class CentralPost:
             final_content: Complete final content
             confidence: Agent's confidence score
         """
-        # Clean up streaming state
-        metadata = self._streaming_metadata.pop(agent_id, {})
-        self._partial_thoughts.pop(agent_id, None)
-
-        # Log completion
-        logger.info(f"✓ Streaming thought complete: {agent_id} (confidence: {confidence:.2f})")
-
-        # Emit completion event
-        self._emit_streaming_event({
-            "type": "thought_complete",
-            "agent_id": agent_id,
-            "final_content": final_content,
-            "confidence": confidence,
-            "agent_type": metadata.get("agent_type"),
-            "timestamp": time.time()
-        })
-
-        # Now consider synthesis with complete message (hybrid approach)
-        # Note: Actual synthesis logic can be added here or handled by workflow
-
-    def _emit_streaming_event(self, event: Dict[str, Any]) -> None:
-        """
-        Emit streaming event to registered callbacks (GUI listeners).
-
-        Args:
-            event: Event data to emit
-        """
-        for callback in self._streaming_callbacks:
-            try:
-                callback(event)
-            except Exception as e:
-                logger.warning(f"Streaming event callback failed: {e}")
+        return self.streaming_coordinator.finalize_streaming_thought(
+            agent_id, final_content, confidence
+        )
 
     def register_streaming_callback(self, callback: Callable[[Dict[str, Any]], None]) -> None:
         """
@@ -943,8 +941,7 @@ class CentralPost:
         Args:
             callback: Function to call with streaming events
         """
-        self._streaming_callbacks.append(callback)
-        logger.info(f"Registered streaming callback (total: {len(self._streaming_callbacks)})")
+        return self.streaming_coordinator.register_streaming_callback(callback)
 
     # ============================================================================
     # CENTRALPOST WEB SEARCH (Confidence-Based Information Gathering)
@@ -957,23 +954,7 @@ class CentralPost:
         Called after each message is processed to monitor team consensus.
         If confidence drops below threshold and cooldown expired, performs web search.
         """
-        # Need enough data points and web search client
-        if not self.web_search_client or len(self._recent_confidences) < self._web_search_min_samples:
-            return
-
-        # Check if cooldown period has passed
-        time_since_last_search = time.time() - self._last_search_time
-        if time_since_last_search < self._search_cooldown:
-            return
-
-        # Calculate rolling average confidence
-        avg_confidence = sum(self._recent_confidences) / len(self._recent_confidences)
-
-        # Trigger search if confidence is low
-        if avg_confidence < self._web_search_trigger_threshold:
-            logger.info(f"Low confidence detected (avg: {avg_confidence:.2f} < {self._web_search_trigger_threshold})")
-            self._perform_web_search(self._current_task_description or "information gathering")
-            self._last_search_time = time.time()
+        return self.web_search_coordinator.check_confidence_and_search()
 
     def update_confidence_threshold(self, new_threshold: float, reason: str = "") -> None:
         """
@@ -983,153 +964,20 @@ class CentralPost:
             new_threshold: New confidence threshold value (0.0-1.0)
             reason: Explanation for threshold change (for logging)
         """
-        old_threshold = self._web_search_trigger_threshold
-        self._web_search_trigger_threshold = max(0.0, min(1.0, new_threshold))
-
-        if old_threshold != self._web_search_trigger_threshold:
-            logger.info(f"🎯 Adaptive threshold: {old_threshold:.2f} → {self._web_search_trigger_threshold:.2f}")
-            if reason:
-                logger.info(f"   Reason: {reason}")
+        return self.web_search_coordinator.update_confidence_threshold(new_threshold, reason)
 
     def get_confidence_threshold(self) -> float:
         """Get current confidence threshold."""
-        return self._web_search_trigger_threshold
+        return self.web_search_coordinator.get_confidence_threshold()
 
-    def _perform_web_search(self, task_description: str) -> None:
+    def perform_web_search(self, task_description: str) -> None:
         """
         Perform web search when consensus is low and store relevant info in knowledge base.
 
         Args:
             task_description: The current workflow task to guide search queries
         """
-        # FAILSAFE: Use print() in case logger is broken
-        print(f"[CENTRAL_POST] _perform_web_search ENTRY - task: {task_description[:50]}...")
-        print(f"[CENTRAL_POST] web_search_client: {'AVAILABLE' if self.web_search_client else 'NONE'}")
-
-        logger.info(f"🔍 _perform_web_search ENTRY - task: {task_description[:50]}...")
-        logger.info(f"🔍 web_search_client status: {'AVAILABLE' if self.web_search_client else 'NONE'}")
-
-        # Check if we already have trustable knowledge (prevent redundant searches)
-        if self.knowledge_store and hasattr(self, '_search_count'):
-            if self._search_count >= 2:
-                # Check for trustable knowledge
-                try:
-                    from src.memory.knowledge_store import KnowledgeQuery, ConfidenceLevel
-                    from src.workflows.truth_assessment import assess_answer_confidence
-
-                    # Retrieve recent knowledge
-                    import time as time_module
-                    current_time = time_module.time()
-                    one_hour_ago = current_time - 3600
-
-                    knowledge_entries = self.knowledge_store.retrieve_knowledge(
-                        KnowledgeQuery(
-                            domains=["web_search"],
-                            min_confidence=ConfidenceLevel.HIGH,
-                            time_range=(one_hour_ago, current_time),
-                            limit=5
-                        )
-                    )
-
-                    if knowledge_entries:
-                        trustable, score, reason = assess_answer_confidence(knowledge_entries, task_description)
-                        if trustable:
-                            logger.info(f"⏭️  Skipping web search: Trustable knowledge already exists ({reason})")
-                            logger.info(f"   {len(knowledge_entries)} HIGH confidence entries available")
-                            return
-                except Exception as e:
-                    logger.warning(f"Could not assess existing knowledge: {e}")
-
-        if not self.web_search_client:
-            print("[CENTRAL_POST] ERROR: web_search_client is None!")
-            logger.warning("⚠ _perform_web_search called but web_search_client is None!")
-            logger.warning(f"⚠ self.web_search_client = {self.web_search_client}")
-            return
-
-        try:
-            start_time = time.time()
-
-            # Increment search counter
-            self._search_count += 1
-
-            # Log search initiation with human-readable format
-            print("[CENTRAL_POST] === WEB SEARCH TRIGGERED ===")
-            logger.info("=" * 60)
-            logger.info("CENTRALPOST WEB SEARCH TRIGGERED")
-            logger.info("=" * 60)
-
-            # Calculate stats
-            recent_confs = list(self._recent_confidences)
-            avg_conf = sum(recent_confs) / len(recent_confs) if recent_confs else 0.0
-            logger.info(f"Reason: Low confidence (avg: {avg_conf:.2f}, threshold: {self._web_search_trigger_threshold:.2f})")
-            logger.info(f"Task: {task_description}")
-            logger.info(f"Agents analyzed: {len(recent_confs)} outputs")
-            logger.info(f"Search attempt: #{self._search_count}")
-            logger.info("")
-
-            # Generate search queries (hybrid approach)
-            logger.info("📝 Formulating search queries...")
-            queries = self._formulate_search_queries(task_description)
-            logger.info(f"📝 Generated {len(queries)} search queries")
-            for idx, q in enumerate(queries, 1):
-                logger.info(f"   {idx}. \"{q}\"")
-            logger.info("")
-
-            # Track all results and blocked domains
-            all_results = []
-            blocked_count = 0
-
-            # Perform searches
-            for i, query in enumerate(queries, 1):
-                logger.info(f"🔍 Executing Query {i}/{len(queries)}: \"{query}\"")
-
-                try:
-                    results = self.web_search_client.search(
-                        query=query,
-                        task_id=f"centralpost_{int(time.time())}"
-                    )
-
-                    logger.info(f"  📄 Received {len(results)} results from search provider")
-
-                    # Log each result
-                    for j, result in enumerate(results, 1):
-                        domain = result.url.split('/')[2] if '/' in result.url else result.url
-                        logger.info(f"  {j}. {domain} - {result.title[:60]}...")
-
-                    all_results.extend(results)
-
-                except Exception as e:
-                    logger.error(f"  ✗ Search query failed with exception: {e}", exc_info=True)
-
-                logger.info("")
-
-            # Get blocked stats from web_search_client
-            stats = self.web_search_client.get_stats()
-            blocked_count = stats.get('blocked_results', 0)
-
-            # Log statistics
-            elapsed = time.time() - start_time
-            logger.info("📊 Search Statistics:")
-            logger.info(f"  • Total sources found: {len(all_results) + blocked_count}")
-            logger.info(f"  • Blocked by filter: {blocked_count} ({', '.join(self.web_search_client.blocked_domains) if blocked_count > 0 else 'none'})")
-            logger.info(f"  • Relevant sources: {len(all_results)}")
-            logger.info(f"  • Search time: {elapsed:.2f}s")
-            logger.info("")
-
-            # Extract and store relevant information
-            if all_results:
-                logger.info(f"🔬 Calling _extract_and_store_relevant_info with {len(all_results)} results...")
-                self._extract_and_store_relevant_info(all_results, task_description)
-                logger.info(f"✓ _extract_and_store_relevant_info completed")
-            else:
-                logger.warning("⚠ No search results available after filtering - CANNOT EXTRACT KNOWLEDGE")
-                logger.warning(f"⚠ This means agents will not have web search data!")
-
-            logger.info("=" * 60)
-
-        except Exception as e:
-            logger.error(f"❌ Web search failed with EXCEPTION: {e}", exc_info=True)
-            logger.error(f"❌ Search will NOT be available to agents due to this failure")
+        return self.web_search_coordinator.perform_web_search(task_description)
 
     def _handle_web_search_request(self, message: Message) -> None:
         """
@@ -1138,56 +986,7 @@ class CentralPost:
         Args:
             message: Message containing WEB_SEARCH_NEEDED request
         """
-        if not self.web_search_client:
-            logger.warning("Web search requested but no client available")
-            return
-
-        try:
-            import re
-
-            content = message.content.get('content', '')
-            agent_id = message.sender_id
-
-            # Extract search query from WEB_SEARCH_NEEDED: pattern
-            pattern = r'WEB_SEARCH_NEEDED:\s*(.+?)(?:\n|$)'
-            matches = re.findall(pattern, content, re.IGNORECASE)
-
-            if not matches:
-                logger.warning(f"Agent {agent_id} used WEB_SEARCH_NEEDED but no query found")
-                return
-
-            # Use the first query found
-            query = matches[0].strip()
-
-            logger.info("=" * 60)
-            logger.info(f"AGENT-REQUESTED WEB SEARCH")
-            logger.info("=" * 60)
-            logger.info(f"Requesting Agent: {agent_id}")
-            logger.info(f"Query: \"{query}\"")
-            logger.info("")
-
-            # Perform search
-            results = self.web_search_client.search(
-                query=query,
-                task_id=f"agent_request_{int(time.time())}"
-            )
-
-            # Log results
-            for result in results:
-                logger.info(f"  ✓ {result.url.split('/')[2] if '/' in result.url else result.url} - {result.title[:60]}...")
-
-            logger.info(f"\n📊 Found {len(results)} results for agent {agent_id}")
-
-            # Extract and store relevant information
-            if results:
-                self._extract_and_store_relevant_info(results, query)
-            else:
-                logger.warning("⚠ No search results found")
-
-            logger.info("=" * 60)
-
-        except Exception as e:
-            logger.error(f"Agent web search request failed: {e}", exc_info=True)
+        return self.web_search_coordinator.handle_web_search_request(message)
 
     def _handle_system_action_detection(self, message: Message) -> None:
         """
@@ -1196,6 +995,12 @@ class CentralPost:
         Similar to web search detection, scans agent output for system action
         requests and automatically routes them through the system autonomy
         infrastructure.
+
+        Note on Conditional Tool Instructions:
+        - Agents only receive tool patterns (like SYSTEM_ACTION_NEEDED) if task requires them
+        - If agent uses this pattern, it means tool instructions were provided
+        - System is self-correcting: no instructions = agent doesn't know pattern
+        - No additional validation needed
 
         Args:
             message: Message containing SYSTEM_ACTION_NEEDED request
@@ -1221,6 +1026,27 @@ class CentralPost:
             for command in matches:
                 command = command.strip()
 
+                # CRITICAL FIX: Strip surrounding quotes if agent wrapped the entire command
+                # Fixes: "SYSTEM_ACTION_NEEDED: head -n 50 file" results in command"
+                # This causes shell errors: /bin/sh: Syntax error: Unterminated quoted string
+                if len(command) >= 2:
+                    # Handle matched quotes (both opening and closing)
+                    if (command[0] == '"' and command[-1] == '"') or \
+                       (command[0] == "'" and command[-1] == "'"):
+                        command = command[1:-1].strip()
+                        logger.debug(f"Stripped surrounding quotes from command")
+                    # Handle trailing quote only (opening quote lost in regex capture)
+                    elif command.endswith('"') or command.endswith("'"):
+                        command = command.rstrip('"').rstrip("'").strip()
+                        logger.debug(f"Stripped trailing quote from command")
+
+                # Skip nested WEB_SEARCH_NEEDED patterns (validation gap fix)
+                if command.startswith('WEB_SEARCH_NEEDED:'):
+                    logger.warning(f"⚠️ Agent {agent_id} nested WEB_SEARCH_NEEDED inside SYSTEM_ACTION_NEEDED")
+                    logger.warning(f"   Invalid command skipped: {command}")
+                    logger.info(f"   Tip: Use WEB_SEARCH_NEEDED: on its own line, not inside SYSTEM_ACTION_NEEDED:")
+                    continue  # Skip this malformed command
+
                 # Validate extracted command (debug logging)
                 logger.debug(f"Extracted command: '{command}' (length: {len(command)})")
                 if len(command) > 200:
@@ -1239,13 +1065,29 @@ class CentralPost:
                 if self._current_task_description:
                     context += f": {self._current_task_description[:100]}"
 
+                # PRE-EXECUTION DEDUPLICATION: Check if command already executed in this workflow
+                # This prevents agents from repeatedly requesting the same command
+                if self._current_workflow_id:
+                    command_hash = self.system_executor.compute_command_hash(command)
+                    if self._current_workflow_id in self.system_command_manager._executed_commands:
+                        if command_hash in self.system_command_manager._executed_commands[self._current_workflow_id]:
+                            cached_result = self.system_command_manager._executed_commands[self._current_workflow_id][command_hash]
+                            logger.info("⚡ Command already executed in this workflow - skipping duplicate")
+                            logger.info(f"  Command: {command}")
+                            logger.info(f"  Previous result: {'SUCCESS' if cached_result.success else 'FAILED'}")
+                            logger.info(f"  Exit code: {cached_result.exit_code}")
+                            logger.info("=" * 60)
+                            continue  # Skip this duplicate command
+
                 # Request system action through normal flow
                 # This will handle trust classification, approval workflow, execution
+                # Pass project_root as working directory for command execution
                 action_id = self.request_system_action(
                     agent_id=agent_id,
                     command=command,
                     context=context,
-                    workflow_id=self._current_workflow_id
+                    workflow_id=self._current_workflow_id,
+                    cwd=self.project_root
                 )
 
                 logger.info(f"  Action ID: {action_id}")
@@ -1259,6 +1101,22 @@ class CentralPost:
                         logger.info(f"✓ System action completed successfully")
                         logger.info(f"   Command: {command}")
                         logger.info(f"   Output: {result.stdout[:200] if result.stdout else '(no output)'}")
+
+                        # CRITICAL FIX: Store command output as knowledge entry
+                        # This allows agents to retrieve the result via context builder
+                        if result.stdout:
+                            try:
+                                output_content = f"Command: {command}\n\nOutput:\n{result.stdout}"
+                                knowledge_id = self.store_agent_result_as_knowledge(
+                                    agent_id=agent_id,
+                                    content=output_content,
+                                    confidence=1.0,
+                                    domain="system_action"
+                                )
+                                logger.info(f"  ✓ Stored command output as knowledge entry #{knowledge_id}")
+                                logger.info(f"    Agents can now retrieve this result via context builder")
+                            except Exception as store_error:
+                                logger.error(f"  ⚠️ Failed to store command output as knowledge: {store_error}")
                     else:
                         logger.warning(f"⚠️ System action failed or denied")
                         logger.warning(f"   Command: {command}")
@@ -1273,244 +1131,80 @@ class CentralPost:
         except Exception as e:
             logger.error(f"Agent system action request failed: {e}", exc_info=True)
 
-    def _formulate_search_queries(self, task_description: str) -> List[str]:
+    def _handle_extension_request_detection(self, message: Message) -> None:
         """
-        Formulate search queries using hybrid approach: task + agent analysis.
+        Detect and handle NEED_MORE_PROCESSING: pattern in agent response.
+
+        Phase 3.1: Agents can request additional processing time if they reach
+        a checkpoint but confidence is still low. This enables dynamic checkpoint
+        injection to allow workflows to iterate until solved.
 
         Args:
-            task_description: Base task description
-
-        Returns:
-            List of search query strings (2-3 queries)
+            message: Message potentially containing extension request
         """
-        queries = []
-
-        # Base query from task
-        base_query = task_description.strip()
-        if base_query:
-            queries.append(base_query)
-
-        # Analyze recent agent messages for gaps/keywords
-        if self._processed_messages:
-            # Get last few messages
-            recent_msgs = self._processed_messages[-5:] if len(self._processed_messages) >= 5 else self._processed_messages
-
-            # Extract keywords from agent outputs (simple approach)
-            # In real implementation, could use LLM to analyze gaps
-            keywords = []
-            for msg in recent_msgs:
-                if 'agent_type' in msg.content:
-                    agent_type = msg.content['agent_type']
-                    if agent_type == 'research':
-                        keywords.append('latest')
-                        keywords.append('2024 2025')
-                    elif agent_type == 'analysis':
-                        keywords.append('detailed')
-                    elif agent_type == 'critic':
-                        keywords.append('verified')
-
-            # Add enhanced query with keywords
-            if keywords and base_query:
-                enhanced_query = f"{base_query} {' '.join(set(keywords[:2]))}"
-                queries.append(enhanced_query)
-
-        # Limit to 2-3 queries
-        return queries[:3]
-
-    def _extract_and_store_relevant_info(self, search_results: List, task_description: str) -> None:
-        """
-        Use LLM to extract relevant information with deep search fallback.
-
-        Phase 1: Extract from search snippets
-        Phase 2: If insufficient, fetch and parse actual webpage content
-        Phase 3: Store enhanced results in knowledge base
-
-        Args:
-            search_results: List of SearchResult objects
-            task_description: Task to determine relevance
-        """
-        logger.info("=" * 60)
-        logger.info("🔬 _extract_and_store_relevant_info ENTRY")
-        logger.info("=" * 60)
-        logger.info(f"  Search results count: {len(search_results)}")
-        logger.info(f"  Task: {task_description[:100]}...")
-
-        # CRITICAL VALIDATION: Check prerequisites
-        if not self.llm_client:
-            logger.error("❌ FATAL: llm_client is None - CANNOT EXTRACT KNOWLEDGE")
-            logger.error("❌ This will cause agents to have NO web search data")
-            return
-
-        if not self.knowledge_store:
-            logger.error("❌ FATAL: knowledge_store is None - CANNOT STORE KNOWLEDGE")
-            logger.error("❌ This will cause agents to have NO web search data")
-            return
-
-        logger.info("✓ Prerequisites validated (llm_client and knowledge_store available)")
-        logger.info("")
-
         try:
-            # PHASE 1: Extract from snippets
-            logger.info("📄 PHASE 1: Extracting from search snippets...")
-            formatted_snippets = self.web_search_client.format_results_for_llm(search_results)
-            logger.info(f"  Formatted snippets length: {len(formatted_snippets)} characters")
+            import re
 
-            snippet_prompt = f"""Extract key facts relevant to '{task_description}' from these search snippets.
+            content = message.content.get('content', '')
+            agent_id = message.sender_id
 
-{formatted_snippets}
+            # Extract reason from NEED_MORE_PROCESSING: pattern
+            pattern = r'NEED_MORE_PROCESSING:\s*([^\n]+)'
+            matches = re.findall(pattern, content, re.IGNORECASE)
 
-IMPORTANT: If the snippets contain the actual answer (e.g., specific date, time, number), provide it as bullet points.
-If snippets only mention that information exists but don't contain the actual answer, respond EXACTLY with:
-"NEED_PAGE_CONTENT"
+            if not matches:
+                return
 
-Provide bullet points or the NEED_PAGE_CONTENT signal."""
+            reason = matches[0].strip()
 
-            logger.info("  🤖 Calling LLM for snippet extraction...")
-
-            # Initial extraction from snippets
-            response = self.llm_client.complete(
-                agent_id="web_search_extractor",
-                system_prompt="You extract facts from search snippets. Be specific about what information is actually present.",
-                user_prompt=snippet_prompt,
-                temperature=0.2,
-                max_tokens=300
-            )
-
-            initial_extraction = response.content.strip()
-            logger.info(f"  ✓ LLM snippet extraction complete: {len(initial_extraction)} characters")
-            logger.info(f"  📝 Extracted content preview: {initial_extraction[:150]}...")
-
-            # PHASE 2: Deep search if needed
-            page_data = None
-            needs_deep_search = "NEED_PAGE_CONTENT" in initial_extraction or len(initial_extraction) < 50
-
-            if needs_deep_search:
-                logger.info("")
-                logger.info("📄 PHASE 2: Deep search needed (snippets insufficient)")
-                logger.info(f"  Reason: {'NEED_PAGE_CONTENT signal detected' if 'NEED_PAGE_CONTENT' in initial_extraction else f'extraction too short ({len(initial_extraction)} chars)'}")
-
-                # Try fetching content from top results
-                for i, result in enumerate(search_results[:3], 1):  # Try top 3 results
-                    logger.info(f"  🌐 Attempting to fetch full page {i}/3...")
-                    logger.info(f"     URL: {result.url}")
-                    page_data = self.web_search_client.fetch_page_content(result.url, max_length=3000)
-                    if page_data:
-                        logger.info(f"  ✓ Successfully fetched {len(page_data['content'])} chars from {page_data['url'].split('/')[2]}")
-                        logger.info(f"     Title: {page_data['title']}")
-                        break
-                    else:
-                        logger.warning(f"  ✗ Failed to fetch page {i} - trying next result")
-
-                if page_data:
-                    logger.info("")
-                    logger.info("  🤖 Calling LLM for deep content extraction...")
-                    # Re-extract from full page content
-                    content_prompt = f"""Extract SPECIFIC facts relevant to '{task_description}' from this webpage content.
-
-Title: {page_data['title']}
-URL: {page_data['url']}
-
-Content:
-{page_data['content'][:2000]}
-
-Provide ONLY the specific factual answer as bullet points. Be precise and extract exact values (dates, times, numbers, etc.)."""
-
-                    enhanced_response = self.llm_client.complete(
-                        agent_id="web_search_deep_extractor",
-                        system_prompt="You extract specific facts from webpage content. Be precise and factual. Extract exact values.",
-                        user_prompt=content_prompt,
-                        temperature=0.1,  # Very low for factual extraction
-                        max_tokens=500
-                    )
-
-                    extracted_info = enhanced_response.content.strip()
-                    logger.info(f"  ✓ Deep extraction complete: {len(extracted_info)} chars")
-                    logger.info(f"  📝 Deep extracted content: {extracted_info[:200]}...")
-                else:
-                    logger.warning("")
-                    logger.warning("  ⚠ Deep search FAILED - could not fetch page content from ANY result")
-                    logger.warning("  ⚠ Falling back to snippet extraction (may be incomplete)")
-                    extracted_info = initial_extraction if "NEED_PAGE_CONTENT" not in initial_extraction else ""
-            else:
-                logger.info("")
-                logger.info("✓ PHASE 2 skipped: Snippet extraction sufficient")
-                extracted_info = initial_extraction
-
-            # PHASE 3: Store results
+            logger.info("=" * 60)
+            logger.info(f"🔄 AGENT PROCESSING EXTENSION REQUEST")
+            logger.info("=" * 60)
+            logger.info(f"Requesting Agent: {agent_id}")
+            logger.info(f"Reason: {reason}")
             logger.info("")
-            logger.info("📦 PHASE 3: Storing in knowledge base...")
 
-            if extracted_info and "NEED_PAGE_CONTENT" not in extracted_info and len(extracted_info) > 20:
-                logger.info(f"  ✓ Extracted info valid: {len(extracted_info)} chars")
+            # Store extension request for workflow to handle
+            if not hasattr(self, '_extension_requests'):
+                self._extension_requests = []
 
-                # Prepare storage payload
-                storage_content = {
-                    "result": extracted_info,
-                    "task": task_description,
-                    "source_count": len(search_results),
-                    "deep_search_used": page_data is not None,
-                    "source_url": page_data['url'] if page_data else search_results[0].url,
-                    "timestamp": time.time()
-                }
+            self._extension_requests.append({
+                'agent_id': agent_id,
+                'reason': reason,
+                'timestamp': message.timestamp
+            })
 
-                logger.info("  📦 Storage parameters:")
-                logger.info(f"     - Type: DOMAIN_EXPERTISE")
-                logger.info(f"     - Confidence: HIGH")
-                logger.info(f"     - Domain: web_search")
-                logger.info(f"     - Source: {storage_content['source_url'].split('/')[2] if '/' in storage_content['source_url'] else storage_content['source_url']}")
-                logger.info(f"     - Deep search: {storage_content['deep_search_used']}")
-
-                # Store in knowledge base
-                try:
-                    self.knowledge_store.store_knowledge(
-                        knowledge_type=KnowledgeType.DOMAIN_EXPERTISE,
-                        content=storage_content,
-                        confidence_level=ConfidenceLevel.HIGH,
-                        source_agent="centralpost_web_search",
-                        domain="web_search",
-                        tags=["web_search", "factual_data", "current_information"]
-                    )
-                    logger.info("  ✓ Knowledge stored successfully in knowledge base!")
-                except Exception as store_error:
-                    logger.error(f"  ❌ STORAGE FAILED: {store_error}", exc_info=True)
-                    logger.error("  ❌ This means agents will NOT have this knowledge!")
-                    raise
-
-                logger.info("")
-                logger.info("📄 Extracted Information (now available to agents):")
-                # Log bullet points
-                for line in extracted_info.split('\n'):
-                    if line.strip():
-                        logger.info(f"  • {line.strip()}")
-
-                logger.info("")
-                if page_data:
-                    logger.info(f"✅ SUCCESS: Deep search information stored (source: {page_data['url'].split('/')[2]})")
-                else:
-                    logger.info("✅ SUCCESS: Snippet information stored in knowledge base")
-                logger.info("✅ Agents will now be able to retrieve this knowledge")
-            else:
-                logger.error("")
-                logger.error("❌ PHASE 3 FAILED: Extraction yielded no usable information")
-                logger.error(f"   - extracted_info exists: {bool(extracted_info)}")
-                logger.error(f"   - extracted_info length: {len(extracted_info) if extracted_info else 0}")
-                logger.error(f"   - contains NEED_PAGE_CONTENT: {'NEED_PAGE_CONTENT' in extracted_info if extracted_info else 'N/A'}")
-                logger.error("❌ NO KNOWLEDGE WILL BE STORED - agents will have no web search data!")
-
+            logger.info(f"  ✓ Extension request recorded ({len(self._extension_requests)} total)")
+            logger.info(f"  ℹ Workflow will evaluate if additional steps should be added")
             logger.info("=" * 60)
 
         except Exception as e:
-            logger.error("=" * 60)
-            logger.error(f"❌ EXTRACTION FAILED WITH EXCEPTION: {e}", exc_info=True)
-            logger.error("❌ NO KNOWLEDGE STORED - agents will NOT have web search data")
-            logger.error("=" * 60)
+            logger.error(f"Extension request detection failed: {e}", exc_info=True)
+
+    def get_extension_requests(self) -> List[Dict[str, Any]]:
+        """
+        Get all pending extension requests from agents.
+
+        Returns:
+            List of extension request dictionaries
+        """
+        if not hasattr(self, '_extension_requests'):
+            self._extension_requests = []
+        return self._extension_requests
+
+    def clear_extension_requests(self):
+        """Clear all extension requests (called after workflow processes them)."""
+        self._extension_requests = []
+
 
     # ============================================================================
     # CENTRALPOST SYNTHESIS (Felix Architecture: CentralPost is Smart)
     # ============================================================================
 
     def synthesize_agent_outputs(self, task_description: str, max_messages: int = 20,
-                                 task_complexity: str = "COMPLEX") -> Dict[str, Any]:
+                                 task_complexity: str = "COMPLEX",
+                                 reasoning_evals: Optional[Dict[str, Dict[str, Any]]] = None,
+                                 coverage_report: Optional[Any] = None) -> Dict[str, Any]:
         """
         Synthesize final output from all agent communications.
 
@@ -1522,11 +1216,18 @@ Provide ONLY the specific factual answer as bullet points. Be precise and extrac
             task_description: Original task description
             max_messages: Maximum number of agent messages to include in synthesis
             task_complexity: Task complexity ("SIMPLE_FACTUAL", "MEDIUM", or "COMPLEX")
+            reasoning_evals: Optional dict mapping agent_id to reasoning evaluation results
+                from CriticAgent.evaluate_reasoning_process(). Used to weight agent
+                contributions - agents with low reasoning_quality_score have reduced
+                influence on synthesis confidence.
+            coverage_report: Optional CoverageReport from KnowledgeCoverageAnalyzer.
+                Used to compute meta-confidence and generate epistemic caveats.
 
         Returns:
             Dict containing:
                 - synthesis_content: Final synthesized output text
                 - confidence: Synthesis confidence score (0.0-1.0)
+                - meta_confidence: Coverage-adjusted confidence (Phase 7)
                 - temperature: Temperature used for synthesis
                 - tokens_used: Number of tokens used
                 - max_tokens: Token budget allocated
@@ -1536,233 +1237,171 @@ Provide ONLY the specific factual answer as bullet points. Be precise and extrac
         Raises:
             RuntimeError: If no LLM client available for synthesis
         """
-        if not self.llm_client:
-            raise RuntimeError("CentralPost synthesis requires LLM client. Pass llm_client to CentralPost.__init__()")
-
-        logger.info("=" * 60)
-        logger.info("CENTRALPOST SYNTHESIS STARTING")
-        logger.info("=" * 60)
-
-        # Gather recent agent messages AND system action results
-        messages = self.get_recent_messages(
-            limit=max_messages,
-            message_types=[MessageType.STATUS_UPDATE, MessageType.SYSTEM_ACTION_RESULT]
+        return self.synthesis_engine.synthesize_agent_outputs(
+            task_description, max_messages, task_complexity, reasoning_evals, coverage_report
         )
 
-        if not messages:
-            logger.warning("No agent messages available for synthesis")
-            return {
-                "synthesis_content": "No agent outputs available for synthesis.",
-                "confidence": 0.0,
-                "temperature": 0.0,
-                "tokens_used": 0,
-                "max_tokens": 0,
-                "agents_synthesized": 0,
-                "timestamp": time.time(),
-                "error": "no_messages"
-            }
+    def broadcast_synthesis_feedback(self, synthesis_result: Dict[str, Any],
+                                     task_description: str,
+                                     workflow_id: Optional[str] = None,
+                                     task_type: Optional[str] = None,
+                                     knowledge_entry_ids: Optional[List[str]] = None) -> None:
+        """
+        Broadcast synthesis feedback back to agents for learning and improvement.
 
-        # Calculate average confidence from agent outputs
-        confidences = []
-        for msg in messages:
-            if msg.message_type == MessageType.STATUS_UPDATE:
-                conf = msg.content.get('confidence', 0.0)
-                if conf > 0:
-                    confidences.append(conf)
+        This implements the Feedback Integration Protocol, sending performance
+        feedback to each agent about how their contributions were used in the
+        final synthesis. Enables agents to learn and adapt.
 
-        avg_confidence = sum(confidences) / len(confidences) if confidences else 0.5
+        Also records knowledge usage with usefulness scores for meta-learning boost.
 
-        # Calculate adaptive synthesis parameters
-        temperature = self._calculate_synthesis_temperature(avg_confidence)
-        max_tokens = self._calculate_synthesis_tokens(len(messages), task_complexity)
+        Args:
+            synthesis_result: The completed synthesis result from synthesize_agent_outputs()
+            task_description: Original task description for context
+            workflow_id: Optional workflow ID for knowledge usage tracking
+            task_type: Optional classified task type for meta-learning differentiation
+            knowledge_entry_ids: Optional list of knowledge entry IDs used in this workflow
+        """
+        if not synthesis_result or 'synthesis_content' not in synthesis_result:
+            logger.warning("Cannot broadcast feedback - invalid synthesis result")
+            return
 
-        logger.info(f"Synthesis Parameters:")
-        logger.info(f"  Task complexity: {task_complexity}")
-        logger.info(f"  Agent messages: {len(messages)}")
-        logger.info(f"  Average confidence: {avg_confidence:.2f}")
-        logger.info(f"  Adaptive temperature: {temperature}")
-        logger.info(f"  Adaptive token budget: {max_tokens}")
+        synthesis_content = synthesis_result['synthesis_content']
+        synthesis_confidence = synthesis_result.get('confidence', 0.0)
+        agents_synthesized = synthesis_result.get('agents_synthesized', 0)
 
-        # Build synthesis prompt
-        user_prompt = self._build_synthesis_prompt(task_description, messages, task_complexity)
+        # Get recent agent messages (same messages used in synthesis)
+        recent_messages = self._processed_messages[-synthesis_result.get('agents_synthesized', 20):]
 
-        # Helical-aware system prompt
-        system_prompt = """You are the Central Post of the Felix helical multi-agent system.
+        logger.info(f"🔄 Broadcasting synthesis feedback to {len(recent_messages)} agents")
 
-Felix agents operate along a helical geometry:
-- Top of helix: Broad exploration (research agents)
-- Middle spiral: Focused analysis (analysis agents)
-- Bottom convergence: Critical validation (critic agents)
+        # Evaluate each agent's contribution
+        for message in recent_messages:
+            if message.message_type != MessageType.STATUS_UPDATE:
+                continue
 
-You represent the central axis of this helix - the single point of truth that all agents spiral around.
+            agent_id = message.sender_id
+            agent_content = message.content.get('result', '')
+            agent_confidence = message.content.get('confidence', 0.0)
 
-Your synthesis represents the convergence point where all helical agent paths meet.
-
-Synthesize the agent outputs below into a final answer that:
-1. Captures insights from the exploration phase (research)
-2. Integrates findings from the analysis phase (analysis)
-3. Addresses concerns raised by the validation phase (critics)
-4. Represents the natural convergence of all agent trajectories
-
-This is the emergent output of the entire helical system."""
-
-        # Call LLM for synthesis
-        start_time = time.time()
-        try:
-            llm_response = self.llm_client.complete(
-                agent_id="central_post_synthesizer",
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                temperature=temperature,
-                max_tokens=max_tokens
+            # Calculate contribution evaluation metrics
+            usefulness_score = self._evaluate_contribution_usefulness(
+                agent_content, synthesis_content
             )
 
-            synthesis_time = time.time() - start_time
+            # Calibration feedback: how did agent confidence compare to synthesis outcome?
+            confidence_calibration = synthesis_confidence - agent_confidence
 
-            logger.info(f"✓ Synthesis complete in {synthesis_time:.2f}s")
-            logger.info(f"  Tokens used: {llm_response.tokens_used} / {max_tokens}")
-            logger.info(f"  Content length: {len(llm_response.content)} chars")
-            logger.info("=" * 60)
+            # Send SYNTHESIS_FEEDBACK message
+            feedback_message = Message(
+                sender_id="central_post",
+                message_type=MessageType.SYNTHESIS_FEEDBACK,
+                content={
+                    'synthesis_confidence': synthesis_confidence,
+                    'synthesis_summary': synthesis_content[:500],  # First 500 chars
+                    'agents_synthesized': agents_synthesized,
+                    'task_description': task_description
+                },
+                timestamp=time.time()
+            )
 
-            return {
-                "synthesis_content": llm_response.content,
-                "confidence": 0.95,  # High confidence for CentralPost synthesis
-                "temperature": temperature,
-                "tokens_used": llm_response.tokens_used,
-                "max_tokens": max_tokens,
-                "agents_synthesized": len(messages),
-                "avg_agent_confidence": avg_confidence,
-                "synthesis_time": synthesis_time,
-                "timestamp": time.time()
-            }
+            # Send CONTRIBUTION_EVALUATION message
+            evaluation_message = Message(
+                sender_id="central_post",
+                message_type=MessageType.CONTRIBUTION_EVALUATION,
+                content={
+                    'usefulness_score': usefulness_score,
+                    'incorporated_in_synthesis': usefulness_score > 0.3,
+                    'agent_confidence': agent_confidence,
+                    'synthesis_confidence': synthesis_confidence,
+                    'confidence_calibration': confidence_calibration,
+                    'calibration_quality': 'good' if abs(confidence_calibration) < 0.2 else 'needs_adjustment'
+                },
+                timestamp=time.time()
+            )
 
-        except Exception as e:
-            logger.error(f"✗ CentralPost synthesis failed: {e}")
-            raise
+            # Queue feedback messages for the agent
+            self._message_queue.put(feedback_message)
+            self._message_queue.put(evaluation_message)
 
-    def _calculate_synthesis_temperature(self, avg_confidence: float) -> float:
-        """
-        Calculate adaptive temperature for synthesis based on agent confidence consensus.
+            logger.debug(f"  → Feedback sent to {agent_id}: usefulness={usefulness_score:.2f}, calibration={confidence_calibration:+.2f}")
 
-        High confidence → focused synthesis (0.2)
-        Medium confidence → balanced synthesis (0.3)
-        Low confidence → creative integration (0.4)
+        # Record knowledge usage with synthesis-derived usefulness scores for meta-learning
+        if knowledge_entry_ids and workflow_id and self.knowledge_store:
+            # Use synthesis confidence as proxy for overall usefulness
+            useful_score = synthesis_confidence
 
-        Args:
-            avg_confidence: Average confidence from agent outputs (0.0-1.0)
-
-        Returns:
-            Temperature value (0.2-0.4)
-        """
-        if avg_confidence >= 0.9:
-            return 0.2  # High confidence → very focused
-        elif avg_confidence >= 0.75:
-            return 0.3  # Medium confidence → balanced
-        else:
-            return 0.4  # Lower confidence → more creative integration
-
-    def _calculate_synthesis_tokens(self, agent_count: int, task_complexity: str = "COMPLEX") -> int:
-        """
-        Calculate adaptive token budget for synthesis based on number of agents and task complexity.
-
-        More agents → more content to synthesize → larger budget
-        Simpler tasks → less synthesis needed → smaller budget
-
-        Args:
-            agent_count: Number of agent outputs to synthesize
-            task_complexity: Task complexity ("SIMPLE_FACTUAL", "MEDIUM", or "COMPLEX")
-
-        Returns:
-            Token budget (200-3000)
-        """
-        # Simple factual queries need minimal synthesis
-        if task_complexity == "SIMPLE_FACTUAL":
-            return 200  # Just answer the question directly
-
-        # Medium complexity gets moderate token budget
-        if task_complexity == "MEDIUM":
-            return 800 if agent_count < 5 else 1200
-
-        # Complex tasks get full token budget based on team size
-        if agent_count >= 10:
-            return 3000  # Many agents → comprehensive synthesis
-        elif agent_count >= 5:
-            return 2000  # Medium team → balanced synthesis
-        else:
-            return 1500  # Small team → focused synthesis
-
-    def _build_synthesis_prompt(self, task_description: str, messages: List[Message],
-                                task_complexity: str = "COMPLEX") -> str:
-        """
-        Build synthesis prompt from task description and agent messages.
-
-        Args:
-            task_description: Original task description
-            messages: List of agent messages to synthesize
-            task_complexity: Task complexity ("SIMPLE_FACTUAL", "MEDIUM", or "COMPLEX")
-
-        Returns:
-            Formatted synthesis prompt
-        """
-        prompt_parts = [
-            f"Original Task: {task_description}",
-            "",
-            "Agent Communications to Synthesize:",
-            ""
-        ]
-
-        # Add each agent output and system action result with metadata
-        for i, msg in enumerate(messages, 1):
-            if msg.message_type == MessageType.STATUS_UPDATE:
-                agent_type = msg.content.get('agent_type', 'unknown')
-                content = msg.content.get('content', '')
-                confidence = msg.content.get('confidence', 0.0)
-
-                prompt_parts.append(
-                    f"{i}. {agent_type.upper()} Agent (confidence: {confidence:.2f}):"
+            try:
+                self.knowledge_store.record_knowledge_usage(
+                    workflow_id=workflow_id,
+                    knowledge_ids=knowledge_entry_ids,
+                    task_type=task_type or 'general_task',
+                    useful_score=useful_score
                 )
-                prompt_parts.append(content)
-                prompt_parts.append("")
+                logger.info(f"  ✓ Recorded meta-learning usage for {len(knowledge_entry_ids)} knowledge entries "
+                           f"(useful_score={useful_score:.2f}, task_type={task_type})")
+            except Exception as e:
+                logger.warning(f"  ⚠ Failed to record knowledge usage for meta-learning: {e}")
 
-            elif msg.message_type == MessageType.SYSTEM_ACTION_RESULT:
-                command = msg.content.get('command', '')
-                stdout = msg.content.get('stdout', '')
-                stderr = msg.content.get('stderr', '')
-                success = msg.content.get('success', False)
-                exit_code = msg.content.get('exit_code', -1)
+    def _evaluate_contribution_usefulness(self, agent_content: str,
+                                         synthesis_content: str) -> float:
+        """
+        Evaluate how useful an agent's contribution was to the final synthesis.
 
-                prompt_parts.append(f"{i}. SYSTEM COMMAND EXECUTION:")
-                prompt_parts.append(f"   Command: {command}")
-                prompt_parts.append(f"   Success: {success}")
-                prompt_parts.append(f"   Exit Code: {exit_code}")
-                if stdout:
-                    prompt_parts.append(f"   Output: {stdout}")
-                if stderr:
-                    prompt_parts.append(f"   Errors: {stderr}")
-                prompt_parts.append("")
+        Uses simple heuristics to estimate if agent content appears in synthesis:
+        - Shared key phrases (3+ word sequences)
+        - Concept overlap
 
-        prompt_parts.append("---")
-        prompt_parts.append("")
+        Args:
+            agent_content: Agent's output content
+            synthesis_content: Final synthesis content
 
-        # Add task-complexity-specific synthesis instructions
-        if task_complexity == "SIMPLE_FACTUAL":
-            prompt_parts.append("🎯 SIMPLE FACTUAL QUERY DETECTED")
-            prompt_parts.append("")
-            prompt_parts.append("This is a straightforward factual question. Your synthesis should:")
-            prompt_parts.append("- Provide a DIRECT, CONCISE answer in 1-3 sentences")
-            prompt_parts.append("- State the key fact or information clearly")
-            prompt_parts.append("- NO philosophical analysis, NO elaborate discussion")
-            prompt_parts.append("- NO exploration of implications or deeper meanings")
-            prompt_parts.append("- Just answer the question directly")
-            prompt_parts.append("")
-            prompt_parts.append("Example format: \"The current date and time is [answer]. (Source: [if applicable])\"")
-        elif task_complexity == "MEDIUM":
-            prompt_parts.append("Create a focused synthesis (3-5 paragraphs) that directly addresses the question.")
-            prompt_parts.append("Balance completeness with conciseness.")
-        else:
-            prompt_parts.append("Create a comprehensive final synthesis that integrates all agent findings above.")
+        Returns:
+            Usefulness score from 0.0 (not used) to 1.0 (heavily used)
+        """
+        if not agent_content or not synthesis_content:
+            return 0.0
 
-        return "\n".join(prompt_parts)
+        # Convert to lowercase for comparison
+        agent_lower = agent_content.lower()
+        synthesis_lower = synthesis_content.lower()
+
+        # Extract significant phrases (3+ words) from agent content
+        agent_words = agent_lower.split()
+        matches = 0
+        total_phrases = 0
+
+        # Check for 3-word phrase matches
+        for i in range(len(agent_words) - 2):
+            phrase = ' '.join(agent_words[i:i+3])
+            if len(phrase) > 15:  # Only meaningful phrases
+                total_phrases += 1
+                if phrase in synthesis_lower:
+                    matches += 1
+
+        if total_phrases == 0:
+            # Fallback: simple word overlap
+            agent_significant_words = {w for w in agent_words if len(w) > 4}
+            synthesis_words = set(synthesis_lower.split())
+            overlap = len(agent_significant_words & synthesis_words)
+            return min(1.0, overlap / max(len(agent_significant_words), 1) * 2)
+
+        # Return phrase match ratio
+        return min(1.0, matches / total_phrases)
+
+    def get_action_results(self) -> List['CommandResult']:
+        """
+        Get list of completed system action results.
+
+        Returns:
+            List of CommandResult objects for all executed actions
+
+        Example:
+            >>> results = central_post.get_action_results()
+            >>> all_succeeded = all(r.success for r in results)
+        """
+        return list(self._action_results.values())
+
 
     def _handle_message(self, message: Message) -> None:
         """
@@ -1802,8 +1441,28 @@ This is the emergent output of the entire helical system."""
         elif message.message_type == MessageType.SYSTEM_ACTION_REQUEST:
             self._handle_system_action_request(message)
         elif message.message_type == MessageType.SYSTEM_ACTION_RESULT:
-            # System action results are informational broadcasts, just log for debugging
+            # CRITICAL FIX: Store system action results as knowledge entries
+            # This ensures agents can retrieve command outputs via context builder
+            command = message.content.get('command', '')
+            stdout = message.content.get('stdout', '')
+            success = message.content.get('success', False)
+            agent_id = message.sender_id if message.sender_id else 'system'
+
             logger.debug(f"System action result message processed: {message.content.get('action_id')}")
+
+            # Store successful command outputs as retrievable knowledge
+            if success and stdout:
+                try:
+                    output_content = f"Command: {command}\n\nOutput:\n{stdout}"
+                    knowledge_id = self.store_agent_result_as_knowledge(
+                        agent_id=agent_id,
+                        content=output_content,
+                        confidence=1.0,
+                        domain="system_action"
+                    )
+                    logger.debug(f"  ✓ Stored system action result as knowledge entry #{knowledge_id}")
+                except Exception as store_error:
+                    logger.warning(f"  ⚠️ Failed to store system action result as knowledge: {store_error}")
 
     async def _handle_message_async(self, message: Message) -> None:
         """
@@ -1837,7 +1496,7 @@ This is the emergent output of the entire helical system."""
             await self._handle_agent_query_async(message)
         # System action handlers
         elif message.message_type == MessageType.SYSTEM_ACTION_REQUEST:
-            await self._handle_system_action_request_async(message)
+            self._handle_system_action_request(message)
 
     def _update_agent_registry_from_message(self, message: Message) -> None:
         """
@@ -1880,9 +1539,75 @@ This is the emergent output of the entire helical system."""
         # Placeholder for task assignment logic
         pass
     
+    def _validate_agent_response(self, message: Message) -> Dict[str, Any]:
+        """
+        Validate agent followed context awareness protocol.
+
+        Detects violations like requesting web search when data is already available
+        or requesting tools that were already provided.
+
+        Args:
+            message: Message from agent
+
+        Returns:
+            Dictionary with validation results and any violations
+        """
+        content = message.content.get('content', '')
+        validation_result = {
+            'followed_protocol': False,
+            'violations': [],
+            'warnings': []
+        }
+
+        # Check 1: Did agent acknowledge context? (optional check, just log)
+        if 'CONTEXT_USED:' in content:
+            validation_result['followed_protocol'] = True
+            logger.debug(f"✓ {message.sender_id} acknowledged context usage")
+        else:
+            # This is just a warning, not a violation
+            validation_result['warnings'].append("Agent did not explicitly acknowledge context (missing 'CONTEXT_USED:')")
+
+        # Check 2: Did agent request redundant web search?
+        if 'WEB_SEARCH_NEEDED:' in content:
+            # Check if web search data was already available to this agent
+            # We can approximate this by checking recent knowledge entries
+            try:
+                from src.memory.knowledge_store import KnowledgeQuery, ConfidenceLevel
+                import time as time_module
+
+                # Check if web search results exist in recent knowledge
+                recent_web_search = self.memory_facade.retrieve_knowledge_with_query(
+                    KnowledgeQuery(
+                        domains=["web_search"],
+                        min_confidence=ConfidenceLevel.MEDIUM,
+                        time_range=(time_module.time() - 3600, time_module.time()),  # Last hour
+                        limit=5
+                    )
+                )
+
+                if recent_web_search and len(recent_web_search) > 0:
+                    validation_result['violations'].append(
+                        f"Agent requested web search despite {len(recent_web_search)} recent web search result(s) being available"
+                    )
+                    logger.warning(f"⚠️ PROTOCOL VIOLATION: {message.sender_id} requested redundant web search")
+                    logger.warning(f"   {len(recent_web_search)} web search results were available in knowledge store")
+            except Exception as e:
+                logger.debug(f"Could not validate web search redundancy: {e}")
+
+        return validation_result
+
     def _handle_status_update(self, message: Message) -> None:
         """Handle status update from agent and detect web search + system action requests."""
         content = message.content.get('content', '')
+
+        # NEW: Validate agent response for protocol compliance
+        validation = self._validate_agent_response(message)
+        if validation['violations']:
+            for violation in validation['violations']:
+                logger.warning(f"  ⚠️ VIOLATION: {violation}")
+        if validation['warnings']:
+            for warning in validation['warnings']:
+                logger.debug(f"  ⚠️ WARNING: {warning}")
 
         # DEBUG: Log to trace pattern detection
         logger.debug(f"_handle_status_update called for agent {message.sender_id}")
@@ -1899,9 +1624,14 @@ This is the emergent output of the entire helical system."""
         if isinstance(content, str) and 'SYSTEM_ACTION_NEEDED:' in content:
             logger.info(f"🖥️ Detected SYSTEM_ACTION_NEEDED pattern from {message.sender_id}")
             self._handle_system_action_detection(message)
-        else:
-            if isinstance(content, str):
-                logger.debug(f"  No SYSTEM_ACTION_NEEDED pattern found in content")
+
+        # Phase 3.1: Check if agent is requesting processing extension
+        if isinstance(content, str) and 'NEED_MORE_PROCESSING:' in content:
+            logger.info(f"🔄 Detected NEED_MORE_PROCESSING pattern from {message.sender_id}")
+            self._handle_extension_request_detection(message)
+
+        if isinstance(content, str) and 'SYSTEM_ACTION_NEEDED:' not in content and 'NEED_MORE_PROCESSING:' not in content:
+            logger.debug(f"  No special patterns found in content")
 
         # Continue with normal status tracking
         pass
@@ -2412,91 +2142,70 @@ This is the emergent output of the entire helical system."""
 
         return awareness_context
 
-    # Performance metrics methods (for Hypothesis H2)
+    # Performance metrics methods (for efficiency benchmarking)
     
     def get_current_time(self) -> float:
         """Get current timestamp for performance measurements."""
-        return time.time()
-    
+        return self.performance_monitor.get_current_time()
+
     def get_message_throughput(self) -> float:
         """
         Calculate message processing throughput.
-        
+
         Returns:
             Messages processed per second
         """
-        if not self._metrics_enabled or self._total_messages_processed == 0:
-            return 0.0
-        
-        elapsed_time = time.time() - self._start_time
-        if elapsed_time == 0:
-            return 0.0
-        
-        return self._total_messages_processed / elapsed_time
-    
+        return self.performance_monitor.get_message_throughput()
+
     def measure_communication_overhead(self, num_messages: int, processing_time: float) -> float:
         """
         Measure communication overhead vs processing time.
-        
+
         Args:
             num_messages: Number of messages in the measurement
             processing_time: Actual processing time for comparison
-            
+
         Returns:
             Communication overhead time
         """
-        if not self._metrics_enabled:
-            return 0.0
-        
-        # Simulate communication overhead calculation
-        if self._processing_times:
-            avg_msg_time = sum(self._processing_times) / len(self._processing_times)
-            communication_overhead = avg_msg_time * num_messages
-            return communication_overhead
-        
-        return 0.0
-    
+        return self.performance_monitor.measure_communication_overhead(num_messages, processing_time)
+
     def record_overhead_ratio(self, overhead_ratio: float) -> None:
         """
-        Record overhead ratio for hypothesis validation.
-        
+        Record overhead ratio for performance benchmarking.
+
         Args:
             overhead_ratio: Communication overhead / processing time ratio
         """
-        if self._metrics_enabled:
-            self._overhead_ratios.append(overhead_ratio)
-    
+        return self.performance_monitor.record_overhead_ratio(overhead_ratio)
+
     def get_average_overhead_ratio(self) -> float:
         """
         Get average overhead ratio across all measurements.
-        
+
         Returns:
             Average overhead ratio
         """
-        if not self._overhead_ratios:
-            return 0.0
-        
-        return sum(self._overhead_ratios) / len(self._overhead_ratios)
-    
+        return self.performance_monitor.get_average_overhead_ratio()
+
     def record_scaling_metric(self, agent_count: int, processing_time: float) -> None:
         """
         Record scaling performance metric.
-        
+
         Args:
             agent_count: Number of agents in the test
             processing_time: Time to process messages from all agents
         """
-        if self._metrics_enabled:
-            self._scaling_metrics[agent_count] = processing_time
-    
+        return self.performance_monitor.record_scaling_metric(agent_count, processing_time)
+
     def get_scaling_metrics(self) -> Dict[int, float]:
         """
         Get scaling performance metrics.
-        
+
         Returns:
             Dictionary mapping agent count to processing time
         """
-        return self._scaling_metrics.copy()
+        return self.performance_monitor.get_scaling_metrics()
     
     async def start_async_processing(self, max_concurrent_processors: int = 3) -> None:
         """Start async message processors."""
@@ -2552,24 +2261,15 @@ This is the emergent output of the entire helical system."""
     def get_performance_summary(self) -> Dict[str, Any]:
         """
         Get comprehensive performance summary for analysis.
-        
+
         Returns:
             Dictionary containing all performance metrics
         """
-        if not self._metrics_enabled:
-            return {"metrics_enabled": False}
-        
-        return {
-            "metrics_enabled": True,
-            "total_messages_processed": self._total_messages_processed,
-            "message_throughput": self.get_message_throughput(),
-            "average_overhead_ratio": self.get_average_overhead_ratio(),
-            "scaling_metrics": self.get_scaling_metrics(),
-            "active_connections": self.active_connections,
-            "uptime": time.time() - self._start_time,
-            "async_processors": len(self._async_processors),
-            "async_queue_size": self._async_message_queue.qsize() if self._async_message_queue else 0
-        }
+        return self.performance_monitor.get_performance_summary(
+            active_connections=self.active_connections,
+            async_processors=len(self._async_processors),
+            async_queue_size=self._async_message_queue.qsize() if self._async_message_queue else 0
+        )
     
     def accept_high_confidence_result(self, message: Message, min_confidence: float = 0.8) -> bool:
         """
@@ -2610,48 +2310,25 @@ This is the emergent output of the entire helical system."""
 
     # Memory Integration Methods (Priority 5: Memory and Context Persistence)
     
-    def store_agent_result_as_knowledge(self, agent_id: str, content: str, 
+    def store_agent_result_as_knowledge(self, agent_id: str, content: str,
                                       confidence: float, domain: str = "general",
                                       tags: Optional[List[str]] = None) -> bool:
         """
         Store agent result as knowledge in the persistent knowledge base.
-        
+
         Args:
             agent_id: ID of the agent producing the result
             content: Content of the result to store
             confidence: Confidence level of the result (0.0 to 1.0)
             domain: Domain/category for the knowledge
             tags: Optional tags for the knowledge entry
-            
+
         Returns:
             True if knowledge was stored successfully, False otherwise
         """
-        if not self._memory_enabled or not self.knowledge_store:
-            return False
-        
-        try:
-            # Convert confidence to ConfidenceLevel enum
-            if confidence >= 0.8:
-                confidence_level = ConfidenceLevel.HIGH
-            elif confidence >= 0.6:
-                confidence_level = ConfidenceLevel.MEDIUM
-            else:
-                confidence_level = ConfidenceLevel.LOW
-            
-            # Store in knowledge base using correct method signature
-            entry_id = self.knowledge_store.store_knowledge(
-                knowledge_type=KnowledgeType.TASK_RESULT,
-                content={"result": content, "confidence": confidence},
-                confidence_level=confidence_level,
-                source_agent=agent_id,
-                domain=domain,
-                tags=tags
-            )
-            return entry_id is not None
-            
-        except Exception as e:
-            logger.error(f"Failed to store knowledge from agent {agent_id}: {e}")
-            return False
+        return self.memory_facade.store_agent_result_as_knowledge(
+            agent_id, content, confidence, domain, tags
+        )
     
     def retrieve_relevant_knowledge(self, domain: Optional[str] = None,
                                   knowledge_type: Optional[KnowledgeType] = None,
@@ -2660,33 +2337,20 @@ This is the emergent output of the entire helical system."""
                                   limit: int = 10) -> List[KnowledgeEntry]:
         """
         Retrieve relevant knowledge from the knowledge base.
-        
+
         Args:
             domain: Filter by domain
             knowledge_type: Filter by knowledge type
             keywords: Keywords to search for
             min_confidence: Minimum confidence level
             limit: Maximum number of entries to return
-            
+
         Returns:
             List of relevant knowledge entries
         """
-        if not self._memory_enabled or not self.knowledge_store:
-            return []
-        
-        try:
-            from src.memory.knowledge_store import KnowledgeQuery
-            query = KnowledgeQuery(
-                knowledge_types=[knowledge_type] if knowledge_type else None,
-                domains=[domain] if domain else None,
-                content_keywords=keywords,
-                min_confidence=min_confidence,
-                limit=limit
-            )
-            return self.knowledge_store.retrieve_knowledge(query)
-        except Exception as e:
-            logger.error(f"Failed to retrieve knowledge: {e}")
-            return []
+        return self.memory_facade.retrieve_relevant_knowledge(
+            domain, knowledge_type, keywords, min_confidence, limit
+        )
     
     def get_task_strategy_recommendations(self, task_description: str,
                                         task_type: str = "general",
@@ -2698,61 +2362,29 @@ This is the emergent output of the entire helical system."""
             task_description: Description of the task
             task_type: Type of task (e.g., "research", "analysis", "synthesis")
             complexity: Task complexity level ("SIMPLE", "MODERATE", "COMPLEX", "VERY_COMPLEX")
-            
+
         Returns:
             Dictionary containing strategy recommendations
         """
-        if not self._memory_enabled or not self.task_memory:
-            return {}
-
-        try:
-            from src.memory.task_memory import TaskComplexity
-            # Convert string complexity to enum
-            complexity_enum = TaskComplexity.MODERATE
-            if complexity.upper() == "SIMPLE":
-                complexity_enum = TaskComplexity.SIMPLE
-            elif complexity.upper() == "COMPLEX":
-                complexity_enum = TaskComplexity.COMPLEX
-            elif complexity.upper() == "VERY_COMPLEX":
-                complexity_enum = TaskComplexity.VERY_COMPLEX
-                
-            return self.task_memory.recommend_strategy(
-                task_description=task_description,
-                task_type=task_type,
-                complexity=complexity_enum
-            )
-        except Exception as e:
-            logger.error(f"Failed to get strategy recommendations: {e}")
-            return {}
+        return self.memory_facade.get_task_strategy_recommendations(
+            task_description, task_type, complexity
+        )
     
-    def compress_large_context(self, context: str, 
+    def compress_large_context(self, context: str,
                              strategy: CompressionStrategy = CompressionStrategy.EXTRACTIVE_SUMMARY,
                              target_size: Optional[int] = None):
         """
         Compress large context using the context compression system.
-        
+
         Args:
             context: Content to compress
             strategy: Compression strategy to use
             target_size: Optional target size for compression
-            
+
         Returns:
             CompressedContext object or None if compression failed
         """
-        if not self._memory_enabled or not self.context_compressor:
-            return None
-        
-        try:
-            # Convert string context to dict format expected by compressor
-            context_dict = {"main_content": context}
-            return self.context_compressor.compress_context(
-                context=context_dict,
-                target_size=target_size,
-                strategy=strategy
-            )
-        except Exception as e:
-            logger.error(f"Failed to compress context: {e}")
-            return None
+        return self.memory_facade.compress_large_context(context, strategy, target_size)
     
     def get_memory_summary(self) -> Dict[str, Any]:
         """
@@ -2761,72 +2393,13 @@ This is the emergent output of the entire helical system."""
         Returns:
             Dictionary with memory system summary
         """
-        if not self._memory_enabled:
-            return {
-                "knowledge_entries": 0,
-                "task_patterns": 0,
-                "memory_enabled": False
-            }
-
-        try:
-            summary: Dict[str, Any] = {"memory_enabled": True}
-            
-            if self.knowledge_store:
-                # Get knowledge entry count using proper query
-                from src.memory.knowledge_store import KnowledgeQuery
-                query = KnowledgeQuery(limit=1000)
-                all_knowledge = self.knowledge_store.retrieve_knowledge(query)
-                summary["knowledge_entries"] = len(all_knowledge)
-                
-                # Get domain breakdown
-                domains: Dict[str, int] = {}
-                for entry in all_knowledge:
-                    domains[entry.domain] = domains.get(entry.domain, 0) + 1
-                summary["knowledge_by_domain"] = domains
-            else:
-                summary["knowledge_entries"] = 0
-                summary["knowledge_by_domain"] = {}
-            
-            if self.task_memory:
-                # Get task pattern count and summary
-                memory_summary = self.task_memory.get_memory_summary()
-                summary["task_patterns"] = memory_summary.get("total_patterns", 0)
-                summary["task_executions"] = memory_summary.get("total_executions", 0)
-                
-                # Handle success rate calculation from outcome distribution
-                outcome_dist = memory_summary.get("outcome_distribution", {})
-                total_executions = sum(outcome_dist.values()) if outcome_dist else 0
-                if total_executions > 0:
-                    successful_outcomes = outcome_dist.get("success", 0) + outcome_dist.get("partial_success", 0)
-                    summary["success_rate"] = successful_outcomes / total_executions
-                else:
-                    summary["success_rate"] = 0.0
-                
-                # Get top task types
-                summary["top_task_types"] = memory_summary.get("top_task_types", {})
-                summary["success_by_complexity"] = memory_summary.get("success_by_complexity", {})
-            else:
-                summary["task_patterns"] = 0
-                summary["task_executions"] = 0
-                summary["success_rate"] = 0.0
-                summary["top_task_types"] = {}
-                summary["success_by_complexity"] = {}
-            
-            return summary
-            
-        except Exception as e:
-            logger.error(f"Failed to get memory summary: {e}")
-            return {
-                "knowledge_entries": 0,
-                "task_patterns": 0,
-                "memory_enabled": True,
-                "error": str(e)
-            }
+        return self.memory_facade.get_memory_summary()
     # SYSTEM AUTONOMY METHODS (System Action Execution)
     # ===========================================================================
 
     def request_system_action(self, agent_id: str, command: str,
-                             context: str = "", workflow_id: Optional[str] = None) -> str:
+                             context: str = "", workflow_id: Optional[str] = None,
+                             cwd: Optional["Path"] = None) -> str:
         """
         Agent requests system action (command execution).
 
@@ -2835,215 +2408,18 @@ This is the emergent output of the entire helical system."""
             command: Command to execute
             context: Context/reason for command
             workflow_id: Associated workflow ID
+            cwd: Working directory for command execution (defaults to project root)
 
         Returns:
             action_id for tracking the request
         """
-        logger.info(f"System action requested by {agent_id}: {command}")
-        if context:
-            logger.info(f"  Context: {context}")
+        from pathlib import Path
+        # Use provided cwd or fall back to project root
+        working_dir = cwd if cwd is not None else self.project_root
 
-        # Generate action ID
-        self._action_id_counter += 1
-        action_id = f"action_{self._action_id_counter:04d}"
-
-        # Classify command by trust level
-        trust_level = self.trust_manager.classify_command(command)
-
-        logger.info(f"  Trust level: {trust_level.value}")
-        logger.info(f"  Action ID: {action_id}")
-
-        if trust_level == TrustLevel.BLOCKED:
-            # Blocked commands are denied immediately
-            logger.warning(f"✗ Command BLOCKED: {command}")
-
-            # Create denial message
-            self._broadcast_action_denial(action_id, agent_id, command, "Command is blocked by trust policy")
-
-            # Store denial result
-            result = CommandResult(
-                command=command,
-                exit_code=-1,
-                stdout="",
-                stderr="Command blocked by trust policy",
-                duration=0.0,
-                success=False,
-                error_category=None,
-                cwd=str(self.system_executor.default_cwd),
-                venv_active=False
-            )
-            self._action_results[action_id] = result
-
-            return action_id
-
-        elif trust_level == TrustLevel.SAFE:
-            # Safe commands execute immediately with streaming
-            logger.info(f"✓ Executing SAFE command immediately (streaming)")
-
-            # Create execution placeholder to get execution_id
-            command_hash = self.system_executor.compute_command_hash(command)
-            agent_info = self.agent_registry.get_agent_info(agent_id)
-            agent_type = agent_info.get('metadata', {}).get('agent_type') if agent_info else None
-
-            execution_id = self.command_history.create_execution_placeholder(
-                command=command,
-                command_hash=command_hash,
-                agent_id=agent_id,
-                agent_type=agent_type,
-                workflow_id=workflow_id,
-                trust_level=trust_level,
-                approved_by="auto",
-                context=context
-            )
-
-            # Broadcast command start
-            self._broadcast_command_start(action_id, execution_id, command, agent_id, context)
-
-            # Define output callback for streaming
-            def output_callback(line: str, stream_type: str):
-                self._broadcast_command_output(action_id, execution_id, line, stream_type)
-
-            # Execute with streaming
-            result = self.system_executor.execute_command_streaming(
-                command=command,
-                context=context,
-                output_callback=output_callback
-            )
-
-            # Update database with final result
-            self.command_history.update_execution_result(execution_id, result)
-
-            # Broadcast command complete
-            self._broadcast_command_complete(action_id, execution_id, result)
-
-            # Store result for retrieval
-            self._action_results[action_id] = result
-
-            # Broadcast result (for agent awareness)
-            self._broadcast_action_result(action_id, agent_id, command, result)
-
-            # Log command output for visibility
-            logger.info(f"📤 Command result broadcast:")
-            logger.info(f"   Success: {result.success}")
-            logger.info(f"   Exit code: {result.exit_code}")
-            logger.info(f"   Duration: {result.duration:.2f}s")
-            if result.stdout:
-                logger.info(f"   Output: {result.stdout[:500]}")
-            if result.stderr:
-                logger.warning(f"   Errors: {result.stderr[:500]}")
-
-            return action_id
-
-        else:  # TrustLevel.REVIEW
-            # Review commands need approval
-            logger.info(f"⚠ Command requires APPROVAL")
-
-            # 1. Check for command deduplication within workflow
-            if workflow_id:
-                command_hash = self.system_executor.compute_command_hash(command)
-
-                # Check if already executed in this workflow
-                if workflow_id in self._executed_commands:
-                    if command_hash in self._executed_commands[workflow_id]:
-                        cached_result = self._executed_commands[workflow_id][command_hash]
-                        logger.info(f"⚡ Command already executed in workflow (using cached result)")
-                        logger.info(f"   Previous execution: success={cached_result.success}, exit_code={cached_result.exit_code}")
-
-                        # Return cached result
-                        self._action_results[action_id] = cached_result
-
-                        # Broadcast cached result with deduplication notice
-                        self._broadcast_action_result(action_id, agent_id, command, cached_result)
-
-                        return action_id
-
-            # 2. Check for workflow-scoped auto-approval rules
-            auto_approve_rule = self.approval_manager.check_auto_approve(command, workflow_id)
-
-            if auto_approve_rule:
-                # Auto-approved by workflow rule
-                logger.info(f"⚡ Command auto-approved by workflow rule: {auto_approve_rule} (streaming)")
-
-                # Create execution placeholder
-                command_hash = self.system_executor.compute_command_hash(command)
-                agent_info = self.agent_registry.get_agent_info(agent_id)
-                agent_type = agent_info.get('metadata', {}).get('agent_type') if agent_info else None
-
-                execution_id = self.command_history.create_execution_placeholder(
-                    command=command,
-                    command_hash=command_hash,
-                    agent_id=agent_id,
-                    agent_type=agent_type,
-                    workflow_id=workflow_id,
-                    trust_level=trust_level,
-                    approved_by="auto_rule",
-                    context=context
-                )
-
-                # Broadcast command start
-                self._broadcast_command_start(action_id, execution_id, command, agent_id, context)
-
-                # Define output callback for streaming
-                def output_callback(line: str, stream_type: str):
-                    self._broadcast_command_output(action_id, execution_id, line, stream_type)
-
-                # Execute with streaming
-                result = self.system_executor.execute_command_streaming(
-                    command=command,
-                    context=context,
-                    output_callback=output_callback
-                )
-
-                # Update database with final result
-                self.command_history.update_execution_result(execution_id, result)
-
-                # Broadcast command complete
-                self._broadcast_command_complete(action_id, execution_id, result)
-
-                # Cache in workflow deduplication
-                if workflow_id:
-                    if workflow_id not in self._executed_commands:
-                        self._executed_commands[workflow_id] = {}
-                    self._executed_commands[workflow_id][command_hash] = result
-
-                # Store result for retrieval
-                self._action_results[action_id] = result
-
-                # Broadcast result (for agent awareness)
-                self._broadcast_action_result(action_id, agent_id, command, result)
-
-                # Log output
-                logger.info(f"📤 Auto-approved command result:")
-                logger.info(f"   Success: {result.success}")
-                logger.info(f"   Exit code: {result.exit_code}")
-                if result.stdout:
-                    logger.info(f"   Output: {result.stdout[:500]}")
-
-                return action_id
-
-            # 3. Request user approval via ApprovalManager
-            approval_id = self.approval_manager.request_approval(
-                command=command,
-                agent_id=agent_id,
-                context=context,
-                trust_level=trust_level,
-                workflow_id=workflow_id
-            )
-
-            # Track action -> approval mapping
-            self._action_approvals[action_id] = approval_id
-
-            # Create threading event for workflow to wait on
-            approval_event = threading.Event()
-            self._approval_events[approval_id] = approval_event
-
-            logger.info(f"  Approval ID: {approval_id}")
-            logger.info(f"  Workflow ID: {workflow_id or 'None'}")
-
-            # Broadcast approval needed message
-            self._broadcast_approval_needed(action_id, approval_id, agent_id, command, context)
-
-            return action_id
+        return self.system_command_manager.request_system_action(
+            agent_id, command, context, workflow_id, cwd=working_dir
+        )
 
     def get_action_result(self, action_id: str) -> Optional[CommandResult]:
         """
@@ -3055,7 +2431,7 @@ This is the emergent output of the entire helical system."""
         Returns:
             CommandResult if available, None otherwise
         """
-        return self._action_results.get(action_id)
+        return self.system_command_manager.get_action_result(action_id)
 
     def wait_for_approval(self, action_id: str, timeout: float = 300.0) -> Optional[CommandResult]:
         """
@@ -3072,38 +2448,7 @@ This is the emergent output of the entire helical system."""
         Returns:
             CommandResult if approval processed, None if timeout or not found
         """
-        # Check if action already has result (SAFE commands, cached, auto-approved)
-        result = self._action_results.get(action_id)
-        if result is not None:
-            return result
-
-        # Get approval_id for this action
-        approval_id = self._action_approvals.get(action_id)
-        if not approval_id:
-            logger.warning(f"No approval_id found for action {action_id}")
-            return None
-
-        # Get the event for this approval
-        event = self._approval_events.get(approval_id)
-        if not event:
-            logger.warning(f"No approval event found for {approval_id}")
-            return None
-
-        logger.info(f"⏸️  Waiting for approval: {approval_id} (timeout: {timeout}s)")
-
-        # Wait for event to be signaled (blocks workflow thread)
-        if event.wait(timeout):
-            # Approval processed - get result
-            result = self._action_results.get(action_id)
-            if result:
-                logger.info(f"✓ Approval processed, action completed: success={result.success}")
-            else:
-                logger.warning(f"⚠️  Approval processed but no result found for {action_id}")
-            return result
-        else:
-            # Timeout
-            logger.error(f"❌ Approval timeout after {timeout}s for {approval_id}")
-            return None
+        return self.system_command_manager.wait_for_approval(action_id, timeout)
 
     def approve_system_action(self, approval_id: str, decision: 'ApprovalDecision',
                              decided_by: str = "user") -> bool:
@@ -3121,165 +2466,9 @@ This is the emergent output of the entire helical system."""
         Returns:
             True if approved and executed successfully, False otherwise
         """
-        from src.execution.approval_manager import ApprovalDecision
-
-        logger.info(f"=" * 60)
-        logger.info(f"Processing approval decision: {approval_id}")
-        logger.info(f"  Decision: {decision.value}")
-        logger.info(f"  Decided by: {decided_by}")
-
-        # Process decision in ApprovalManager
-        success = self.approval_manager.decide_approval(
-            approval_id=approval_id,
-            decision=decision,
-            decided_by=decided_by
+        return self.system_command_manager.approve_system_action(
+            approval_id, decision, decided_by
         )
-
-        if not success:
-            logger.error(f"Failed to process approval decision: {approval_id}")
-            return False
-
-        # Get approval request details
-        approval_request = self.approval_manager.get_approval_status(approval_id)
-
-        if not approval_request:
-            logger.error(f"Approval request not found: {approval_id}")
-            return False
-
-        # Handle denial
-        if decision == ApprovalDecision.DENY:
-            logger.info(f"✗ Command DENIED by user")
-
-            # Find corresponding action_id
-            action_id = None
-            for aid, apid in self._action_approvals.items():
-                if apid == approval_id:
-                    action_id = aid
-                    break
-
-            if action_id:
-                # Create denial result
-                denial_result = CommandResult(
-                    command=approval_request.command,
-                    exit_code=-1,
-                    stdout="",
-                    stderr="Command denied by user",
-                    duration=0.0,
-                    success=False,
-                    error_category=None,
-                    cwd=str(self.system_executor.default_cwd),
-                    venv_active=False
-                )
-
-                # Store denial result
-                self._action_results[action_id] = denial_result
-
-                # Broadcast denial
-                self._broadcast_action_denial(
-                    action_id=action_id,
-                    agent_id=approval_request.agent_id,
-                    command=approval_request.command,
-                    reason="Denied by user"
-                )
-
-            # Signal waiting workflow thread that approval is processed (denied)
-            if approval_id in self._approval_events:
-                self._approval_events[approval_id].set()
-                logger.info(f"▶️  Signaled workflow to resume (command denied)")
-                # Clean up event
-                del self._approval_events[approval_id]
-
-            return True
-
-        # Execute approved command with streaming
-        logger.info(f"✓ Executing approved command: {approval_request.command} (streaming)")
-
-        # Find corresponding action_id before execution
-        action_id = None
-        for aid, apid in self._action_approvals.items():
-            if apid == approval_id:
-                action_id = aid
-                break
-
-        if not action_id:
-            # Generate new action_id if mapping not found
-            self._action_id_counter += 1
-            action_id = f"action_{self._action_id_counter:04d}"
-            logger.warning(f"No action_id mapping found, generated new: {action_id}")
-
-        # Create execution placeholder
-        command_hash = self.system_executor.compute_command_hash(approval_request.command)
-        agent_info = self.agent_registry.get_agent_info(approval_request.agent_id)
-        agent_type = agent_info.get('metadata', {}).get('agent_type') if agent_info else None
-
-        execution_id = self.command_history.create_execution_placeholder(
-            command=approval_request.command,
-            command_hash=command_hash,
-            agent_id=approval_request.agent_id,
-            agent_type=agent_type,
-            workflow_id=approval_request.workflow_id,
-            trust_level=approval_request.trust_level,
-            approved_by=decided_by,
-            context=approval_request.context
-        )
-
-        # Broadcast command start
-        self._broadcast_command_start(action_id, execution_id, approval_request.command,
-                                     approval_request.agent_id, approval_request.context)
-
-        # Define output callback for streaming
-        def output_callback(line: str, stream_type: str):
-            self._broadcast_command_output(action_id, execution_id, line, stream_type)
-
-        # Execute with streaming
-        result = self.system_executor.execute_command_streaming(
-            command=approval_request.command,
-            context=approval_request.context,
-            output_callback=output_callback
-        )
-
-        # Update database with final result
-        self.command_history.update_execution_result(execution_id, result)
-
-        # Broadcast command complete
-        self._broadcast_command_complete(action_id, execution_id, result)
-
-        # Cache in workflow deduplication
-        if approval_request.workflow_id:
-            if approval_request.workflow_id not in self._executed_commands:
-                self._executed_commands[approval_request.workflow_id] = {}
-            self._executed_commands[approval_request.workflow_id][command_hash] = result
-
-        # Store result
-        self._action_results[action_id] = result
-
-        # Broadcast result (for agent awareness)
-        self._broadcast_action_result(
-            action_id=action_id,
-            agent_id=approval_request.agent_id,
-            command=approval_request.command,
-            result=result
-        )
-
-        # Log output
-        logger.info(f"📤 Approved command executed:")
-        logger.info(f"   Success: {result.success}")
-        logger.info(f"   Exit code: {result.exit_code}")
-        logger.info(f"   Duration: {result.duration:.2f}s")
-        if result.stdout:
-            logger.info(f"   Output: {result.stdout[:500]}")
-        if result.stderr:
-            logger.warning(f"   Errors: {result.stderr[:500]}")
-        logger.info(f"=" * 60)
-
-        # Signal waiting workflow thread that approval is processed
-        if approval_id in self._approval_events:
-            self._approval_events[approval_id].set()
-            logger.info(f"▶️  Signaled workflow to resume (approval processed)")
-            # Clean up event
-            del self._approval_events[approval_id]
-
-        return True
 
     def approve_action(self, approval_id: str, approver: str = "user") -> bool:
         """
@@ -3292,56 +2481,7 @@ This is the emergent output of the entire helical system."""
         Returns:
             True if approved and executed successfully
         """
-        logger.info(f"Approving action: {approval_id}")
-
-        # Approve in trust manager
-        success = self.trust_manager.approve_command(approval_id, approver)
-
-        if not success:
-            logger.error(f"Failed to approve: {approval_id}")
-            return False
-
-        # Get approval request details
-        request = self.trust_manager.get_approval_status(approval_id)
-
-        if not request:
-            logger.error(f"Approval request not found: {approval_id}")
-            return False
-
-        # Execute the command
-        logger.info(f"Executing approved command: {request.command}")
-
-        result = self.system_executor.execute_command(
-            command=request.command,
-            context=request.context
-        )
-
-        # Store in database
-        command_hash = self.system_executor.compute_command_hash(request.command)
-        self.command_history.record_execution(
-            command=request.command,
-            command_hash=command_hash,
-            result=result,
-            agent_id=request.agent_id,
-            agent_type=None,  # Will be looked up if needed
-            workflow_id=None,  # Not tracked for approvals
-            trust_level=request.trust_level,
-            approved_by=approver,
-            context=request.context
-        )
-
-        # Find corresponding action_id (search by approval_id)
-        # For now, generate a new action_id
-        self._action_id_counter += 1
-        action_id = f"action_{self._action_id_counter:04d}"
-
-        # Store result
-        self._action_results[action_id] = result
-
-        # Broadcast result
-        self._broadcast_action_result(action_id, request.agent_id, request.command, result)
-
-        return True
+        return self.system_command_manager.approve_action(approval_id, approver)
 
     def get_pending_actions(self, workflow_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """
@@ -3353,19 +2493,7 @@ This is the emergent output of the entire helical system."""
         Returns:
             List of pending approval dictionaries
         """
-        pending = self.approval_manager.get_pending_approvals(workflow_id=workflow_id)
-
-        return [{
-            'approval_id': req.approval_id,
-            'command': req.command,
-            'agent_id': req.agent_id,
-            'context': req.context,
-            'trust_level': req.trust_level.value,
-            'risk_assessment': req.risk_assessment,
-            'requested_at': req.requested_at,
-            'expires_at': req.expires_at,
-            'workflow_id': req.workflow_id
-        } for req in pending]
+        return self.system_command_manager.get_pending_actions(workflow_id)
 
     def _handle_system_action_request(self, message: Message) -> None:
         """
@@ -3374,30 +2502,7 @@ This is the emergent output of the entire helical system."""
         Args:
             message: SYSTEM_ACTION_REQUEST message
         """
-        agent_id = message.sender_id
-        command = message.content.get('command', '')
-        context = message.content.get('context', '')
-        workflow_id = message.content.get('workflow_id')
-
-        if not command:
-            logger.warning(f"Empty command in action request from {agent_id}")
-            return
-
-        # Request action (will handle classification and execution/approval)
-        action_id = self.request_system_action(agent_id, command, context, workflow_id)
-
-        logger.info(f"System action request processed: {action_id}")
-
-    async def _handle_system_action_request_async(self, message: Message) -> None:
-        """
-        Handle system action request from agent (async version).
-
-        Args:
-            message: SYSTEM_ACTION_REQUEST message
-        """
-        # For now, just call sync version
-        # In the future, could make execution truly async
-        self._handle_system_action_request(message)
+        self.system_command_manager.handle_system_action_request(message)
 
     def _broadcast_action_result(self, action_id: str, agent_id: str,
                                  command: str, result: CommandResult) -> None:
@@ -3597,7 +2702,7 @@ This is the emergent output of the entire helical system."""
         Returns:
             List of (output_line, stream_type) tuples, or empty list if none available
         """
-        return self._live_command_outputs.get(execution_id, [])
+        return self.system_command_manager.get_live_command_output(execution_id)
 
 
 class AgentFactory:
@@ -3612,9 +2717,13 @@ class AgentFactory:
     def __init__(self, helix: "HelixGeometry", llm_client: "LMStudioClient",
                  token_budget_manager: Optional["TokenBudgetManager"] = None,
                  random_seed: Optional[int] = None, enable_dynamic_spawning: bool = True,
-                 max_agents: int = 25, token_budget_limit: int = 10000,
+                 max_agents: int = 25, token_budget_limit: int = 45000,
                  web_search_client: Optional["WebSearchClient"] = None,
-                 max_web_queries: int = 3):
+                 max_web_queries: int = 3,
+                 agent_registry: Optional["AgentPluginRegistry"] = None,
+                 plugin_directories: Optional[List[str]] = None,
+                 prompt_manager: Optional["PromptManager"] = None,
+                 prompt_optimizer: Optional["PromptOptimizer"] = None):
         """
         Initialize the agent factory.
 
@@ -3628,6 +2737,10 @@ class AgentFactory:
             token_budget_limit: Token budget limit for dynamic spawning
             web_search_client: Optional web search client for Research agents
             max_web_queries: Maximum web queries per research agent (default: 3)
+            agent_registry: Optional AgentPluginRegistry (creates default if None)
+            plugin_directories: Optional list of external plugin directories to load
+            prompt_manager: Optional prompt manager for custom prompt templates
+            prompt_optimizer: Optional prompt optimizer for learning and optimization
         """
         self.helix = helix
         self.llm_client = llm_client
@@ -3637,7 +2750,26 @@ class AgentFactory:
         self.enable_dynamic_spawning = enable_dynamic_spawning
         self.web_search_client = web_search_client
         self.max_web_queries = max_web_queries
-        
+        self.prompt_manager = prompt_manager
+        self.prompt_optimizer = prompt_optimizer
+
+        # Initialize agent plugin registry
+        if agent_registry is not None:
+            self.agent_registry = agent_registry
+        else:
+            # Create and initialize default registry
+            from src.agents.agent_plugin_registry import get_global_registry
+            self.agent_registry = get_global_registry()
+
+        # Load external plugin directories if provided
+        if plugin_directories:
+            for directory in plugin_directories:
+                try:
+                    count = self.agent_registry.add_plugin_directory(directory)
+                    logger.info(f"Loaded {count} plugins from {directory}")
+                except Exception as e:
+                    logger.error(f"Failed to load plugins from {directory}: {e}")
+
         # Initialize dynamic spawning system if enabled
         if enable_dynamic_spawning:
             # Import here to avoid circular imports
@@ -3650,7 +2782,7 @@ class AgentFactory:
             )
         else:
             self.dynamic_spawner = None
-        
+
         if random_seed is not None:
             random.seed(random_seed)
     
@@ -3670,9 +2802,11 @@ class AgentFactory:
             llm_client=self.llm_client,
             research_domain=domain,
             token_budget_manager=self.token_budget_manager,
-            max_tokens=1200,
+            max_tokens=16000,
             web_search_client=self.web_search_client,
-            max_web_queries=self.max_web_queries
+            max_web_queries=self.max_web_queries,
+            prompt_manager=self.prompt_manager,
+            prompt_optimizer=self.prompt_optimizer
         )
     
     def create_analysis_agent(self, analysis_type: str = "general",
@@ -3691,18 +2825,20 @@ class AgentFactory:
             llm_client=self.llm_client,
             analysis_type=analysis_type,
             token_budget_manager=self.token_budget_manager,
-            max_tokens=1200
+            max_tokens=16000,
+            prompt_manager=self.prompt_manager,
+            prompt_optimizer=self.prompt_optimizer
         )
-    
+
     def create_critic_agent(self, review_focus: str = "general",
                           spawn_time_range: Tuple[float, float] = (0.5, 0.8)) -> "LLMAgent":
         """Create a critic agent with random spawn time in specified range."""
         from src.agents.specialized_agents import CriticAgent
-        
+
         spawn_time = random.uniform(*spawn_time_range)
         agent_id = f"dynamic_critic_{self._agent_counter:03d}"
         self._agent_counter += 1
-        
+
         return CriticAgent(
             agent_id=agent_id,
             spawn_time=spawn_time,
@@ -3710,36 +2846,166 @@ class AgentFactory:
             llm_client=self.llm_client,
             review_focus=review_focus,
             token_budget_manager=self.token_budget_manager,
-            max_tokens=1200
+            max_tokens=16000,
+            prompt_manager=self.prompt_manager,
+            prompt_optimizer=self.prompt_optimizer
+        )
+
+    def create_agent_by_type(self,
+                            agent_type: str,
+                            spawn_time_range: Optional[Tuple[float, float]] = None,
+                            complexity: str = "medium",
+                            **kwargs) -> "LLMAgent":
+        """
+        Create an agent of any registered type using the plugin registry.
+
+        This method enables spawning both built-in and custom agent types.
+        It automatically handles spawn time generation based on agent metadata
+        and task complexity.
+
+        Args:
+            agent_type: Type of agent to create (e.g., "research", "analysis", "code_review")
+            spawn_time_range: Optional spawn time range (uses plugin default if None)
+            complexity: Task complexity for spawn range lookup ("simple", "medium", "complex")
+            **kwargs: Additional parameters passed to the agent plugin
+
+        Returns:
+            Instance of the requested agent type
+
+        Raises:
+            AgentPluginError: If agent_type is not registered
+
+        Example:
+            ```python
+            # Create builtin research agent
+            research = factory.create_agent_by_type("research", domain="technical")
+
+            # Create custom code review agent
+            reviewer = factory.create_agent_by_type(
+                "code_review",
+                complexity="complex",
+                review_style="security-focused"
+            )
+            ```
+        """
+        # Get spawn range
+        if spawn_time_range is None:
+            spawn_time_range = self.agent_registry.get_spawn_range(agent_type, complexity)
+
+        # Generate random spawn time in range
+        spawn_time = random.uniform(*spawn_time_range)
+
+        # Generate unique agent ID
+        agent_id = f"dynamic_{agent_type}_{self._agent_counter:03d}"
+        self._agent_counter += 1
+
+        # Create agent using registry
+        # CRITICAL: Pass prompt_manager and prompt_optimizer to ensure agents get proper prompts
+        return self.agent_registry.create_agent(
+            agent_type=agent_type,
+            agent_id=agent_id,
+            spawn_time=spawn_time,
+            helix=self.helix,
+            llm_client=self.llm_client,
+            token_budget_manager=self.token_budget_manager,
+            prompt_manager=self.prompt_manager,
+            prompt_optimizer=self.prompt_optimizer,
+            **kwargs
+        )
+
+    def list_available_agent_types(self) -> List[str]:
+        """
+        Get list of all available agent types (builtin + custom plugins).
+
+        Returns:
+            List of agent type identifiers
+
+        Example:
+            ```python
+            types = factory.list_available_agent_types()
+            # ['research', 'analysis', 'critic', 'code_review', ...]
+            ```
+        """
+        return self.agent_registry.list_agent_types()
+
+    def get_agent_metadata(self, agent_type: str) -> Optional[Dict[str, Any]]:
+        """
+        Get metadata for a specific agent type.
+
+        Args:
+            agent_type: Type identifier
+
+        Returns:
+            Dictionary with agent metadata (capabilities, spawn_range, etc.)
+        """
+        from dataclasses import asdict
+        metadata = self.agent_registry.get_metadata(agent_type)
+        return asdict(metadata) if metadata else None
+
+    def get_suitable_agents_for_task(self,
+                                     task_description: str,
+                                     task_complexity: str = "medium") -> List[str]:
+        """
+        Get list of agent types suitable for a given task.
+
+        This method filters agents based on task characteristics and returns
+        agent types sorted by priority.
+
+        Args:
+            task_description: Human-readable task description
+            task_complexity: Task complexity ("simple", "medium", "complex")
+
+        Returns:
+            List of agent types sorted by suitability (highest priority first)
+
+        Example:
+            ```python
+            agents = factory.get_suitable_agents_for_task(
+                "Review Python code for security vulnerabilities",
+                "complex"
+            )
+            # Returns: ["code_review", "security_auditor", "critic"]
+            ```
+        """
+        return self.agent_registry.get_agents_for_task(
+            task_description=task_description,
+            task_complexity=task_complexity
         )
     
-    def assess_team_needs(self, processed_messages: List[Message], 
-                         current_time: float, current_agents: Optional[List["LLMAgent"]] = None) -> List["LLMAgent"]:
+    def assess_team_needs(self, processed_messages: List[Message],
+                         current_time: float, current_agents: Optional[List["LLMAgent"]] = None,
+                         task_description: Optional[str] = None) -> List["LLMAgent"]:
         """
         Assess current team composition and suggest new agents if needed.
-        
+
         Enhanced with DynamicSpawning system that provides:
         - Confidence monitoring with trend analysis
         - Content analysis for contradictions and gaps
         - Team size optimization based on task complexity
         - Resource-aware spawning decisions
-        
+        - NEW: Plugin-aware spawning based on task description
+
         Falls back to basic heuristics if dynamic spawning is disabled.
-        
+
         Args:
             processed_messages: Messages processed so far
             current_time: Current simulation time
             current_agents: List of currently active agents
-            
+            task_description: Optional task description for plugin-aware spawning
+
         Returns:
             List of recommended new agents to spawn
         """
         # Use dynamic spawning if enabled and available
         if self.enable_dynamic_spawning and self.dynamic_spawner:
+            # NEW: Set task description for plugin-aware spawning
+            if task_description:
+                self.dynamic_spawner.set_task_description(task_description)
+
             return self.dynamic_spawner.analyze_and_spawn(
                 processed_messages, current_agents or [], current_time
             )
-        
+
         # Fallback to basic heuristics for backward compatibility
         return self._assess_team_needs_basic(processed_messages, current_time)
     
@@ -3788,17 +3054,7 @@ class AgentFactory:
             )
             recommended_agents.append(technical_research)
         
-        # Check for need for alternative synthesis
-        synthesis_count = sum(1 for msg in recent_messages
-                            if msg.content.get("agent_type") == "synthesis")
-        
-        if synthesis_count == 0 and current_time > 0.6:
-            # Late in process but no synthesis yet
-            synthesis = self.create_synthesis_agent(
-                output_format="comprehensive",
-                spawn_time_range=(current_time + 0.1, current_time + 0.25)
-            )
-            recommended_agents.append(synthesis)
+        # Note: Synthesis is now handled directly by CentralPost, not by a specialized agent
         
         return recommended_agents
     

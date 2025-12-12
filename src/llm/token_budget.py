@@ -41,15 +41,15 @@ class TokenBudgetManager:
     synthesis at the bottom.
     """
     
-    def __init__(self, base_budget: int = 3000, min_budget: int = 500,
-                 max_budget: int = 20000, strict_mode: bool = False):
+    def __init__(self, base_budget: int = 20000, min_budget: int = 2000,
+                 max_budget: int = 45000, strict_mode: bool = False):
         """
         Initialize token budget manager.
 
         Args:
-            base_budget: Base token allocation per agent
+            base_budget: Base token allocation per agent (increased for 50K context window)
             min_budget: Minimum tokens for any single stage
-            max_budget: Maximum tokens for any single stage (20000 for synthesis agents)
+            max_budget: Maximum tokens for any single stage (45000 for 50K context window)
             strict_mode: Enable strict token budgets for lightweight models
         """
         self.base_budget = base_budget
@@ -76,14 +76,14 @@ class TokenBudgetManager:
         """
         # Different agent types get different base budgets
         if self.strict_mode:
-            # Strict budgets for lightweight models - FIXED: proper allocation
+            # Strict budgets - generous allocation for 50K context window
             type_budgets = {
-                "research": 4000,    # Research agents: 4000 base budget for exploration
-                "analysis": 2500,    # Analysis agents: 2500 base budget for processing
-                "synthesis": 1500,   # Synthesis agents: 1500 base budget for integration/compression
-                "critic": 1000       # Critic agents: 1000 base budget for feedback
+                "research": 16000,   # Research agents: generous budget for exploration
+                "analysis": 12000,   # Analysis agents: substantial budget for processing
+                "synthesis": 10000,  # Synthesis agents: good budget for integration
+                "critic": 8000       # Critic agents: adequate budget for feedback
             }
-            total_budget = type_budgets.get(agent_type, 2000)
+            total_budget = type_budgets.get(agent_type, 10000)
         else:
             # Original multiplier-based system - FIXED: proper multipliers
             type_multipliers = {
@@ -99,14 +99,14 @@ class TokenBudgetManager:
         
         # Adjust max_budget to respect agent's max_tokens_per_stage and strict mode
         if self.strict_mode and agent_type in ["research", "analysis", "synthesis", "critic"]:
-            # Strict per-stage limits - FIXED: proper stage limits
+            # Strict per-stage limits - generous for 50K context window
             strict_stage_limits = {
-                "research": 2000,    # Research agents: max 2000 per stage for exploration
-                "analysis": 1500,    # Analysis agents: max 1500 per stage for processing
-                "synthesis": 800,    # Synthesis agents: max 800 per stage for compression
-                "critic": 500        # Critic agents: max 500 per stage for feedback
+                "research": 16000,   # Research agents: generous limit for file reading
+                "analysis": 12000,   # Analysis agents: substantial limit for processing
+                "synthesis": 10000,  # Synthesis agents: good limit for integration
+                "critic": 8000       # Critic agents: adequate limit for feedback
             }
-            stage_limit = strict_stage_limits.get(agent_type, 1000)
+            stage_limit = strict_stage_limits.get(agent_type, 10000)
             if max_tokens_per_stage is not None:
                 stage_limit = min(stage_limit, max_tokens_per_stage)
             self.max_budget = min(self.max_budget, stage_limit)
@@ -185,26 +185,26 @@ class TokenBudgetManager:
         # FIXED: Token allocation should INCREASE for synthesis agents, not decrease
         # Different agent types need different token allocations based on their role
         
-        # Agent-type-specific base budgets - FIXED: proper allocation by role
+        # Agent-type-specific base budgets - generous for 50K context window
         if agent_type == "research":
-            # Research agents: Higher budget for exploration, decreases with depth
-            base_budget = 2000
+            # Research agents: Generous budget for file reading and exploration
+            base_budget = 16000
             position_factor = 1.2 - (depth_ratio * 0.2)  # 1.2 to 1.0 (more at top)
         elif agent_type == "analysis":
-            # Analysis agents: Moderate budget, consistent through depth
-            base_budget = 1500
+            # Analysis agents: Substantial budget for processing
+            base_budget = 12000
             position_factor = 1.0  # Constant allocation
         elif agent_type == "synthesis":
-            # Synthesis agents: Lower budget for compression/integration
-            base_budget = 800
+            # Synthesis agents: Good budget for integration
+            base_budget = 10000
             position_factor = 0.9 + (depth_ratio * 0.2)  # 0.9 to 1.1 (slightly more at bottom)
         elif agent_type == "critic":
-            # Critic agents: Minimal budget for focused feedback
-            base_budget = 500
+            # Critic agents: Adequate budget for feedback
+            base_budget = 8000
             position_factor = 1.0  # Constant allocation
         else:
             # Default fallback
-            base_budget = 1000
+            base_budget = 10000
             position_factor = 1.0
         
         # Calculate budget with position factor

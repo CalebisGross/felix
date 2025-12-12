@@ -535,3 +535,231 @@ def assess_answer_confidence(knowledge_entries: List[Any], query: str) -> Tuple[
             return (False, 0.0, "Single non-authoritative source without deep verification")
 
     return (False, 0.0, "Unknown assessment path")
+
+# =============================================================================
+# VALIDATION SCORING SYSTEM (Added for Learning & Quality Control)
+# =============================================================================
+
+import json  # Already imported at top, but ensuring it's available
+
+
+def calculate_validation_score(content: Dict[str, Any],
+                               source_agent: str,
+                               domain: str,
+                               confidence_level: Any,
+                               existing_knowledge: List[Any] = None) -> float:
+    """
+    Calculate validation score for a knowledge entry (0.0 to 1.0).
+
+    Higher scores indicate higher quality/trustability.
+
+    Scoring factors:
+    - Content specificity (0.2 weight)
+    - Source authority (0.2 weight)
+    - Contradiction check (0.3 weight)
+    - Confidence level (0.2 weight)
+    - Content completeness (0.1 weight)
+
+    Args:
+        content: Knowledge content dictionary
+        source_agent: Agent that generated this knowledge
+        domain: Knowledge domain
+        confidence_level: Confidence level (enum or string)
+        existing_knowledge: Optional existing entries to check contradictions
+
+    Returns:
+        Validation score (0.0 = very poor, 1.0 = excellent)
+    """
+    score = 0.0
+
+    # 1. Content specificity (0.2 weight)
+    content_str = json.dumps(content) if isinstance(content, dict) else str(content)
+
+    if is_specific_data(content_str):
+        score += 0.2
+    else:
+        # Partial credit if content has reasonable length
+        if len(content_str) > 100:
+            score += 0.1
+        elif len(content_str) > 20:
+            score += 0.05
+
+    # 2. Source authority (0.2 weight)
+    if domain == "web_search":
+        # Check if content has authoritative domain markers
+        if 'source_url' in content:
+            source_url = content['source_url']
+            if is_authoritative_domain(source_url):
+                score += 0.2
+            elif any(domain in source_url for domain in ['.edu', '.gov', '.org']):
+                score += 0.15
+            elif any(domain in source_url for domain in ['.com', '.net']):
+                score += 0.1
+        else:
+            # No source URL - lower score
+            score += 0.05
+    elif domain == "workflow_task":
+        # Agent-generated insights - moderate trust
+        score += 0.15
+    else:
+        # Unknown domain - neutral
+        score += 0.1
+
+    # 3. Contradiction check (0.3 weight)
+    if existing_knowledge:
+        has_contradictions, _ = detect_contradictions(existing_knowledge + [type('obj', (), {'content': content})()])
+        if not has_contradictions:
+            score += 0.3
+        else:
+            # Contradictions found - significant penalty
+            score += 0.0
+    else:
+        # No existing knowledge to check against - neutral
+        score += 0.15
+
+    # 4. Confidence level (0.2 weight)
+    try:
+        from src.memory.knowledge_store import ConfidenceLevel
+        if confidence_level == ConfidenceLevel.VERIFIED:
+            score += 0.2
+        elif confidence_level == ConfidenceLevel.HIGH:
+            score += 0.15
+        elif confidence_level == ConfidenceLevel.MEDIUM:
+            score += 0.1
+        else:  # LOW
+            score += 0.05
+    except:
+        # Fallback to string comparison
+        conf_str = str(confidence_level).upper()
+        if 'VERIFIED' in conf_str:
+            score += 0.2
+        elif 'HIGH' in conf_str:
+            score += 0.15
+        elif 'MEDIUM' in conf_str:
+            score += 0.1
+        else:
+            score += 0.05
+
+    # 5. Content completeness (0.1 weight)
+    if isinstance(content, dict):
+        # Check for key fields
+        key_fields = ['source_url', 'title', 'text', 'content', 'summary']
+        present_fields = sum(1 for field in key_fields if field in content and content[field])
+        score += (present_fields / len(key_fields)) * 0.1
+    else:
+        # Non-dict content gets partial credit if non-empty
+        if content:
+            score += 0.05
+
+    # Ensure score is in [0.0, 1.0]
+    return max(0.0, min(1.0, score))
+
+
+def get_validation_flags(content: Dict[str, Any],
+                        source_agent: str,
+                        domain: str,
+                        existing_knowledge: List[Any] = None) -> List[str]:
+    """
+    Get list of validation issues/flags for a knowledge entry.
+
+    Args:
+        content: Knowledge content dictionary
+        source_agent: Agent that generated this knowledge
+        domain: Knowledge domain
+        existing_knowledge: Optional existing entries to check contradictions
+
+    Returns:
+        List of issue flags (empty if no issues)
+    """
+    flags = []
+
+    content_str = json.dumps(content) if isinstance(content, dict) else str(content)
+
+    # Check for non-specific data
+    if not is_specific_data(content_str):
+        flags.append("non_specific_data")
+
+    # Check for missing source
+    if domain == "web_search" and 'source_url' not in content:
+        flags.append("no_source_citation")
+
+    # Check for very short content
+    if len(content_str) < 20:
+        flags.append("insufficient_content")
+
+    # Check for contradictions
+    if existing_knowledge:
+        has_contradictions, details = detect_contradictions(existing_knowledge + [type('obj', (), {'content': content})()])
+        if has_contradictions:
+            flags.append("temporal_contradiction")
+
+    # Check for generic/placeholder content
+    generic_phrases = [
+        'not available', 'no information', 'unknown', 'unclear',
+        'cannot be determined', 'insufficient data', 'more research needed'
+    ]
+    content_lower = content_str.lower()
+    if any(phrase in content_lower for phrase in generic_phrases):
+        flags.append("generic_placeholder")
+
+    # Check for very long content (potential hallucination or irrelevant data dump)
+    if len(content_str) > 10000:
+        flags.append("excessive_length")
+
+    return flags
+
+
+def validate_knowledge_entry(content: Dict[str, Any],
+                            source_agent: str,
+                            domain: str,
+                            confidence_level: Any,
+                            existing_knowledge: List[Any] = None) -> Dict[str, Any]:
+    """
+    Validate a knowledge entry and return validation result.
+
+    This is the main validation interface used by KnowledgeStore.
+
+    Args:
+        content: Knowledge content dictionary
+        source_agent: Agent that generated this knowledge
+        domain: Knowledge domain
+        confidence_level: Confidence level
+        existing_knowledge: Optional existing entries for contradiction checking
+
+    Returns:
+        Dictionary with validation results:
+        {
+            'validation_score': float (0.0-1.0),
+            'validation_flags': List[str],
+            'validation_status': str ('trusted', 'flagged', 'review', 'quarantine'),
+            'should_store': bool
+        }
+    """
+    score = calculate_validation_score(
+        content, source_agent, domain, confidence_level, existing_knowledge
+    )
+
+    flags = get_validation_flags(
+        content, source_agent, domain, existing_knowledge
+    )
+
+    # Determine validation status based on score and flags
+    if score >= 0.8 and len(flags) == 0:
+        status = 'trusted'
+        should_store = True
+    elif score >= 0.5 and len(flags) <= 2:
+        status = 'flagged'
+        should_store = True
+    elif score >= 0.3 and len(flags) <= 3:
+        status = 'review'
+        should_store = True
+    else:
+        status = 'quarantine'
+        should_store = False  # Don't store very low quality entries
+
+    return {
+        'validation_score': score,
+        'validation_flags': flags,
+        'validation_status': status,
+        'should_store': should_store
+    }

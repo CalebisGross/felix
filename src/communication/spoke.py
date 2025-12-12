@@ -457,25 +457,34 @@ class SpokeManager:
     def process_all_messages(self) -> int:
         """
         Process and distribute messages through spoke system.
-        
+
+        Routes different message types to appropriate agent handlers:
+        - SYNTHESIS_FEEDBACK, CONTRIBUTION_EVALUATION -> process_synthesis_feedback()
+        - Other messages -> receive_shared_context()
+
         Returns:
             Total number of messages processed
         """
         total_processed = 0
-        
+
         # Process messages from central post and distribute to agents
         while self.central_post.has_pending_messages():
             message = self.central_post.process_next_message()
             if message:
                 # Distribute to all active agents except sender
                 for agent_id, spoke in self._spokes.items():
-                    if (agent_id != message.sender_id and 
-                        spoke.is_connected and 
-                        hasattr(spoke.agent, 'receive_shared_context')):
-                        # Send message content to agent via their receive method
-                        spoke.agent.receive_shared_context(message.content)
+                    if agent_id != message.sender_id and spoke.is_connected:
+                        # Route feedback messages to process_synthesis_feedback()
+                        if message.message_type in [MessageType.SYNTHESIS_FEEDBACK,
+                                                     MessageType.CONTRIBUTION_EVALUATION]:
+                            if hasattr(spoke.agent, 'process_synthesis_feedback'):
+                                spoke.agent.process_synthesis_feedback(message.content)
+                                logger.debug(f"Routed {message.message_type.value} to {agent_id}")
+                        # Route other messages to receive_shared_context()
+                        elif hasattr(spoke.agent, 'receive_shared_context'):
+                            spoke.agent.receive_shared_context(message.content)
                 total_processed += 1
-        
+
         return total_processed
     
     def send_message(self, agent_id: str, message) -> str:

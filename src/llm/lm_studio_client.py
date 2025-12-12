@@ -11,6 +11,8 @@ provides OpenAI-compatible API endpoints for local language model inference.
 import asyncio
 import time
 import logging
+import threading
+from datetime import datetime
 from typing import Optional, Dict, Any, List, Union, Callable
 from dataclasses import dataclass
 from enum import Enum
@@ -19,6 +21,11 @@ import httpx
 from collections import deque
 
 logger = logging.getLogger(__name__)
+
+# Suppress verbose httpx logging (INFO level logs every HTTP request)
+# This prevents log spam with hundreds of "HTTP/1.1 200 OK" messages
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 class RequestPriority(Enum):
@@ -206,15 +213,14 @@ class LMStudioClient:
         self.debug_mode = debug_mode
         self.verbose_logging = verbose_logging
 
-        # DEBUG: Confirm initialization
-        print(f"DEBUG: LMStudioClient created, verbose_logging={verbose_logging}")
-
         # Ensure logger is configured
-        logger.setLevel(logging.INFO)
+        logger.setLevel(logging.DEBUG if debug_mode else logging.INFO)
         logger.propagate = True
 
         # Log initialization with verbose setting
         logger.info(f"LMStudioClient initialized: base_url={base_url}, verbose_logging={verbose_logging}")
+        if debug_mode:
+            logger.debug(f"Debug mode enabled for LMStudioClient")
 
         # Sync client
         self.client = OpenAI(
@@ -240,11 +246,16 @@ class LMStudioClient:
         
         # Connection state
         self._connection_verified = False
+
+        # Sync request concurrency control (for background vs foreground priority)
+        self._sync_semaphore = threading.Semaphore(2)  # Max 2 concurrent sync requests
+        self._background_processing = threading.Event()  # Pause flag for background tasks
+        self._background_processing.set()  # Initially not paused (background can proceed)
     
     def test_connection(self) -> bool:
         """
         Test connection to LM Studio server.
-        
+
         Returns:
             True if connection successful, False otherwise
         """
@@ -252,8 +263,17 @@ class LMStudioClient:
             response = httpx.get(f"{self.base_url}/models", timeout=5.0)
             self._connection_verified = response.status_code == 200
             return self._connection_verified
+        except RecursionError:
+            # Catch recursion errors explicitly to prevent them from being logged
+            # in a way that might cause further recursion
+            logger.warning("LM Studio connection test failed: recursion error")
+            return False
         except Exception as e:
-            logger.warning(f"LM Studio connection test failed: {e}")
+            # Use type(e).__name__ to safely get exception type without potential
+            # recursion issues from complex exception __str__ methods
+            error_type = type(e).__name__
+            error_msg = str(e) if len(str(e)) < 200 else f"{str(e)[:200]}..."
+            logger.warning(f"LM Studio connection test failed ({error_type}): {error_msg}")
             return False
     
     def ensure_connection(self) -> None:
@@ -263,13 +283,57 @@ class LMStudioClient:
                 f"Cannot connect to LM Studio at {self.base_url}. "
                 "Ensure LM Studio is running with a model loaded."
             )
-    
+
+    def test_embedding_availability(self, timeout: float = 5.0) -> bool:
+        """
+        Quick test if embedding capability is available.
+
+        Uses a short timeout suitable for initialization checks.
+        Does not use the main OpenAI client to avoid long timeouts.
+
+        Args:
+            timeout: Maximum seconds to wait for response
+
+        Returns:
+            True if embeddings are available, False otherwise
+        """
+        if not self.test_connection():
+            return False
+
+        try:
+            response = httpx.post(
+                f"{self.base_url}/embeddings",
+                json={"model": "local-model", "input": "test"},
+                timeout=timeout
+            )
+            return response.status_code == 200
+        except Exception as e:
+            logger.debug(f"Embedding availability check failed: {e}")
+            return False
+
+    def signal_user_activity(self, active: bool = True) -> None:
+        """
+        Signal that user is actively using the system.
+
+        When user activity is signaled, background processing (like Knowledge Brain
+        batch processing) will pause to give priority to user-initiated requests.
+
+        Args:
+            active: True to pause background processing, False to resume
+        """
+        if active:
+            self._background_processing.clear()  # Pause background tasks
+            logger.debug("User activity signaled - background processing paused")
+        else:
+            self._background_processing.set()  # Resume background tasks
+            logger.debug("User activity ended - background processing resumed")
+
     def complete(self, agent_id: str, system_prompt: str, user_prompt: str,
                  temperature: float = 0.7, max_tokens: Optional[int] = 500,
-                 model: str = "local-model") -> LLMResponse:
+                 model: str = "local-model", is_background: bool = False) -> LLMResponse:
         """
         Synchronous completion request to LM Studio.
-        
+
         Args:
             agent_id: Identifier for the requesting agent
             system_prompt: System/context prompt
@@ -277,101 +341,154 @@ class LMStudioClient:
             temperature: Sampling temperature (0.0-1.0)
             max_tokens: Maximum tokens in response
             model: Model identifier (LM Studio will use loaded model)
-            
+            is_background: If True, this is a background task that should yield
+                          to user-initiated requests (e.g., Knowledge Brain batch processing)
+
         Returns:
             LLMResponse with content and metadata
-            
+
         Raises:
             LMStudioConnectionError: If cannot connect to LM Studio
         """
         self.ensure_connection()
-        
-        start_time = time.perf_counter()
+
+        # Background tasks wait for user activity to finish before proceeding
+        if is_background:
+            # Wait up to 5 seconds for user activity to stop, then proceed anyway
+            self._background_processing.wait(timeout=5.0)
+
+        # Acquire semaphore to limit concurrent sync requests
+        with self._sync_semaphore:
+            start_time = time.perf_counter()
+
+            try:
+                messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ]
+
+                # Log request details at INFO level for GUI visibility (if enabled)
+                if self.verbose_logging:
+                    system_preview = system_prompt[:100] + "..." if len(system_prompt) > 100 else system_prompt
+                    user_preview = user_prompt[:100] + "..." if len(user_prompt) > 100 else user_prompt
+
+                    logger.info("=" * 60)
+                    logger.info(f"LLM REQUEST to LM Studio")
+                    logger.info(f"  Agent: {agent_id}")
+                    logger.info(f"  Model: {model}")
+                    logger.info(f"  Temperature: {temperature}, Max Tokens: {max_tokens}")
+                    logger.info(f"  System Prompt ({len(system_prompt)} chars): {system_preview}")
+                    logger.info(f"  User Prompt ({len(user_prompt)} chars): {user_preview}")
+                    logger.info("=" * 60)
+
+                if self.debug_mode:
+                    print(f"\n🔍 DEBUG LLM CALL for {agent_id}")
+                    print(f"📝 System Prompt:\n{system_prompt}")
+                    print(f"🎯 User Prompt:\n{user_prompt}")
+                    print(f"🌡️ Temperature: {temperature}, Max Tokens: {max_tokens}")
+                    print("━" * 60)
+
+                completion_args = {
+                    "model": model,
+                    "messages": messages,
+                    "temperature": temperature
+                }
+
+                if max_tokens:
+                    completion_args["max_tokens"] = max_tokens
+
+                response = self.client.chat.completions.create(**completion_args)
+
+                end_time = time.perf_counter()
+                response_time = end_time - start_time
+
+                # Extract response data
+                content = response.choices[0].message.content
+                tokens_used = response.usage.total_tokens if response.usage else 0
+                prompt_tokens = response.usage.prompt_tokens if response.usage else 0
+                completion_tokens = response.usage.completion_tokens if response.usage else 0
+
+                # Update usage tracking
+                self.total_tokens += tokens_used
+                self.total_requests += 1
+                self.total_response_time += response_time
+
+                # Log response details at INFO level for GUI visibility (if enabled)
+                if self.verbose_logging:
+                    content_preview = content[:200] + "..." if len(content) > 200 else content
+
+                    logger.info("=" * 60)
+                    logger.info(f"LLM RESPONSE from LM Studio")
+                    logger.info(f"  Agent: {agent_id}")
+                    logger.info(f"  Model: {model}")
+                    logger.info(f"  Response Time: {response_time:.2f}s")
+                    logger.info(f"  Tokens: {tokens_used} total (prompt: {prompt_tokens}, completion: {completion_tokens})")
+                    logger.info(f"  Content ({len(content)} chars): {content_preview}")
+                    logger.info("=" * 60)
+
+                if self.debug_mode:
+                    print(f"✅ LLM RESPONSE for {agent_id}")
+                    print(f"📄 Content ({len(content)} chars):\n{content}")
+                    print(f"📊 Tokens Used: {tokens_used}, Time: {response_time:.2f}s")
+                    print("━" * 60)
+
+                return LLMResponse(
+                    content=content,
+                    tokens_used=tokens_used,
+                    response_time=response_time,
+                    model=model,
+                    temperature=temperature,
+                    agent_id=agent_id,
+                    timestamp=time.time()
+                )
+
+            except Exception as e:
+                logger.error(f"LLM completion failed for {agent_id}: {e}")
+                raise
+
+    def generate_embedding(self, text: str, model: str = "local-model") -> Optional[List[float]]:
+        """
+        Generate embedding vector for text using LM Studio's embedding endpoint.
+
+        LM Studio supports OpenAI-compatible embeddings API when an embedding-capable
+        model is loaded (e.g., text-embedding-ada-002, nomic-embed-text).
+
+        Args:
+            text: Input text to embed
+            model: Model identifier (LM Studio will use loaded embedding model)
+
+        Returns:
+            List of floats (embedding vector) or None if failed
+
+        Raises:
+            LMStudioConnectionError: If cannot connect to LM Studio
+        """
+        self.ensure_connection()
 
         try:
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ]
-
-            # Log request details at INFO level for GUI visibility (if enabled)
-            if self.verbose_logging:
-                system_preview = system_prompt[:100] + "..." if len(system_prompt) > 100 else system_prompt
-                user_preview = user_prompt[:100] + "..." if len(user_prompt) > 100 else user_prompt
-
-                logger.info("=" * 60)
-                logger.info(f"LLM REQUEST to LM Studio")
-                logger.info(f"  Agent: {agent_id}")
-                logger.info(f"  Model: {model}")
-                logger.info(f"  Temperature: {temperature}, Max Tokens: {max_tokens}")
-                logger.info(f"  System Prompt ({len(system_prompt)} chars): {system_preview}")
-                logger.info(f"  User Prompt ({len(user_prompt)} chars): {user_preview}")
-                logger.info("=" * 60)
-
-            if self.debug_mode:
-                print(f"\n🔍 DEBUG LLM CALL for {agent_id}")
-                print(f"📝 System Prompt:\n{system_prompt}")
-                print(f"🎯 User Prompt:\n{user_prompt}")
-                print(f"🌡️ Temperature: {temperature}, Max Tokens: {max_tokens}")
-                print("━" * 60)
-
-            completion_args = {
-                "model": model,
-                "messages": messages,
-                "temperature": temperature
-            }
-
-            if max_tokens:
-                completion_args["max_tokens"] = max_tokens
-
-            response = self.client.chat.completions.create(**completion_args)
-            
-            end_time = time.perf_counter()
-            response_time = end_time - start_time
-
-            # Extract response data
-            content = response.choices[0].message.content
-            tokens_used = response.usage.total_tokens if response.usage else 0
-            prompt_tokens = response.usage.prompt_tokens if response.usage else 0
-            completion_tokens = response.usage.completion_tokens if response.usage else 0
-
-            # Update usage tracking
-            self.total_tokens += tokens_used
-            self.total_requests += 1
-            self.total_response_time += response_time
-
-            # Log response details at INFO level for GUI visibility (if enabled)
-            if self.verbose_logging:
-                content_preview = content[:200] + "..." if len(content) > 200 else content
-
-                logger.info("=" * 60)
-                logger.info(f"LLM RESPONSE from LM Studio")
-                logger.info(f"  Agent: {agent_id}")
-                logger.info(f"  Model: {model}")
-                logger.info(f"  Response Time: {response_time:.2f}s")
-                logger.info(f"  Tokens: {tokens_used} total (prompt: {prompt_tokens}, completion: {completion_tokens})")
-                logger.info(f"  Content ({len(content)} chars): {content_preview}")
-                logger.info("=" * 60)
-
-            if self.debug_mode:
-                print(f"✅ LLM RESPONSE for {agent_id}")
-                print(f"📄 Content ({len(content)} chars):\n{content}")
-                print(f"📊 Tokens Used: {tokens_used}, Time: {response_time:.2f}s")
-                print("━" * 60)
-            
-            return LLMResponse(
-                content=content,
-                tokens_used=tokens_used,
-                response_time=response_time,
+            # Use OpenAI-compatible embeddings API
+            response = self.client.embeddings.create(
                 model=model,
-                temperature=temperature,
-                agent_id=agent_id,
-                timestamp=time.time()
+                input=text
             )
-            
+
+            # Extract embedding from response
+            if response.data and len(response.data) > 0:
+                embedding = response.data[0].embedding
+
+                if self.verbose_logging:
+                    logger.info(f"Generated embedding for text ({len(text)} chars), "
+                               f"dimension: {len(embedding)}")
+
+                return embedding
+
+            logger.warning("LM Studio embedding response contained no data")
+            return None
+
         except Exception as e:
-            logger.error(f"LLM completion failed for {agent_id}: {e}")
-            raise
+            # This is expected if LM Studio doesn't have an embedding model loaded
+            logger.debug(f"Embedding generation failed: {e}")
+            return None
 
     def complete_streaming(
         self,
@@ -808,101 +925,6 @@ class LMStudioClient:
         self.total_requests = 0
         self.total_response_time = 0.0
     
-    def create_agent_system_prompt(self, agent_type: str, position_info: Dict[str, float],
-                                 task_context: str = "") -> str:
-        """
-        Create system prompt for Felix agent based on position and type.
-        
-        Args:
-            agent_type: Type of agent (research, analysis, synthesis, critic)
-            position_info: Agent's position on helix (x, y, z, radius, depth_ratio)
-            task_context: Additional context about the current task
-            
-        Returns:
-            Formatted system prompt
-        """
-        depth_ratio = position_info.get("depth_ratio", 0.0)
-        radius = position_info.get("radius", 0.0)
-        
-        base_prompt = f"""⚠️⚠️⚠️ CRITICAL TOOLS AVAILABLE ⚠️⚠️⚠️
-
-🔍 WEB SEARCH - USE THIS FOR CURRENT INFORMATION:
-If you need current/real-time data (dates, times, recent events, latest stats), write EXACTLY:
-WEB_SEARCH_NEEDED: [your query]
-
-EXAMPLES - COPY THIS FORMAT:
-✓ Time query: "WEB_SEARCH_NEEDED: current date and time"
-✓ Recent event: "WEB_SEARCH_NEEDED: 2024 election results"
-✓ Latest stat: "WEB_SEARCH_NEEDED: current inflation rate"
-
-🚨 DO NOT say "I cannot access" - REQUEST A SEARCH FIRST!
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-🖥️ SYSTEM COMMANDS - USE THIS FOR SYSTEM OPERATIONS:
-If you need to check system state, run commands, or interact with the terminal, write EXACTLY:
-SYSTEM_ACTION_NEEDED: [command]
-
-EXAMPLES - COPY THIS FORMAT:
-✓ Check time/date: "SYSTEM_ACTION_NEEDED: date"
-✓ Check directory: "SYSTEM_ACTION_NEEDED: pwd"
-✓ List files: "SYSTEM_ACTION_NEEDED: ls -la"
-✓ Check Python packages: "SYSTEM_ACTION_NEEDED: pip list"
-✓ Activate venv: "SYSTEM_ACTION_NEEDED: source .venv/bin/activate"
-
-SAFETY LEVELS:
-- SAFE (execute immediately): ls, pwd, date, pip list, which, etc.
-- REVIEW (need approval): pip install, git push, mkdir, etc.
-- BLOCKED (never execute): rm -rf, dangerous operations
-
-🚨 DO NOT say "I cannot access the terminal" - REQUEST A COMMAND FIRST!
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-You are a {agent_type} agent in Felix multi-agent system.
-
-Position:
-- Depth: {depth_ratio:.2f} (0.0=top, 1.0=bottom)
-- Radius: {radius:.2f}
-- Stage: {"Early/Broad" if depth_ratio < 0.3 else "Middle/Focused" if depth_ratio < 0.7 else "Final/Precise"}
-
-⚠️ OUTPUT LIMIT: Response will be CUT OFF if too long. BE CONCISE.
-
-Your Role:
-"""
-        
-        if agent_type == "research":
-            if depth_ratio < 0.3:
-                base_prompt += "- MAXIMUM 5 bullet points with key facts ONLY\n"
-                base_prompt += "- NO explanations, NO introductions, NO conclusions\n"
-                base_prompt += "- Raw findings only - be direct\n"
-            else:
-                base_prompt += "- MAXIMUM 3 specific facts with numbers/dates/quotes\n"
-                base_prompt += "- NO background context or elaboration\n"
-                base_prompt += "- Prepare key points for analysis (concise)\n"
-        
-        elif agent_type == "analysis":
-            base_prompt += "- MAXIMUM 2 numbered insights/patterns ONLY\n"
-            base_prompt += "- NO background explanation or context\n"
-            base_prompt += "- Direct analytical findings only\n"
-            
-        elif agent_type == "synthesis":
-            base_prompt += "- FINAL output ONLY - NO process description\n"
-            base_prompt += "- MAXIMUM 3 short paragraphs\n"
-            base_prompt += "- Direct, actionable content without fluff\n"
-            
-        elif agent_type == "critic":
-            base_prompt += "- MAXIMUM 3 specific issues/fixes ONLY\n"
-            base_prompt += "- NO praise, NO general comments\n"
-            base_prompt += "- Direct problems and solutions only\n"
-        
-        if task_context:
-            base_prompt += f"\nTask Context: {task_context}\n"
-        
-        base_prompt += "\n🚨 FINAL REMINDER: Your response must be EXTREMELY CONCISE. Your output will be CUT OFF if it exceeds your token limit. "
-        base_prompt += "Early positions focus on breadth, later positions focus on depth and precision. BE BRIEF!"
-        
-        return base_prompt
 
 
 def create_default_client(max_concurrent_requests: int = 4) -> LMStudioClient:

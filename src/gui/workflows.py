@@ -6,6 +6,7 @@ from datetime import datetime
 from .utils import ThreadManager, log_queue, logger
 from src.utils.markdown_formatter import format_synthesis_markdown_detailed
 from src.memory.workflow_history import WorkflowHistory
+from src.feedback import FeedbackManager, FeedbackIntegrator
 
 class WorkflowsFrame(ttk.Frame):
     def __init__(self, parent, thread_manager, main_app=None, theme_manager=None):
@@ -14,6 +15,11 @@ class WorkflowsFrame(ttk.Frame):
         self.main_app = main_app  # Reference to main application for Felix system access
         self.theme_manager = theme_manager
         self.last_workflow_result = None  # Store last workflow result for saving
+        self.last_workflow_id = None  # Store last workflow ID for feedback
+
+        # Initialize feedback system
+        self.feedback_manager = FeedbackManager()
+        self.feedback_integrator = FeedbackIntegrator(self.feedback_manager)
 
         # Approval polling for workflows
         self.workflow_running = False
@@ -90,6 +96,13 @@ class WorkflowsFrame(ttk.Frame):
         self.save_button = ttk.Button(button_frame, text="Save Results", command=self.save_results, state=tk.DISABLED)
         self.save_button.pack(side=tk.LEFT, padx=(5, 0))
 
+        # Rate Workflow button (initially disabled, shows after workflow completes)
+        self.rate_button = ttk.Button(button_frame, text="⭐ Rate Workflow", command=self._show_feedback_dialog_from_button, state=tk.DISABLED)
+        self.rate_button.pack(side=tk.LEFT, padx=(5, 0))
+
+        # Track feedback timer for auto-show
+        self.feedback_timer = None
+
         # Initially disable features
         self._disable_features()
 
@@ -119,21 +132,70 @@ class WorkflowsFrame(ttk.Frame):
         """Setup logging to route pipeline logs to output text widget."""
         # Setup module-specific logger for workflows to avoid conflicts
         from .logging_handler import setup_gui_logging
+
+        # TEMPORARY DEBUG MODE: Set ALL Felix modules to WARNING by default
+        # This blocks INFO logs while allowing WARNING/ERROR
         self.workflow_logger = setup_gui_logging(
             text_widget=self.output_text,
             log_queue=None,
-            level=logging.INFO,
+            level=logging.WARNING,  # Suppress INFO from all modules by default
             module_name='felix_workflows'
         )
 
-        # Also add a root logger handler to catch everything
-        root_logger = logging.getLogger()
-        if not any(isinstance(h, logging.Handler) for h in root_logger.handlers):
-            # Only set if root logger has no handlers
-            root_logger.setLevel(logging.INFO)
+        # Override ONLY felix_workflows to DEBUG to see our debug traces
+        self.workflow_logger.setLevel(logging.DEBUG)
+
+        # Custom filter to allow DEBUG but block INFO
+        class DebugAndWarningOnlyFilter(logging.Filter):
+            def filter(self, record):
+                # Allow DEBUG (10) and WARNING+ (30+), block INFO (20)
+                return record.levelno == logging.DEBUG or record.levelno >= logging.WARNING
+
+        # CRITICAL: Also set handlers to DEBUG and add filter to block INFO
+        for handler in self.workflow_logger.handlers:
+            handler.setLevel(logging.DEBUG)
+            handler.addFilter(DebugAndWarningOnlyFilter())
+
+        # CRITICAL: Also set felix_gui logger to WARNING (it's at INFO from utils.py)
+        felix_gui_logger = logging.getLogger('felix_gui')
+        felix_gui_logger.setLevel(logging.WARNING)
 
         # Confirm logging setup
-        self.workflow_logger.info("Workflows logging initialized successfully")
+        self.workflow_logger.debug("🔧 Workflows logging initialized - DEBUG MODE (INFO suppressed)")
+
+        # DIAGNOSTIC: Show actual logging configuration at runtime
+        self.workflow_logger.debug("="*60)
+        self.workflow_logger.debug("LOGGING CONFIGURATION DIAGNOSTIC - ALL LOGGERS")
+        self.workflow_logger.debug("="*60)
+
+        # Get ALL loggers in the system, not just hardcoded ones
+        all_logger_names = sorted(logging.root.manager.loggerDict.keys())
+
+        # Add root logger first
+        root_logger = logging.getLogger()
+        self.workflow_logger.debug(f"Logger: ROOT")
+        self.workflow_logger.debug(f"  Level: {logging.getLevelName(root_logger.level)} ({root_logger.level})")
+        self.workflow_logger.debug(f"  Handlers: {len(root_logger.handlers)}")
+        for i, h in enumerate(root_logger.handlers):
+            self.workflow_logger.debug(f"    Handler {i}: {type(h).__name__}, Level: {logging.getLevelName(h.level)} ({h.level})")
+        self.workflow_logger.debug("")
+
+        # Show all named loggers
+        for logger_name in all_logger_names:
+            logger_obj = logging.getLogger(logger_name)
+
+            # Only show loggers that have configuration (level set or handlers attached)
+            if logger_obj.level != logging.NOTSET or len(logger_obj.handlers) > 0:
+                self.workflow_logger.debug(f"Logger: {logger_name}")
+                self.workflow_logger.debug(f"  Level: {logging.getLevelName(logger_obj.level)} ({logger_obj.level})")
+                self.workflow_logger.debug(f"  Effective Level: {logging.getLevelName(logger_obj.getEffectiveLevel())} ({logger_obj.getEffectiveLevel()})")
+                self.workflow_logger.debug(f"  Propagate: {logger_obj.propagate}")
+                self.workflow_logger.debug(f"  Handlers: {len(logger_obj.handlers)}")
+                for i, h in enumerate(logger_obj.handlers):
+                    self.workflow_logger.debug(f"    Handler {i}: {type(h).__name__}, Level: {logging.getLevelName(h.level)} ({h.level})")
+                self.workflow_logger.debug("")
+
+        self.workflow_logger.debug("="*60)
 
     def _enable_features(self):
         """Enable workflow features when system is running."""
@@ -143,6 +205,12 @@ class WorkflowsFrame(ttk.Frame):
     def _disable_features(self):
         """Disable workflow features when system is not running."""
         self.run_button.config(state=tk.DISABLED)
+        self.save_button.config(state=tk.DISABLED)
+        self.rate_button.config(state=tk.DISABLED)
+        # Cancel any pending feedback timer
+        if self.feedback_timer:
+            self.after_cancel(self.feedback_timer)
+            self.feedback_timer = None
 
     def _refresh_workflow_list(self):
         """Refresh the list of recent workflows for continuation."""
@@ -398,6 +466,9 @@ class WorkflowsFrame(ttk.Frame):
                     parent_id = result.get("parent_workflow_id")
                     workflow_id = workflow_history.save_workflow_output(result, parent_workflow_id=parent_id)
                     if workflow_id:
+                        # Store workflow_id for feedback
+                        self.last_workflow_id = workflow_id
+
                         if parent_id:
                             self.after(0, lambda wid=workflow_id, pid=parent_id:
                                       self._write_output(f"Workflow saved to history (ID: {wid}, continuing from #{pid})"))
@@ -427,6 +498,12 @@ class WorkflowsFrame(ttk.Frame):
                         # Don't fail workflow if refresh fails
                         print(f"Warning: Could not refresh memory tab: {refresh_error}")
 
+                # Enable rate button with highlight after successful workflow completion
+                if self.last_workflow_id:
+                    self.after(0, lambda: self._enable_rate_button_with_highlight())
+                    # Optional: Auto-show dialog after 10 seconds if user doesn't click button
+                    self.feedback_timer = self.after(10000, lambda: self._show_feedback_dialog_auto())
+
             else:
                 error_msg = result.get("error", "Unknown error")
                 self.after(0, lambda: self._write_output(f"Status: FAILED"))
@@ -447,8 +524,8 @@ class WorkflowsFrame(ttk.Frame):
 
     def _update_progress(self, status, progress_percentage):
         """Update progress bar and status display."""
-        # Update progress bar
-        self.progress['value'] = progress_percentage
+        # Update progress bar - clamp to 100% max
+        self.progress['value'] = min(progress_percentage, 100)
 
     def _start_approval_polling(self):
         """Start polling for pending approvals during workflow execution."""
@@ -631,3 +708,158 @@ class WorkflowsFrame(ttk.Frame):
             self.theme_manager.apply_to_all_children(self)
         except Exception as e:
             logger.warning(f"Could not recursively apply theme: {e}")
+
+    def _show_quick_feedback_dialog(self, workflow_id):
+        """
+        Show quick feedback dialog for workflow rating (thumbs up/down).
+
+        Args:
+            workflow_id: ID of completed workflow
+        """
+        # Create dialog window
+        dialog = tk.Toplevel(self)
+        dialog.title("Rate this workflow")
+        dialog.geometry("400x200")
+        dialog.transient(self)
+        # dialog.grab_set()  # REMOVED - allows scrolling/clicking workflow output behind dialog
+
+        # Center dialog on parent window
+        dialog.update_idletasks()
+        x = self.winfo_rootx() + (self.winfo_width() // 2) - (dialog.winfo_width() // 2)
+        y = self.winfo_rooty() + (self.winfo_height() // 2) - (dialog.winfo_height() // 2)
+        dialog.geometry(f"+{x}+{y}")
+
+        # Question label
+        ttk.Label(
+            dialog,
+            text="How would you rate this workflow?",
+            font=("TkDefaultFont", 12, "bold")
+        ).pack(pady=(20, 10))
+
+        ttk.Label(
+            dialog,
+            text="Your feedback helps Felix learn and improve!",
+            font=("TkDefaultFont", 9)
+        ).pack(pady=(0, 20))
+
+        # Button frame
+        button_frame = ttk.Frame(dialog)
+        button_frame.pack(pady=20)
+
+        def submit_rating(positive):
+            """Submit rating and close dialog."""
+            try:
+                self.feedback_integrator.submit_workflow_rating_with_propagation(
+                    str(workflow_id),
+                    positive,
+                    knowledge_ids_used=[]  # TODO: Track knowledge IDs in workflow
+                )
+                logger.info(f"Feedback submitted for workflow {workflow_id}: {'positive' if positive else 'negative'}")
+
+                # Disable rate button after submission
+                self.rate_button.config(state=tk.DISABLED)
+
+                # Cancel auto-show timer if it exists
+                if self.feedback_timer:
+                    self.after_cancel(self.feedback_timer)
+                    self.feedback_timer = None
+
+                # Show thank you message
+                self._write_output(f"\n✓ Thank you for your feedback!")
+
+            except Exception as e:
+                logger.error(f"Failed to submit feedback: {e}")
+                messagebox.showerror("Error", f"Failed to submit feedback: {e}")
+
+            dialog.destroy()
+
+        # Thumbs up button (green)
+        thumbs_up_btn = tk.Button(
+            button_frame,
+            text="👍 Helpful",
+            command=lambda: submit_rating(True),
+            bg="#4CAF50",
+            fg="white",
+            font=("TkDefaultFont", 11, "bold"),
+            width=12,
+            height=2,
+            relief=tk.RAISED,
+            cursor="hand2"
+        )
+        thumbs_up_btn.pack(side=tk.LEFT, padx=10)
+
+        # Thumbs down button (red)
+        thumbs_down_btn = tk.Button(
+            button_frame,
+            text="👎 Not Helpful",
+            command=lambda: submit_rating(False),
+            bg="#f44336",
+            fg="white",
+            font=("TkDefaultFont", 11, "bold"),
+            width=12,
+            height=2,
+            relief=tk.RAISED,
+            cursor="hand2"
+        )
+        thumbs_down_btn.pack(side=tk.LEFT, padx=10)
+
+        # Skip button
+        skip_btn = ttk.Button(
+            dialog,
+            text="Skip",
+            command=dialog.destroy
+        )
+        skip_btn.pack(pady=(10, 0))
+
+        # Bind Escape key to close dialog
+        dialog.bind('<Escape>', lambda e: dialog.destroy())
+
+    def _enable_rate_button_with_highlight(self):
+        """
+        Enable rate button and add visual highlight to draw attention.
+        """
+        self.rate_button.config(state=tk.NORMAL)
+
+        # Try to add highlight styling (green background)
+        try:
+            # Use tk.Button styling since ttk.Button styling is theme-dependent
+            # Create a custom style for the button
+            style = ttk.Style()
+            style.configure("Highlight.TButton",
+                          foreground="#4CAF50",  # Green text
+                          font=("TkDefaultFont", 10, "bold"))
+            self.rate_button.config(style="Highlight.TButton")
+            logger.info("Rate button enabled with highlight")
+        except Exception as e:
+            # Fallback: Just enable without special styling
+            logger.warning(f"Could not apply button highlight: {e}")
+
+    def _show_feedback_dialog_from_button(self):
+        """
+        Show feedback dialog when user clicks the Rate Workflow button.
+        """
+        # Cancel auto-show timer if it exists
+        if self.feedback_timer:
+            self.after_cancel(self.feedback_timer)
+            self.feedback_timer = None
+            logger.info("Cancelled auto-show timer (user clicked button)")
+
+        # Show the dialog
+        if self.last_workflow_id:
+            self._show_quick_feedback_dialog(self.last_workflow_id)
+        else:
+            logger.warning("No workflow ID available for feedback")
+
+    def _show_feedback_dialog_auto(self):
+        """
+        Auto-show feedback dialog after delay if user hasn't clicked the button.
+
+        Only shows if button is still enabled (user hasn't rated yet).
+        """
+        # Check if button is still enabled (not yet rated)
+        if str(self.rate_button['state']) == 'normal':
+            logger.info("Auto-showing feedback dialog (10 second timer elapsed)")
+            if self.last_workflow_id:
+                self._show_quick_feedback_dialog(self.last_workflow_id)
+        else:
+            logger.info("Skipping auto-show (already rated)")

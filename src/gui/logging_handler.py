@@ -13,10 +13,18 @@ from typing import Optional
 
 class TkinterTextHandler(logging.Handler):
     """
-    Logging handler that writes to a Tkinter Text widget.
+    Thread-safe logging handler that writes to a Tkinter Text widget.
 
-    This handler is thread-safe and properly schedules GUI updates
-    on the main thread using the 'after' method.
+    This handler uses a queue-based approach where log messages from ANY thread
+    are put into a queue, and a polling method running on the main thread drains
+    the queue and updates the widget. This avoids calling widget.after() from
+    background threads, which causes "RuntimeError: main thread is not in main loop".
+
+    Usage:
+        handler = TkinterTextHandler(text_widget)
+        logger.addHandler(handler)
+        # Start polling on main thread (call this once):
+        handler.start_polling()
     """
 
     def __init__(self, text_widget: tk.Text):
@@ -28,6 +36,8 @@ class TkinterTextHandler(logging.Handler):
         """
         super().__init__()
         self.text_widget = text_widget
+        self.log_queue = Queue()
+        self._polling = False
         self.setFormatter(logging.Formatter(
             '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
             datefmt='%H:%M:%S'
@@ -35,35 +45,77 @@ class TkinterTextHandler(logging.Handler):
 
     def emit(self, record):
         """
-        Emit a log record to the text widget.
+        Emit a log record to the queue (thread-safe).
+
+        This method is called from ANY thread and simply puts the
+        formatted message into a thread-safe queue.
 
         Args:
             record: LogRecord to emit
         """
         try:
             msg = self.format(record)
-
-            def append_text():
-                """Append text to widget (must run on main thread)."""
-                if self.text_widget.winfo_exists():
-                    # Enable editing temporarily
-                    state = self.text_widget.cget('state')
-                    if state == 'disabled':
-                        self.text_widget.config(state='normal')
-
-                    # Append message
-                    self.text_widget.insert(tk.END, msg + '\n')
-                    self.text_widget.see(tk.END)
-
-                    # Restore original state
-                    if state == 'disabled':
-                        self.text_widget.config(state='disabled')
-
-            # Schedule on main thread
-            self.text_widget.after(0, append_text)
-
+            self.log_queue.put(msg)
         except Exception:
             self.handleError(record)
+
+    def start_polling(self, poll_interval: int = 100):
+        """
+        Start polling the queue and updating the widget (call from main thread).
+
+        Args:
+            poll_interval: Milliseconds between polls (default: 100)
+        """
+        if not self._polling:
+            self._polling = True
+            self._poll_queue(poll_interval)
+
+    def _poll_queue(self, poll_interval: int):
+        """
+        Poll the queue and update the widget (runs on main thread).
+
+        Args:
+            poll_interval: Milliseconds between polls
+        """
+        try:
+            # Drain all pending messages from queue
+            while not self.log_queue.empty():
+                msg = self.log_queue.get_nowait()
+                self._append_text(msg)
+        except Exception:
+            pass  # Ignore errors during polling
+
+        # Schedule next poll if still active and widget exists
+        if self._polling and self.text_widget.winfo_exists():
+            self.text_widget.after(poll_interval, lambda: self._poll_queue(poll_interval))
+
+    def _append_text(self, msg: str):
+        """
+        Append text to widget (must run on main thread).
+
+        Args:
+            msg: Formatted log message to append
+        """
+        try:
+            if self.text_widget.winfo_exists():
+                # Enable editing temporarily
+                state = self.text_widget.cget('state')
+                if state == 'disabled':
+                    self.text_widget.config(state='normal')
+
+                # Append message
+                self.text_widget.insert(tk.END, msg + '\n')
+                self.text_widget.see(tk.END)
+
+                # Restore original state
+                if state == 'disabled':
+                    self.text_widget.config(state='disabled')
+        except Exception:
+            pass  # Ignore errors during text append
+
+    def stop_polling(self):
+        """Stop polling the queue."""
+        self._polling = False
 
 
 class QueueHandler(logging.Handler):
@@ -135,6 +187,7 @@ def setup_gui_logging(text_widget: Optional[tk.Text] = None,
     if text_widget:
         handler = TkinterTextHandler(text_widget)
         handler.setLevel(level)
+        handler.start_polling()  # Start polling on main thread
         logger.addHandler(handler)
 
     if log_queue:
@@ -151,7 +204,8 @@ def setup_gui_logging(text_widget: Optional[tk.Text] = None,
         'src.memory',
         'src.pipeline',
         'src.core',
-        'src.gui'  # Include GUI module logs (felix_system.py, etc.)
+        'src.gui',  # Include GUI module logs (felix_system.py, etc.)
+        'src.prompts'  # Include prompts module (prompt_pipeline.py)
     ]
 
     for mod_name in felix_modules:
@@ -163,6 +217,7 @@ def setup_gui_logging(text_widget: Optional[tk.Text] = None,
         if text_widget:
             handler = TkinterTextHandler(text_widget)
             handler.setLevel(level)
+            handler.start_polling()  # Start polling on main thread
             module_logger.addHandler(handler)
 
         if log_queue:
@@ -190,6 +245,7 @@ def add_text_widget_to_logger(logger: logging.Logger, text_widget: tk.Text,
     """
     handler = TkinterTextHandler(text_widget)
     handler.setLevel(level)
+    handler.start_polling()  # Start polling on main thread
     logger.addHandler(handler)
     return handler
 

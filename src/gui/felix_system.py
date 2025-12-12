@@ -14,7 +14,8 @@ from dataclasses import dataclass
 from src.core.helix_geometry import HelixGeometry
 from src.communication.central_post import CentralPost, AgentFactory, Message, MessageType
 from src.communication.spoke import SpokeManager
-from src.llm.lm_studio_client import LMStudioClient
+from src.llm.lm_studio_client import LMStudioClient  # Keep for backward compatibility
+from src.llm.router_adapter import create_router_adapter
 from src.llm.token_budget import TokenBudgetManager
 from src.llm.web_search_client import WebSearchClient
 from src.memory.knowledge_store import KnowledgeStore
@@ -23,8 +24,28 @@ from src.memory.context_compression import ContextCompressor, CompressionConfig,
 from src.agents import ResearchAgent, AnalysisAgent, CriticAgent, PromptOptimizer
 from src.agents.system_agent import SystemAgent
 from src.agents.agent import AgentState
+from src.prompts.prompt_manager import PromptManager
+
+# Knowledge Brain imports
+try:
+    from src.knowledge import (
+        KnowledgeDaemon, DaemonConfig,
+        KnowledgeRetriever,
+        EmbeddingProvider
+    )
+    KNOWLEDGE_BRAIN_AVAILABLE = True
+except ImportError as e:
+    logger.debug(f"Knowledge Brain not available: {e}")
+    KNOWLEDGE_BRAIN_AVAILABLE = False
+    KnowledgeDaemon = None
+    DaemonConfig = None
+    KnowledgeRetriever = None
+    EmbeddingProvider = None
 
 logger = logging.getLogger(__name__)
+
+# Felix version constant
+FELIX_VERSION = "0.9.0"
 
 
 @dataclass
@@ -42,7 +63,7 @@ class FelixConfig:
 
     # System limits
     max_agents: int = 25  # Increased from 15 to allow sufficient agents for collaboration
-    base_token_budget: int = 2500
+    base_token_budget: int = 20000  # Generous budget for 50K context window
 
     # Memory
     memory_db_path: str = "felix_memory.db"
@@ -62,6 +83,7 @@ class FelixConfig:
     verbose_llm_logging: bool = True  # Log detailed LLM requests/responses
     enable_streaming: bool = True  # Enable incremental token streaming for real-time communication
     streaming_batch_interval: float = 0.1  # Send partial updates every 100ms
+    auto_approve_system_actions: bool = False  # Auto-approve system commands without blocking (for CLI mode)
 
     # Web search settings
     web_search_enabled: bool = False  # Enable web search for CentralPost (confidence-based)
@@ -82,6 +104,37 @@ class FelixConfig:
     workflow_max_steps_complex: int = 20  # Max steps for complex tasks (confidence < 0.50)
     workflow_simple_threshold: float = 0.75  # Confidence threshold for simple tasks
     workflow_medium_threshold: float = 0.50  # Confidence threshold for medium tasks
+
+    # Agent reasoning configuration (multi-step intelligent discovery)
+    agent_reasoning_max_iterations: int = 5  # Max reasoning iterations per agent
+    agent_reasoning_confidence_threshold: float = 0.85  # Stop reasoning when confidence >= this
+
+    # Learning system configuration
+    enable_learning: bool = True  # Enable adaptive learning systems
+    learning_auto_apply: bool = True  # Auto-apply high-confidence recommendations (≥95%)
+    learning_min_samples_patterns: int = 10  # Minimum samples for pattern recommendations
+    learning_min_samples_calibration: int = 10  # Minimum samples for confidence calibration
+    learning_min_samples_thresholds: int = 15  # Minimum samples for threshold learning (reduced from 20)
+
+    # Knowledge Brain configuration
+    enable_knowledge_brain: bool = False  # Enable autonomous knowledge brain (requires setup)
+    knowledge_watch_dirs: List[str] = None  # Directories to watch for documents
+    knowledge_embedding_mode: str = "auto"  # Embedding mode: auto/lm_studio/tfidf/fts5
+    knowledge_auto_augment: bool = True  # Auto-augment workflows with relevant knowledge
+    knowledge_daemon_enabled: bool = True  # Enable background daemon
+    knowledge_refinement_interval: int = 3600  # Refinement interval in seconds (1 hour)
+    knowledge_processing_threads: int = 2  # Number of processing threads
+    knowledge_max_memory_mb: int = 512  # Maximum memory for processing (MB)
+    knowledge_chunk_size: int = 1000  # Characters per chunk
+    knowledge_chunk_overlap: int = 200  # Character overlap between chunks
+
+    # Context Retrieval configuration (adaptive knowledge limits)
+    knowledge_limit_simple: int = 8  # Knowledge entries for SIMPLE_FACTUAL tasks
+    knowledge_limit_medium: int = 15  # Knowledge entries for MEDIUM complexity tasks
+    knowledge_limit_complex: int = 25  # Knowledge entries for COMPLEX tasks
+    enable_meta_learning_boost: bool = True  # Apply historical usefulness ranking
+    meta_learning_min_usages: int = 2  # Minimum usages before boost applies
+    enable_adaptive_limits: bool = True  # Use task complexity for adaptive limits
 
 
 class AgentManager:
@@ -185,6 +238,11 @@ class FelixSystem:
         self.task_memory: Optional[TaskMemory] = None
         self.context_compressor: Optional[ContextCompressor] = None
 
+        # Knowledge Brain components
+        self.embedding_provider: Optional[EmbeddingProvider] = None
+        self.knowledge_retriever: Optional[KnowledgeRetriever] = None
+        self.knowledge_daemon: Optional[KnowledgeDaemon] = None
+
         # Current simulation time
         self._current_time = 0.0
 
@@ -211,18 +269,29 @@ class FelixSystem:
             )
             logger.info(f"Helix geometry initialized: {self.helix}")
 
-            # Initialize LM Studio client
+            # Initialize LLM client (try router adapter first, fall back to LMStudioClient)
             base_url = f"http://{self.config.lm_host}:{self.config.lm_port}/v1"
-            self.lm_client = LMStudioClient(
-                base_url=base_url,
-                verbose_logging=self.config.verbose_llm_logging
-            )
 
-            # Test LM Studio connection
+            try:
+                # Try to use multi-provider router from config
+                logger.info("Attempting to initialize LLM router from config/llm.yaml")
+                self.lm_client = create_router_adapter("config/llm.yaml")
+                logger.info("Successfully initialized LLM router with multi-provider support")
+            except Exception as e:
+                # Fall back to direct LM Studio client
+                logger.warning(f"Failed to initialize LLM router ({e}), falling back to LM Studio client")
+                self.lm_client = LMStudioClient(
+                    base_url=base_url,
+                    verbose_logging=self.config.verbose_llm_logging
+                )
+
+            # Test LLM connection
             if not self.lm_client.test_connection():
-                logger.error(f"Failed to connect to LM Studio at {base_url}")
-                logger.error("Please ensure LM Studio is running with a model loaded")
+                logger.error(f"Failed to connect to LLM provider")
+                logger.error("Please ensure LM Studio is running with a model loaded, or configure cloud provider in config/llm.yaml")
                 return False
+
+            logger.info("LLM client initialized and connection verified")
 
             logger.info(f"Connected to LM Studio at {base_url}")
 
@@ -275,6 +344,67 @@ class FelixSystem:
                 self.context_compressor = ContextCompressor(config=compression_config)
                 logger.info(f"Context compressor initialized (strategy: {strategy.value}, max_context: {compression_config.max_context_size})")
 
+            # Initialize Knowledge Brain components (if enabled)
+            if self.config.enable_knowledge_brain and KNOWLEDGE_BRAIN_AVAILABLE:
+                try:
+                    logger.info("Initializing Knowledge Brain...")
+
+                    # 1. Create embedding provider
+                    self.embedding_provider = EmbeddingProvider(
+                        lm_studio_client=self.lm_client,
+                        db_path=self.config.knowledge_db_path
+                    )
+                    logger.info(f"  Embedding provider initialized (tier: {self.embedding_provider.active_tier.value})")
+
+                    # 2. Create knowledge retriever
+                    self.knowledge_retriever = KnowledgeRetriever(
+                        knowledge_store=self.knowledge_store,
+                        embedding_provider=self.embedding_provider,
+                        enable_meta_learning=True
+                    )
+                    logger.info("  Knowledge retriever initialized")
+
+                    # 3. Create daemon config
+                    daemon_config = DaemonConfig(
+                        watch_directories=self.config.knowledge_watch_dirs or ['./knowledge_sources'],
+                        enable_batch_processing=True,
+                        enable_refinement=True,
+                        enable_file_watching=True,
+                        refinement_interval=self.config.knowledge_refinement_interval,
+                        processing_threads=self.config.knowledge_processing_threads,
+                        max_memory_mb=self.config.knowledge_max_memory_mb,
+                        chunk_size=self.config.knowledge_chunk_size,
+                        chunk_overlap=self.config.knowledge_chunk_overlap
+                    )
+
+                    # 4. Create knowledge daemon
+                    self.knowledge_daemon = KnowledgeDaemon(
+                        config=daemon_config,
+                        knowledge_store=self.knowledge_store,
+                        llm_client=self.lm_client
+                    )
+                    logger.info("  Knowledge daemon initialized")
+
+                    # 5. Start daemon if enabled
+                    if self.config.knowledge_daemon_enabled:
+                        self.knowledge_daemon.start()
+                        logger.info("  Knowledge daemon started")
+
+                    logger.info("✓ Knowledge Brain fully operational")
+
+                except Exception as e:
+                    logger.error(f"Failed to initialize Knowledge Brain: {e}")
+                    logger.error("Continuing without Knowledge Brain...")
+                    self.embedding_provider = None
+                    self.knowledge_retriever = None
+                    self.knowledge_daemon = None
+            elif self.config.enable_knowledge_brain and not KNOWLEDGE_BRAIN_AVAILABLE:
+                logger.warning("Knowledge Brain enabled but dependencies not available")
+
+            # Initialize prompt manager
+            self.prompt_manager = PromptManager()
+            logger.info("Prompt manager initialized")
+
             # Initialize prompt optimizer
             self.prompt_optimizer = PromptOptimizer()
             logger.info("Prompt optimizer initialized")
@@ -290,9 +420,12 @@ class FelixSystem:
                 web_search_confidence_threshold=self.config.web_search_confidence_threshold,
                 web_search_min_samples=self.config.web_search_min_samples,
                 web_search_cooldown=self.config.web_search_cooldown,
-                knowledge_store=self.knowledge_store  # CRITICAL: Share the same knowledge_store instance!
+                knowledge_store=self.knowledge_store,  # CRITICAL: Share the same knowledge_store instance!
+                config=self.config,  # Pass config for auto-approval and other settings
+                gui_mode=True,  # Enable GUI mode to use approval dialogs instead of CLI prompts
+                prompt_manager=self.prompt_manager  # Pass prompt manager for synthesis prompts
             )
-            logger.info("Central post initialized with synthesis capability and shared knowledge store")
+            logger.info("Central post initialized with synthesis capability and shared knowledge store (GUI mode enabled)")
 
             # Initialize spoke manager (for O(N) communication topology)
             if self.config.enable_spoke_topology:
@@ -308,9 +441,11 @@ class FelixSystem:
                 max_agents=self.config.max_agents,
                 token_budget_limit=self.config.base_token_budget * self.config.max_agents,
                 web_search_client=self.web_search_client,
-                max_web_queries=self.config.web_search_max_queries
+                max_web_queries=self.config.web_search_max_queries,
+                prompt_manager=self.prompt_manager,
+                prompt_optimizer=self.prompt_optimizer
             )
-            logger.info("Agent factory initialized")
+            logger.info("Agent factory initialized with prompt manager and optimizer")
 
             self.running = True
             logger.info("Felix system started successfully")
@@ -349,6 +484,14 @@ class FelixSystem:
             # Shutdown central post
             if self.central_post:
                 self.central_post.shutdown()
+
+            # Stop knowledge daemon
+            if self.knowledge_daemon:
+                try:
+                    self.knowledge_daemon.stop()
+                    logger.info("Knowledge daemon stopped")
+                except Exception as e:
+                    logger.warning(f"Error stopping knowledge daemon: {e}")
 
             # Close LM client if it has a close method
             if self.lm_client and hasattr(self.lm_client, 'close_async'):
@@ -481,6 +624,30 @@ class FelixSystem:
                 context="User-initiated task from GUI"
             )
 
+            # Classify task complexity for prompt selection
+            if self.central_post and self.central_post.synthesis_engine:
+                try:
+                    task_complexity = self.central_post.synthesis_engine.classify_task_complexity(task_description)
+                    # Defensive check: handle both LLMTask objects and dict representations
+                    if hasattr(task, 'metadata'):
+                        task.metadata['complexity'] = task_complexity
+                    elif isinstance(task, dict):
+                        if 'metadata' not in task:
+                            task['metadata'] = {}
+                        task['metadata']['complexity'] = task_complexity
+                    logger.debug(f"Task complexity: {task_complexity}")
+                except Exception as e:
+                    logger.warning(f"Failed to classify task complexity: {e}")
+
+            # TODO: GUI code path should use enriched context with tool instructions
+            # Currently this bypasses CollaborativeContextBuilder and tool instruction injection
+            # This means GUI-spawned agents won't have access to file operations, web search, etc.
+            # For proper tool support, this should:
+            # 1. Classify tool requirements using central_post.synthesis_engine.classify_tool_requirements()
+            # 2. Build enriched context (requires context_builder instance)
+            # 3. Apply tool_instructions and context_inventory to task
+            # See felix_workflow.py lines 473-487 for reference implementation
+
             # Spawn agent if not already spawned
             if agent.state == AgentState.WAITING:
                 agent.spawn(self._current_time, task)
@@ -512,13 +679,35 @@ class FelixSystem:
         if not self.running:
             return {
                 "running": False,
+                "felix_version": FELIX_VERSION,
                 "agents": 0,
+                "active_agents": 0,  # API-preferred field name
+                "active_workflows": 0,
+                "llm_provider": "none",
+                "knowledge_brain_enabled": self.config.enable_knowledge_brain,
                 "messages": 0
             }
 
+        # Detect LLM provider type
+        llm_provider = "unknown"
+        if self.lm_client:
+            client_class_name = self.lm_client.__class__.__name__
+            if "Router" in client_class_name or "Adapter" in client_class_name:
+                llm_provider = "multi_provider_router"
+            elif "LMStudio" in client_class_name:
+                llm_provider = "lm_studio"
+            else:
+                llm_provider = "custom"
+
+        agent_count = self.agent_manager.get_agent_count()
         status = {
             "running": True,
-            "agents": self.agent_manager.get_agent_count(),
+            "felix_version": FELIX_VERSION,
+            "agents": agent_count,  # Keep for GUI backwards compatibility
+            "active_agents": agent_count,  # Add for API compatibility
+            "active_workflows": 0,  # TODO: Track workflows in future
+            "llm_provider": llm_provider,
+            "knowledge_brain_enabled": self.config.enable_knowledge_brain,
             "current_time": self._current_time
         }
 

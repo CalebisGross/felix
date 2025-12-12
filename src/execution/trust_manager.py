@@ -172,9 +172,10 @@ class TrustManager:
             ],
 
             'blocked': [
-                # Destructive operations
-                r'sudo\s+rm\s+-rf\s+/',
-                r'rm\s+-rf\s+/',
+                # Destructive operations (STRENGTHENED TO BLOCK ALL rm -rf)
+                r'sudo\s+rm\s+-rf',  # Block "sudo rm -rf" followed by ANY path
+                r'rm\s+-rf',  # Block "rm -rf" followed by ANY path (not just root)
+                r'rm\s+-fr',  # Also catch reversed flags
                 r'^dd\s',
                 r'^mkfs\s',
                 r'^fdisk\s',

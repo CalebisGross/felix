@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  felix:
+    build: .
+    container_name: felix-framework
+    ports:
+      - "8000:8000"  # API
+      - "5000:5000"  # GUI (optional)
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./knowledge_sources:/app/knowledge_sources
+      - ./config:/app/config
+      - ./results:/app/results
+    environment:
+      - FELIX_API_KEY=${FELIX_API_KEY:-development-key}
+      - FELIX_ENV=${FELIX_ENV:-production}
+      - FELIX_LOG_LEVEL=${FELIX_LOG_LEVEL:-INFO}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Optional: LM Studio proxy (if using containerized LLM)
+  # lm-studio:
+  #   image: your-lm-studio-image:latest
+  #   container_name: felix-llm
+  #   ports:
+  #     - "1234:1234"
+  #   volumes:
+  #     - ./models:/models
+  #   environment:
+  #     - MODEL_PATH=/models/your-model.gguf
+  #   restart: unless-stopped
+
+networks:
+  default:
+    name: felix-network
+
+volumes:
+  data:
+  logs:
+  knowledge_sources:
+  results:

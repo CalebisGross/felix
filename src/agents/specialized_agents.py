@@ -17,197 +17,68 @@ Agent Types:
 import time
 import random
 import logging
+import traceback
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
 
-from src.agents.llm_agent import LLMAgent, LLMTask, LLMResult
+from src.agents.llm_agent import LLMAgent, LLMTask
 from src.agents.agent import generate_spawn_times
 from src.core.helix_geometry import HelixGeometry
 from src.llm.lm_studio_client import LMStudioClient
 
 logger = logging.getLogger(__name__)
 from src.llm.token_budget import TokenBudgetManager
-from src.llm.web_search_client import WebSearchClient, SearchResult
+from src.llm.web_search_client import WebSearchClient  # For type hints only
 
 
 # Shared tool instructions header for all specialized agents
-AGENT_TOOLS_HEADER = """⚠️⚠️⚠️ CRITICAL TOOLS AVAILABLE ⚠️⚠️⚠️
+# Imperative execution directive - used when memory system unavailable
+# Primary tool instructions should come from KnowledgeStore via conditional retrieval
+EXECUTION_DIRECTIVE = """⚡ TOOL EXECUTION PROTOCOL:
 
-🔍 WEB SEARCH - USE THIS FOR CURRENT INFORMATION:
-If you need current/real-time data (dates, times, recent events, latest stats), write EXACTLY:
-WEB_SEARCH_NEEDED: [your query]
+🔍 WEB SEARCH - Execute for current/real-time information:
+Write on its own line: WEB_SEARCH_NEEDED: [your query]
 
-EXAMPLES:
-✓ "WEB_SEARCH_NEEDED: current date and time"
-✓ "WEB_SEARCH_NEEDED: 2024 election results"
+🖥️ SYSTEM COMMANDS - Execute for file operations and system checks:
+Write on its own line: SYSTEM_ACTION_NEEDED: [command]
 
-🖥️ SYSTEM COMMANDS - USE THIS FOR ANY SYSTEM OPERATION:
-If you need to CHECK system state, RUN COMMANDS, CREATE FILES, OPEN APPLICATIONS, or MODIFY THE SYSTEM, write EXACTLY:
-SYSTEM_ACTION_NEEDED: [command]
+Examples:
+SYSTEM_ACTION_NEEDED: date
+SYSTEM_ACTION_NEEDED: head -n [N] filename.py
+SYSTEM_ACTION_NEEDED: mkdir -p results && echo "content" > results/file.txt
 
-⚠️ CRITICAL FORMATTING RULES:
-1. Write the pattern ON ITS OWN LINE or at the START of your response
-2. Write ONLY the command after the colon - no explanation, no prose
-3. DO NOT embed the pattern in sentences or discuss it in your analysis
-
-✓ CORRECT FORMAT:
-"I need to check the directory.
-SYSTEM_ACTION_NEEDED: pwd"
-
-OR:
-"SYSTEM_ACTION_NEEDED: pwd
-This will tell us the current directory."
-
-✗ WRONG - DO NOT DO THIS:
-"I will use SYSTEM_ACTION_NEEDED: pwd to check the directory."
-"The command (SYSTEM_ACTION_NEEDED: pwd) will help us..."
-"...via SYSTEM_ACTION_NEEDED: pwd) is sufficient..."
-
-EXAMPLES OF CORRECT USAGE:
-✓ "SYSTEM_ACTION_NEEDED: date"  # Get current time/date
-✓ "SYSTEM_ACTION_NEEDED: pwd"   # Get current directory
-✓ "SYSTEM_ACTION_NEEDED: ls -la" # List files
-✓ "SYSTEM_ACTION_NEEDED: pip list" # Check installed packages
-
-📝 MULTI-STEP WORKFLOWS:
-For tasks requiring multiple commands, output multiple SYSTEM_ACTION_NEEDED lines:
-
-EXAMPLE - Creating a file with content:
-"I'll create the file for you.
-SYSTEM_ACTION_NEEDED: test -d results || mkdir -p results
-SYSTEM_ACTION_NEEDED: echo \"content here\" > results/file.txt"
-
-EXAMPLE - Setup and verification:
-"SYSTEM_ACTION_NEEDED: cd /project/dir
-SYSTEM_ACTION_NEEDED: ls -la
-SYSTEM_ACTION_NEEDED: pwd"
-
-Each command executes sequentially. Commands requiring approval (mkdir, file writes) will prompt the user first.
-
-📁 FILE OPERATIONS - YOU CAN CREATE/MODIFY FILES:
-
-⚠️ **CRITICAL: ALWAYS USE RELATIVE PATHS, NEVER ABSOLUTE PATHS**
-   Use: results/file.txt ✅
-   NOT: /results/file.txt ❌ (requires root permissions, will fail!)
-
-CREATE DIRECTORY:
-✓ "SYSTEM_ACTION_NEEDED: mkdir -p results/data"
-
-CREATE FILE WITH CONTENT:
-✓ 'SYSTEM_ACTION_NEEDED: echo "your content" > results/file.txt'  # Use double quotes!
-
-APPEND TO FILE:
-✓ 'SYSTEM_ACTION_NEEDED: echo "more content" >> results/log.txt'  # Use double quotes!
-
-CREATE EMPTY FILE:
-✓ "SYSTEM_ACTION_NEEDED: touch results/notes.txt"
-
-📝 SHELL QUOTING RULES - CRITICAL FOR FILE CONTENT:
-
-⚠️ When creating files with echo/printf, proper quoting prevents syntax errors:
-
-✅ CORRECT - Use DOUBLE QUOTES for content with apostrophes:
-'SYSTEM_ACTION_NEEDED: echo "Testing agent\'s work" > file.txt'  # Apostrophe safe
-
-✅ CORRECT - Use printf for special characters:
-'SYSTEM_ACTION_NEEDED: printf "%s\\n" "Content with apostrophes" > file.txt'
-
-❌ WRONG - Single quotes break on apostrophes:
-"SYSTEM_ACTION_NEEDED: echo 'agent's work' > file.txt"  # SYNTAX ERROR!
-
-⚠️ ESCAPING RULES:
-- Inside double quotes: escape $ ` \\ " with backslash
-- Simple text: use double quotes
-- Complex text with special chars: use printf
-
-EXAMPLES:
-✓ echo "Project's status: active" > status.txt
-✓ echo "Value: \\$100" > price.txt  # Escape $
-✓ printf '%s\\n' "Text with \\"nested\\" quotes" > file.txt
-
-🧠 INTELLIGENT COMMAND PATTERNS - THINK BEFORE EXECUTING:
-
-⚠️ CHECK STATE BEFORE MODIFYING:
-
-❌ BAD - Blindly create directory:
-"SYSTEM_ACTION_NEEDED: mkdir -p /path/to/dir
-SYSTEM_ACTION_NEEDED: echo \\"content\\" > /path/to/dir/file.txt"
-
-✅ GOOD - Check if directory exists first:
-"SYSTEM_ACTION_NEEDED: test -d results || mkdir -p results
-SYSTEM_ACTION_NEEDED: echo \\"content\\" > results/file.txt"
-
-✅ BETTER - Use idempotent operations intelligently:
-"SYSTEM_ACTION_NEEDED: mkdir -p results  # Safe: only creates if missing
-SYSTEM_ACTION_NEEDED: echo \\"content\\" > results/file.txt"
-
-⚠️ FILE OVERWRITES - Consider data preservation:
-
-❌ BAD - Blindly overwrite existing file:
-"SYSTEM_ACTION_NEEDED: echo \\"new\\" > existing_file.txt"  # Data loss!
-
-✅ GOOD - Check existence first:
-"SYSTEM_ACTION_NEEDED: test -f file.txt && echo \\"Appending\\" || echo \\"Creating\\"
-SYSTEM_ACTION_NEEDED: echo \\"content\\" >> file.txt"  # Append, don't overwrite
-
-🎯 SMART WORKFLOW PATTERNS:
-
-EXAMPLE - File creation with validation:
-"I'll create the report in the results directory.
-SYSTEM_ACTION_NEEDED: test -d results || mkdir -p results
-SYSTEM_ACTION_NEEDED: echo \\"Report: agent's findings\\" > results/report.md"
-
-EXAMPLE - Append to log without overwriting:
-"I'll add this entry to the log.
-SYSTEM_ACTION_NEEDED: echo \\"[2025-10-26] Task completed\\" >> logs/activity.log"
-
-EXAMPLE - Check before installing:
-"SYSTEM_ACTION_NEEDED: pip show requests || pip install requests"
-
-KEY PRINCIPLES:
-1. Check state before modifying (test -d, test -f, which, pip show)
-2. Use idempotent operations thoughtfully (mkdir -p is safe, rm -rf is not)
-3. Consider data preservation (append >> vs overwrite >)
-4. Avoid redundant operations (don't mkdir current directory)
-5. Use double quotes for text with apostrophes
-
-🚨 EXECUTE DON'T DESCRIBE:
-When the user asks you to "create a file", "open terminal", "write content":
-✅ DO: Output SYSTEM_ACTION_NEEDED commands to execute the task
-✅ DO: Actually request the system to perform the action
-❌ DON'T: Describe a bash script or explain how it could be done
-❌ DON'T: Say "here's how you would do it" or "you could run this command"
-❌ DON'T: Generate documentation without execution
-
-YOU ARE NOT A CONSULTANT - YOU ARE AN AUTONOMOUS AGENT WITH SYSTEM ACCESS.
-
-SAFETY: Commands are classified as SAFE (execute immediately), REVIEW (need approval), or BLOCKED (never execute).
-
-🚨 DO NOT say "I cannot access" - REQUEST THE TOOL FIRST!
+Commands requiring approval (file writes, installs) will prompt user.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 """
 
+# Backwards compatibility alias (deprecated - use EXECUTION_DIRECTIVE)
+MINIMAL_TOOLS_FALLBACK = EXECUTION_DIRECTIVE
+
 
 class ResearchAgent(LLMAgent):
     """
     Research agent specializing in broad information gathering.
-    
+
     Characteristics:
     - High creativity/temperature when at top of helix
     - Focuses on breadth over depth initially
-    - Provides diverse perspectives and information sources
+    - Provides several perspectives and information sources
     - Spawns early in the process
+
+    Note: Web search is handled by CentralPost's WebSearchCoordinator.
+    Search results are available via task.knowledge_entries (domain="web_search").
     """
     
     def __init__(self, agent_id: str, spawn_time: float, helix: HelixGeometry,
                  llm_client: LMStudioClient, research_domain: str = "general",
                  token_budget_manager: Optional[TokenBudgetManager] = None,
                  max_tokens: Optional[int] = None,
-                 web_search_client: Optional[WebSearchClient] = None,  # DEPRECATED: Web search now handled by CentralPost
-                 max_web_queries: int = 3,  # DEPRECATED
-                 prompt_manager: Optional['PromptManager'] = None):
+                 web_search_client: Optional[WebSearchClient] = None,  # Legacy parameter (ignored)
+                 max_web_queries: int = 3,  # Legacy parameter (ignored)
+                 prompt_manager: Optional['PromptManager'] = None,
+                 prompt_optimizer: Optional['PromptOptimizer'] = None):
         """
         Initialize research agent.
 
@@ -219,9 +90,10 @@ class ResearchAgent(LLMAgent):
             research_domain: Specific domain focus (general, technical, creative, etc.)
             token_budget_manager: Optional token budget manager
             max_tokens: Maximum tokens per processing stage
-            web_search_client: DEPRECATED - Web search now handled by CentralPost
-            max_web_queries: DEPRECATED
+            web_search_client: Legacy parameter (ignored). Web search handled by CentralPost WebSearchCoordinator.
+            max_web_queries: Legacy parameter (ignored).
             prompt_manager: Optional prompt manager for custom prompts
+            prompt_optimizer: Optional prompt optimizer for learning and optimization
         """
         super().__init__(
             agent_id=agent_id,
@@ -232,20 +104,24 @@ class ResearchAgent(LLMAgent):
             temperature_range=None,  # Use LLMAgent defaults
             max_tokens=max_tokens,
             token_budget_manager=token_budget_manager,
-            prompt_manager=prompt_manager
+            prompt_manager=prompt_manager,
+            prompt_optimizer=prompt_optimizer
         )
 
         self.research_domain = research_domain
-        # Note: web_search_client parameters kept for backward compatibility but ignored
-        # Web search is now performed by CentralPost when confidence is low
     
     def create_position_aware_prompt(self, task: LLMTask, current_time: float) -> tuple[str, int]:
-        """Create research-specific system prompt with token budget."""
+        """
+        Create research-specific system prompt with token budget.
+
+        Includes special "direct answer mode" for simple factual queries with high-confidence knowledge.
+        Otherwise delegates to PromptPipeline for standard prompt construction.
+        """
+        logger.debug(f"🐛 DEBUG: ResearchAgent.create_position_aware_prompt() called - CODE VERSION 2")
+        logger.debug(f"🐛 DEBUG: task type = {type(task)}, hasattr(task, 'metadata') = {hasattr(task, 'metadata')}")
+        logger.debug(f"🐛 DEBUG: isinstance(task, dict) = {isinstance(task, dict)}")
         position_info = self.get_position_info(current_time)
         depth_ratio = position_info.get("depth_ratio", 0.0)
-
-        # Determine if strict mode is active
-        strict_mode = self.token_budget_manager and self.token_budget_manager.strict_mode if self.token_budget_manager else False
 
         # Check for "direct answer mode" - when trustable knowledge exists for simple query
         logger.info(f"🔍 DIRECT ANSWER MODE CHECK for {self.agent_id}")
@@ -288,11 +164,22 @@ class ResearchAgent(LLMAgent):
         if use_direct_mode:
             # Force low temperature for precision
             # This will be applied in process_task_with_llm by checking task metadata
-            if not hasattr(task, 'metadata'):
-                task.metadata = {}
-            task.metadata['direct_answer_mode'] = True
-            task.metadata['override_temperature'] = 0.2
-            task.metadata['override_tokens'] = 200
+            # Safe metadata access for both LLMTask objects and dict representations
+            logger.debug(f"🐛 DEBUG: About to set metadata - task type = {type(task)}")
+            logger.debug(f"🐛 DEBUG: hasattr(task, 'metadata') = {hasattr(task, 'metadata')}")
+            logger.debug(f"🐛 DEBUG: isinstance(task, dict) = {isinstance(task, dict)}")
+            if hasattr(task, 'metadata'):
+                if task.metadata is None:
+                    task.metadata = {}
+                task.metadata['direct_answer_mode'] = True
+                task.metadata['override_temperature'] = 0.2
+                task.metadata['override_tokens'] = 200
+            elif isinstance(task, dict):
+                if 'metadata' not in task:
+                    task['metadata'] = {}
+                task['metadata']['direct_answer_mode'] = True
+                task['metadata']['override_temperature'] = 0.2
+                task['metadata']['override_tokens'] = 200
 
             # Build direct answer prompt
             knowledge_summary = "\n\nAVAILABLE KNOWLEDGE (HIGH CONFIDENCE):\n"
@@ -332,111 +219,39 @@ Your response (15-30 words, direct answer only):"""
 
             return base_prompt, 200  # Force low token budget
 
-        # NORMAL MODE: Standard research agent behavior
-        # Get token allocation if budget manager is available
-        token_allocation = None
-        stage_token_budget = self.max_tokens  # Use agent's max_tokens
-
+        # NORMAL MODE: Delegate to PromptPipeline for standard research agent prompt
+        logger.debug(f"🐛 DEBUG: NORMAL MODE - calculating token budget")
+        stage_token_budget = self.max_tokens  # Default
         if self.token_budget_manager:
+            logger.debug(f"🐛 DEBUG: Calling token_budget_manager.calculate_stage_allocation()")
             token_allocation = self.token_budget_manager.calculate_stage_allocation(
                 self.agent_id, depth_ratio, self.processing_stage + 1
             )
             stage_token_budget = token_allocation.stage_budget
+            logger.debug(f"🐛 DEBUG: Token allocation complete, budget = {stage_token_budget}")
 
-        # Try to get prompt from PromptManager first
-        if self.prompt_manager:
-            prompt_key = self._determine_prompt_key(depth_ratio, strict_mode)
-            prompt_template = self.prompt_manager.get_prompt(prompt_key)
+        # Delegate to PromptPipeline
+        logger.debug(f"🐛 DEBUG: About to call self.prompt_pipeline.build_agent_prompt()")
+        logger.debug(f"🐛 DEBUG: task type = {type(task)}, hasattr metadata = {hasattr(task, 'metadata')}")
+        logger.debug(f"🐛 DEBUG: prompt_pipeline object = {self.prompt_pipeline}")
 
-            if prompt_template:
-                # Build header
-                header_template = self.prompt_manager.get_prompt("research_base_header")
-                header = header_template.template if header_template else ""
+        try:
+            result = self.prompt_pipeline.build_agent_prompt(
+                task=task,
+                agent=self,
+                position_info=position_info,
+                current_time=current_time
+            )
+            logger.debug(f"🐛 DEBUG: prompt_pipeline.build_agent_prompt() returned successfully")
+        except Exception as e:
+            logger.error(f"🚨 EXCEPTION CAUGHT in build_agent_prompt() call:")
+            logger.error(f"🚨 Exception type: {type(e).__name__}")
+            logger.error(f"🚨 Exception message: {str(e)}")
+            logger.error(f"🚨 Full traceback:")
+            logger.error(traceback.format_exc())
+            raise  # Re-raise so failure recovery can handle it
 
-                # Render main prompt
-                main_prompt = self.prompt_manager.render_template(
-                    prompt_template.template,
-                    research_domain=self.research_domain,
-                    depth_ratio=depth_ratio
-                )
-
-                # Combine: tools_header + header + main prompt
-                base_prompt = AGENT_TOOLS_HEADER + header + main_prompt
-            else:
-                # Fallback to hardcoded
-                base_prompt = AGENT_TOOLS_HEADER + self._build_hardcoded_prompt(depth_ratio, strict_mode)
-        else:
-            # No PromptManager, use hardcoded prompts
-            base_prompt = AGENT_TOOLS_HEADER + self._build_hardcoded_prompt(depth_ratio, strict_mode)
-
-        # Add shared context
-        if self.shared_context:
-            base_prompt += "\n\nContext from Other Agents:\n"
-            for key, value in self.shared_context.items():
-                base_prompt += f"- {key}: {value}\n"
-
-        # Add knowledge entries if available
-        knowledge_summary = ""
-        if task.knowledge_entries and len(task.knowledge_entries) > 0:
-            knowledge_summary = "\n\nRelevant Knowledge from Memory:\n"
-            for entry in task.knowledge_entries:
-                # Extract key information from knowledge entry
-                if hasattr(entry, 'content'):
-                    # Extract 'result' key from dictionary if present (web search results)
-                    if isinstance(entry.content, dict):
-                        content_str = entry.content.get('result', str(entry.content))
-                    else:
-                        content_str = str(entry.content)
-                else:
-                    content_str = str(entry)
-
-                confidence = entry.confidence_level.value if hasattr(entry, 'confidence_level') else "unknown"
-                source = entry.source_agent if hasattr(entry, 'source_agent') else "system"
-                domain = entry.domain if hasattr(entry, 'domain') else "unknown"
-
-                # Use longer truncation for web_search domain (detailed factual data)
-                max_chars = 400 if domain == "web_search" else 200
-                if len(content_str) > max_chars:
-                    content_str = content_str[:max_chars-3] + "..."
-
-                # Add emoji prefix for web search entries
-                prefix = "🌐" if domain == "web_search" else "📝"
-                knowledge_summary += f"{prefix} [{source}, conf: {confidence}]: {content_str}\n"
-
-            # Add important instructions for using available knowledge
-            knowledge_summary += "\nIMPORTANT: Use the knowledge provided above to answer the task if possible. "
-            knowledge_summary += "Only request additional web search if the available knowledge is insufficient or outdated.\n"
-
-        base_prompt += knowledge_summary
-
-        # Add footer
-        if self.prompt_manager:
-            footer_template = self.prompt_manager.get_prompt("research_footer_context")
-            if footer_template:
-                footer = self.prompt_manager.render_template(
-                    footer_template.template,
-                    context=task.context
-                )
-                base_prompt += footer
-        else:
-            base_prompt += f"""
-Task Context: {task.context}
-
-Remember: As a research agent, your job is to gather information, not to synthesize or conclude.
-Focus on providing raw material and insights for other agents to build upon.
-"""
-
-        # Add token budget guidance if available
-        if token_allocation:
-            budget_guidance = f"\n\nToken Budget Guidance:\n{token_allocation.style_guidance}"
-            if token_allocation.compression_ratio > 0.5:
-                budget_guidance += f"\nCompress previous research insights by ~{token_allocation.compression_ratio:.0%} while preserving key findings."
-
-            enhanced_prompt = base_prompt + budget_guidance
-        else:
-            enhanced_prompt = base_prompt
-
-        return enhanced_prompt, stage_token_budget
+        return result.system_prompt, stage_token_budget
 
     def _determine_prompt_key(self, depth_ratio: float, strict_mode: bool) -> str:
         """Determine prompt key based on depth and mode."""
@@ -449,183 +264,8 @@ Focus on providing raw material and insights for other agents to build upon.
         else:
             return f"research_deep_{mode_suffix}"
 
-    def _build_hardcoded_prompt(self, depth_ratio: float, strict_mode: bool) -> str:
-        """Build hardcoded prompt as fallback when PromptManager not available."""
-        base_prompt = f"""You are a specialized RESEARCH AGENT in the Felix multi-agent system.
 
-Research Domain: {self.research_domain}
-Current Position: Depth {depth_ratio:.2f}/1.0 on the helix (0.0=start, 1.0=end)
 
-Your Research Approach Based on Position:
-"""
-
-        if depth_ratio < 0.3:
-            if strict_mode:
-                base_prompt += """
-- BULLET POINTS ONLY: 3-5 facts
-- NO explanations or background
-- Sources: names/dates only
-- BREVITY REQUIRED
-"""
-            else:
-                base_prompt += """
-- BROAD EXPLORATION PHASE: Cast a wide net
-- Generate diverse research angles and questions
-- Don't worry about precision - focus on coverage
-- Explore unconventional perspectives and sources
-- Think creatively and associatively
-"""
-        elif depth_ratio < 0.7:
-            if strict_mode:
-                base_prompt += """
-- 2-3 SPECIFIC FACTS only
-- Numbers, quotes, key data
-- NO context or explanation
-"""
-            else:
-                base_prompt += """
-- FOCUSED RESEARCH PHASE: Narrow down promising leads
-- Build on earlier findings from other agents
-- Dive deeper into specific aspects that seem relevant
-- Start connecting dots and identifying patterns
-- Balance breadth with increasing depth
-"""
-        else:
-            if strict_mode:
-                base_prompt += """
-- FINAL FACTS: 1-2 verified points
-- Citation format: Author (Year)
-- NO elaboration
-"""
-            else:
-                base_prompt += """
-- DEEP RESEARCH PHASE: Precise investigation
-- Focus on specific details and verification
-- Provide authoritative sources and evidence
-- Prepare findings for analysis agents
-- Ensure accuracy and completeness
-"""
-
-        return base_prompt
-
-    def process_research_task(self, task: LLMTask, current_time: float,
-                              central_post: Optional['CentralPost'] = None) -> LLMResult:
-        """Process research task with domain-specific handling and optional web search."""
-        import logging
-        logger = logging.getLogger(__name__)
-
-        # Get position info to determine if we should search
-        position_info = self.get_position_info(current_time)
-        depth_ratio = position_info.get("depth_ratio", 0.0)
-
-        # Perform web search if enabled and in early exploration phase (0.0-0.3)
-        web_search_context = ""
-        if self.web_search_client and depth_ratio <= 0.3:
-            logger.info(f"[{self.agent_id}] Performing web search at depth {depth_ratio:.2f}")
-
-            # Formulate search queries based on task and research domain
-            search_queries = self._formulate_search_queries(task)
-
-            # Perform searches (up to max_web_queries)
-            all_search_results = []
-            for i, query in enumerate(search_queries[:self.max_web_queries]):
-                logger.info(f"[{self.agent_id}] Searching: '{query}'")
-                try:
-                    results = self.web_search_client.search(
-                        query=query,
-                        task_id=task.task_id
-                    )
-                    all_search_results.extend(results)
-                    self.search_queries.append(query)
-
-                    # Extract sources
-                    for result in results:
-                        if result.url not in self.information_sources:
-                            self.information_sources.append(result.url)
-
-                except Exception as e:
-                    logger.error(f"[{self.agent_id}] Web search failed for '{query}': {e}")
-
-            # Store results
-            self.web_search_results = all_search_results
-
-            # Format results for LLM
-            if all_search_results:
-                web_search_context = "\n\n" + self.web_search_client.format_results_for_llm(all_search_results)
-                logger.info(f"[{self.agent_id}] Found {len(all_search_results)} web search results")
-
-        # Add research-specific metadata and web search results
-        enhanced_context = f"{task.context}\nResearch Domain: {self.research_domain}{web_search_context}"
-
-        enhanced_task = LLMTask(
-            task_id=task.task_id,
-            description=task.description,
-            context=enhanced_context,
-            metadata={
-                **task.metadata,
-                "research_domain": self.research_domain,
-                "web_search_enabled": self.web_search_client is not None,
-                "web_search_results_count": len(self.web_search_results)
-            }
-        )
-
-        result = super().process_task_with_llm(enhanced_task, current_time, central_post)
-
-        # Add metadata to result for tracking
-        result.metadata = enhanced_task.metadata
-
-        # Extract potential search queries and sources from the result
-        self._extract_research_metadata(result)
-
-        return result
-
-    def _formulate_search_queries(self, task: LLMTask) -> List[str]:
-        """
-        Formulate search queries based on task and research domain.
-
-        Args:
-            task: The research task
-
-        Returns:
-            List of search query strings
-        """
-        queries = []
-
-        # Base query from task description
-        base_query = task.description.strip()
-
-        # Add domain-specific queries
-        if self.research_domain != "general":
-            queries.append(f"{base_query} {self.research_domain}")
-        else:
-            queries.append(base_query)
-
-        # Add variations based on research domain
-        if self.research_domain == "technical":
-            queries.append(f"{base_query} documentation tutorial")
-        elif self.research_domain == "creative":
-            queries.append(f"{base_query} examples ideas inspiration")
-        elif self.research_domain == "general":
-            queries.append(f"{base_query} overview guide")
-
-        # Add a focused "latest" query for current information
-        if len(queries) < 3:
-            queries.append(f"{base_query} latest 2024 2025")
-
-        return queries
-    
-    def _extract_research_metadata(self, result: LLMResult) -> None:
-        """Extract research queries and sources from result content."""
-        content = result.content.lower()
-        
-        # Simple heuristics to extract useful metadata
-        if "search for" in content or "look up" in content:
-            # Could extract specific search terms
-            pass
-        
-        if "source:" in content or "reference:" in content:
-            # Could extract cited sources
-            pass
 
 
 class AnalysisAgent(LLMAgent):
@@ -643,10 +283,11 @@ class AnalysisAgent(LLMAgent):
                  llm_client: LMStudioClient, analysis_type: str = "general",
                  token_budget_manager: Optional[TokenBudgetManager] = None,
                  max_tokens: Optional[int] = None,
-                 prompt_manager: Optional['PromptManager'] = None):
+                 prompt_manager: Optional['PromptManager'] = None,
+                 prompt_optimizer: Optional['PromptOptimizer'] = None):
         """
         Initialize analysis agent.
-        
+
         Args:
             agent_id: Unique identifier
             spawn_time: When agent becomes active
@@ -656,6 +297,7 @@ class AnalysisAgent(LLMAgent):
             token_budget_manager: Optional token budget manager
             max_tokens: Maximum tokens per processing stage
             prompt_manager: Optional prompt manager for custom prompts
+            prompt_optimizer: Optional prompt optimizer for learning and optimization
         """
         super().__init__(
             agent_id=agent_id,
@@ -666,7 +308,8 @@ class AnalysisAgent(LLMAgent):
             temperature_range=None,  # Use LLMAgent defaults
             max_tokens=max_tokens,
             token_budget_manager=token_budget_manager,
-            prompt_manager=prompt_manager
+            prompt_manager=prompt_manager,
+            prompt_optimizer=prompt_optimizer
         )
 
         self.analysis_type = analysis_type
@@ -674,119 +317,27 @@ class AnalysisAgent(LLMAgent):
         self.key_insights = []
     
     def create_position_aware_prompt(self, task: LLMTask, current_time: float) -> tuple[str, int]:
-        """Create analysis-specific system prompt with token budget."""
+        """Create analysis-specific system prompt with token budget using PromptPipeline."""
         position_info = self.get_position_info(current_time)
         depth_ratio = position_info.get("depth_ratio", 0.0)
-        
-        # Get token allocation if budget manager is available
-        token_allocation = None
-        stage_token_budget = self.max_tokens  # Use agent's max_tokens
-        
+
+        # Calculate token budget for this stage
+        stage_token_budget = self.max_tokens
         if self.token_budget_manager:
             token_allocation = self.token_budget_manager.calculate_stage_allocation(
                 self.agent_id, depth_ratio, self.processing_stage + 1
             )
             stage_token_budget = token_allocation.stage_budget
 
-        base_prompt = AGENT_TOOLS_HEADER + f"""You are a specialized ANALYSIS AGENT in the Felix multi-agent system.
+        # Delegate to PromptPipeline for unified prompt construction
+        result = self.prompt_pipeline.build_agent_prompt(
+            task=task,
+            agent=self,
+            position_info=position_info,
+            current_time=current_time
+        )
 
-Analysis Type: {self.analysis_type}
-Current Position: Depth {depth_ratio:.2f}/1.0 on the helix
-
-Your Analysis Approach:
-- Process information gathered by research agents
-- Identify patterns, themes, and relationships
-- Organize findings into structured insights
-- Look for contradictions and gaps
-- Prepare organized information for synthesis agents
-
-Analysis Focus Based on Position:
-"""
-        
-        if depth_ratio < 0.5:
-            if self.token_budget_manager and self.token_budget_manager.strict_mode:
-                base_prompt += """
-- 2 PATTERNS maximum
-- Numbered list format
-- NO explanations
-"""
-            else:
-                base_prompt += """
-- PATTERN IDENTIFICATION: Look for themes and connections
-- Organize information into categories
-- Identify what's missing or contradictory
-"""
-        else:
-            if self.token_budget_manager and self.token_budget_manager.strict_mode:
-                base_prompt += """
-- PRIORITY RANKING: Top 3 insights
-- 1. 2. 3. format
-- NO background
-"""
-            else:
-                base_prompt += """
-- DEEP ANALYSIS: Provide detailed evaluation
-- Prioritize insights by importance
-- Structure findings for final synthesis
-"""
-        
-        if self.shared_context:
-            base_prompt += "\n\nInformation from Research Agents:\n"
-            research_items = {k: v for k, v in self.shared_context.items() if "research" in k.lower()}
-            for key, value in research_items.items():
-                base_prompt += f"- {key}: {value}\n"
-
-        # Add knowledge entries if available
-        knowledge_summary = ""
-        if task.knowledge_entries and len(task.knowledge_entries) > 0:
-            knowledge_summary = "\n\nRelevant Knowledge from Memory:\n"
-            for entry in task.knowledge_entries:
-                # Extract key information from knowledge entry
-                if hasattr(entry, 'content'):
-                    # Extract 'result' key from dictionary if present (web search results)
-                    if isinstance(entry.content, dict):
-                        content_str = entry.content.get('result', str(entry.content))
-                    else:
-                        content_str = str(entry.content)
-                else:
-                    content_str = str(entry)
-
-                confidence = entry.confidence_level.value if hasattr(entry, 'confidence_level') else "unknown"
-                source = entry.source_agent if hasattr(entry, 'source_agent') else "system"
-                domain = entry.domain if hasattr(entry, 'domain') else "unknown"
-
-                # Use longer truncation for web_search domain (detailed factual data)
-                max_chars = 400 if domain == "web_search" else 200
-                if len(content_str) > max_chars:
-                    content_str = content_str[:max_chars-3] + "..."
-
-                # Add emoji prefix for web search entries
-                prefix = "🌐" if domain == "web_search" else "📝"
-                knowledge_summary += f"{prefix} [{source}, conf: {confidence}]: {content_str}\n"
-
-            # Add important instructions for using available knowledge
-            knowledge_summary += "\nIMPORTANT: Use the knowledge provided above to answer the task if possible. "
-            knowledge_summary += "Only request additional web search if the available knowledge is insufficient or outdated.\n"
-
-        base_prompt += knowledge_summary
-        base_prompt += f"""
-Task Context: {task.context}
-
-Remember: Your job is to process and organize information, not to make final decisions.
-Focus on creating clear, structured insights for synthesis agents to use.
-"""
-        
-        # Add token budget guidance if available
-        if token_allocation:
-            budget_guidance = f"\n\nToken Budget Guidance:\n{token_allocation.style_guidance}"
-            if token_allocation.compression_ratio > 0.5:
-                budget_guidance += f"\nCompress analysis by ~{token_allocation.compression_ratio:.0%} while preserving key patterns and insights."
-            
-            enhanced_prompt = base_prompt + budget_guidance
-        else:
-            enhanced_prompt = base_prompt
-        
-        return enhanced_prompt, stage_token_budget
+        return result.system_prompt, stage_token_budget
 
 
 class CriticAgent(LLMAgent):
@@ -804,10 +355,11 @@ class CriticAgent(LLMAgent):
                  llm_client: LMStudioClient, review_focus: str = "general",
                  token_budget_manager: Optional[TokenBudgetManager] = None,
                  max_tokens: Optional[int] = None,
-                 prompt_manager: Optional['PromptManager'] = None):
+                 prompt_manager: Optional['PromptManager'] = None,
+                 prompt_optimizer: Optional['PromptOptimizer'] = None):
         """
         Initialize critic agent.
-        
+
         Args:
             agent_id: Unique identifier
             spawn_time: When agent becomes active
@@ -817,6 +369,7 @@ class CriticAgent(LLMAgent):
             token_budget_manager: Optional token budget manager
             max_tokens: Maximum tokens per processing stage
             prompt_manager: Optional prompt manager for custom prompts
+            prompt_optimizer: Optional prompt optimizer for learning and optimization
         """
         super().__init__(
             agent_id=agent_id,
@@ -827,7 +380,8 @@ class CriticAgent(LLMAgent):
             temperature_range=None,  # Use LLMAgent defaults
             max_tokens=max_tokens,
             token_budget_manager=token_budget_manager,
-            prompt_manager=prompt_manager
+            prompt_manager=prompt_manager,
+            prompt_optimizer=prompt_optimizer
         )
 
         self.review_focus = review_focus
@@ -835,92 +389,167 @@ class CriticAgent(LLMAgent):
         self.suggestions = []
     
     def create_position_aware_prompt(self, task: LLMTask, current_time: float) -> tuple[str, int]:
-        """Create critic-specific system prompt with token budget."""
+        """Create critic-specific system prompt with token budget using PromptPipeline."""
         position_info = self.get_position_info(current_time)
         depth_ratio = position_info.get("depth_ratio", 0.0)
-        
-        # Get token allocation if budget manager is available
-        token_allocation = None
-        stage_token_budget = self.max_tokens  # Use agent's max_tokens
-        
+
+        # Calculate token budget for this stage
+        stage_token_budget = self.max_tokens
         if self.token_budget_manager:
             token_allocation = self.token_budget_manager.calculate_stage_allocation(
                 self.agent_id, depth_ratio, self.processing_stage + 1
             )
             stage_token_budget = token_allocation.stage_budget
 
-        base_prompt = AGENT_TOOLS_HEADER + f"""You are a specialized CRITIC AGENT in the Felix multi-agent system.
+        # Delegate to PromptPipeline for unified prompt construction
+        result = self.prompt_pipeline.build_agent_prompt(
+            task=task,
+            agent=self,
+            position_info=position_info,
+            current_time=current_time
+        )
 
-Review Focus: {self.review_focus}
-Current Position: Depth {depth_ratio:.2f}/1.0 on the helix
+        return result.system_prompt, stage_token_budget
 
-Your Critical Review Approach:
-- Evaluate work from other agents with a critical eye
-- Identify gaps, errors, inconsistencies, and weak points
-- Suggest specific improvements and corrections
-- Ensure quality standards are maintained
-- Be constructive but thorough in your criticism
+    def evaluate_reasoning_process(self, agent_output: Dict[str, Any],
+                                   agent_metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        Evaluate the reasoning process quality of another agent's output.
 
-STRICT MODE OVERRIDE: If token budget < 300, list key issues in numbered format with brief explanations. Otherwise, provide comprehensive detailed critique.
+        This extends CriticAgent beyond content evaluation to assess HOW agents reasoned,
+        not just WHAT they produced. Implements meta-cognitive evaluation for self-improvement.
 
-Work to Review:
-"""
-        
-        if self.shared_context:
-            for key, value in self.shared_context.items():
-                base_prompt += f"- {key}: {value}\n"
+        Args:
+            agent_output: Agent's output including result and metadata
+            agent_metadata: Optional metadata about agent's reasoning process
 
-        # Add knowledge entries if available
-        knowledge_summary = ""
-        if task.knowledge_entries and len(task.knowledge_entries) > 0:
-            knowledge_summary = "\n\nRelevant Knowledge from Memory:\n"
-            for entry in task.knowledge_entries:
-                # Extract key information from knowledge entry
-                if hasattr(entry, 'content'):
-                    # Extract 'result' key from dictionary if present (web search results)
-                    if isinstance(entry.content, dict):
-                        content_str = entry.content.get('result', str(entry.content))
-                    else:
-                        content_str = str(entry.content)
-                else:
-                    content_str = str(entry)
+        Returns:
+            Dictionary with reasoning evaluation:
+                - reasoning_quality_score: 0.0-1.0
+                - logical_coherence: 0.0-1.0
+                - evidence_quality: 0.0-1.0
+                - methodology_appropriateness: 0.0-1.0
+                - identified_issues: List[str]
+                - improvement_recommendations: List[str]
+                - re_evaluation_needed: bool
+        """
+        result = agent_output.get('result', '')
+        confidence = agent_output.get('confidence', 0.5)
+        agent_id = agent_output.get('agent_id', 'unknown')
 
-                confidence = entry.confidence_level.value if hasattr(entry, 'confidence_level') else "unknown"
-                source = entry.source_agent if hasattr(entry, 'source_agent') else "system"
-                domain = entry.domain if hasattr(entry, 'domain') else "unknown"
+        # Initialize evaluation
+        issues = []
+        recommendations = []
+        scores = {'logical_coherence': 0.5, 'evidence_quality': 0.5, 'methodology': 0.5}
 
-                # Use longer truncation for web_search domain (detailed factual data)
-                max_chars = 400 if domain == "web_search" else 200
-                if len(content_str) > max_chars:
-                    content_str = content_str[:max_chars-3] + "..."
-
-                # Add emoji prefix for web search entries
-                prefix = "🌐" if domain == "web_search" else "📝"
-                knowledge_summary += f"{prefix} [{source}, conf: {confidence}]: {content_str}\n"
-
-            # Add important instructions for using available knowledge
-            knowledge_summary += "\nIMPORTANT: Use the knowledge provided above to answer the task if possible. "
-            knowledge_summary += "Only request additional web search if the available knowledge is insufficient or outdated.\n"
-
-        base_prompt += knowledge_summary
-        base_prompt += f"""
-Task Context: {task.context}
-
-Focus your review on {self.review_focus}. Provide specific, actionable feedback.
-Be thorough but constructive - the goal is to improve the final output quality.
-"""
-        
-        # Add token budget guidance if available
-        if token_allocation:
-            budget_guidance = f"\n\nToken Budget Guidance:\n{token_allocation.style_guidance}"
-            if token_allocation.compression_ratio > 0.5:
-                budget_guidance += f"\nProvide focused critique with ~{token_allocation.compression_ratio:.0%} compression while covering key quality issues."
-            
-            enhanced_prompt = base_prompt + budget_guidance
+        # 1. Evaluate logical coherence
+        if self._has_logical_fallacies(result):
+            issues.append("Contains potential logical fallacies")
+            scores['logical_coherence'] = 0.4
+            recommendations.append("Review reasoning chain for logical consistency")
         else:
-            enhanced_prompt = base_prompt
-        
-        return enhanced_prompt, stage_token_budget
+            scores['logical_coherence'] = 0.8
+
+        # 2. Evaluate evidence quality
+        if self._has_weak_evidence(result):
+            issues.append("Evidence appears weak or unsupported")
+            scores['evidence_quality'] = 0.4
+            recommendations.append("Strengthen claims with more reliable evidence")
+        else:
+            scores['evidence_quality'] = 0.8
+
+        # 3. Evaluate methodology appropriateness
+        if agent_metadata:
+            agent_type = agent_metadata.get('agent_type', 'unknown')
+            if not self._methodology_appropriate(result, agent_type):
+                issues.append(f"Methodology not well-suited for {agent_type} agent")
+                scores['methodology'] = 0.4
+                recommendations.append(f"Consider approaches more aligned with {agent_type} role")
+            else:
+                scores['methodology'] = 0.8
+        else:
+            # No metadata, default moderate score
+            scores['methodology'] = 0.6
+
+        # 4. Check reasoning depth
+        if len(result.split()) < 50:
+            issues.append("Reasoning appears shallow - insufficient depth")
+            recommendations.append("Provide more detailed reasoning and analysis")
+            # Penalize all scores slightly
+            for key in scores:
+                scores[key] *= 0.9
+
+        # 5. Check for over/under confidence
+        avg_score = sum(scores.values()) / len(scores)
+        confidence_gap = abs(confidence - avg_score)
+        if confidence_gap > 0.3:
+            if confidence > avg_score:
+                issues.append(f"Agent appears overconfident (confidence={confidence:.2f} vs quality={avg_score:.2f})")
+                recommendations.append("Calibrate confidence based on reasoning quality")
+            else:
+                issues.append(f"Agent appears underconfident (confidence={confidence:.2f} vs quality={avg_score:.2f})")
+                recommendations.append("Increase confidence when reasoning is solid")
+
+        # Calculate overall reasoning quality score
+        reasoning_quality = sum(scores.values()) / len(scores)
+
+        # Determine if re-evaluation is needed
+        re_evaluation_needed = reasoning_quality < 0.5 or len(issues) >= 3
+
+        logger.info(f"🧠 Reasoning evaluation for {agent_id}:")
+        logger.info(f"   Quality: {reasoning_quality:.2f}, Coherence: {scores['logical_coherence']:.2f}, "
+                   f"Evidence: {scores['evidence_quality']:.2f}, Methodology: {scores['methodology']:.2f}")
+        if issues:
+            logger.info(f"   Issues: {', '.join(issues)}")
+        if re_evaluation_needed:
+            logger.warning(f"   ⚠️  Re-evaluation recommended for {agent_id}")
+
+        return {
+            'reasoning_quality_score': reasoning_quality,
+            'logical_coherence': scores['logical_coherence'],
+            'evidence_quality': scores['evidence_quality'],
+            'methodology_appropriateness': scores['methodology'],
+            'identified_issues': issues,
+            'improvement_recommendations': recommendations,
+            're_evaluation_needed': re_evaluation_needed,
+            'agent_id': agent_id
+        }
+
+    def _has_logical_fallacies(self, text: str) -> bool:
+        """Check for common logical fallacies in reasoning."""
+        fallacy_indicators = [
+            'everyone knows', 'obviously', 'clearly', 'it goes without saying',
+            'all experts agree', 'no one would disagree', 'always', 'never'
+        ]
+        text_lower = text.lower()
+        return any(indicator in text_lower for indicator in fallacy_indicators)
+
+    def _has_weak_evidence(self, text: str) -> bool:
+        """Check if evidence appears weak or unsupported."""
+        weak_indicators = [
+            'i think', 'i believe', 'probably', 'maybe', 'might be',
+            'could be', 'seems like', 'appears to'
+        ]
+        text_lower = text.lower()
+        # Count weak indicators
+        weak_count = sum(1 for indicator in weak_indicators if indicator in text_lower)
+        # High proportion of weak language suggests weak evidence
+        return weak_count > 3
+
+    def _methodology_appropriate(self, text: str, agent_type: str) -> bool:
+        """Check if reasoning methodology is appropriate for agent type."""
+        if agent_type == 'research':
+            # Research should explore multiple perspectives
+            return 'perspective' in text.lower() or 'source' in text.lower()
+        elif agent_type == 'analysis':
+            # Analysis should break things down
+            return 'because' in text.lower() or 'therefore' in text.lower()
+        elif agent_type == 'critic':
+            # Critics should identify issues
+            return 'issue' in text.lower() or 'problem' in text.lower() or 'improve' in text.lower()
+        else:
+            # Default: accept methodology
+            return True
 
 
 def create_specialized_team(helix: HelixGeometry, llm_client: LMStudioClient,
@@ -967,16 +596,14 @@ def _create_simple_team(helix: HelixGeometry, llm_client: LMStudioClient,
     # Generate random spawn times within appropriate ranges for each agent type
     research_spawn = random.uniform(0.05, 0.25)  # Research agents spawn early
     analysis_spawn = random.uniform(0.3, 0.7)    # Analysis agents in middle
-    synthesis_spawn = random.uniform(0.7, 0.95)  # Synthesis agents late
+    # Note: Synthesis is now handled by CentralPost, not a specialized agent
 
     return [
         ResearchAgent("research_001", research_spawn, helix, llm_client,
-                     token_budget_manager=token_budget_manager, max_tokens=800,
+                     token_budget_manager=token_budget_manager, max_tokens=16000,
                      web_search_client=web_search_client, max_web_queries=max_web_queries),
         AnalysisAgent("analysis_001", analysis_spawn, helix, llm_client,
-                     token_budget_manager=token_budget_manager, max_tokens=800),
-        SynthesisAgent("synthesis_001", synthesis_spawn, helix, llm_client,
-                      token_budget_manager=token_budget_manager, max_tokens=800)
+                     token_budget_manager=token_budget_manager, max_tokens=16000)
     ]
 
 
@@ -993,7 +620,7 @@ def _create_medium_team(helix: HelixGeometry, llm_client: LMStudioClient,
     research_spawns = [random.uniform(0.02, 0.2) for _ in range(2)]
     analysis_spawns = [random.uniform(0.25, 0.65) for _ in range(2)]
     critic_spawn = random.uniform(0.6, 0.8)
-    synthesis_spawn = random.uniform(0.8, 0.95)
+    # Note: Synthesis is now handled by CentralPost, not a specialized agent
 
     # Sort to maintain some ordering within types
     research_spawns.sort()
@@ -1006,8 +633,7 @@ def _create_medium_team(helix: HelixGeometry, llm_client: LMStudioClient,
                      token_budget_manager, 800, web_search_client, max_web_queries),
         AnalysisAgent("analysis_001", analysis_spawns[0], helix, llm_client, "general", token_budget_manager, 800),
         AnalysisAgent("analysis_002", analysis_spawns[1], helix, llm_client, "critical", token_budget_manager, 800),
-        CriticAgent("critic_001", critic_spawn, helix, llm_client, "accuracy", token_budget_manager, 800),
-        SynthesisAgent("synthesis_001", synthesis_spawn, helix, llm_client, "general", token_budget_manager, 800)
+        CriticAgent("critic_001", critic_spawn, helix, llm_client, "accuracy", token_budget_manager, 800)
     ]
 
 
@@ -1024,13 +650,12 @@ def _create_complex_team(helix: HelixGeometry, llm_client: LMStudioClient,
     research_spawns = [random.uniform(0.01, 0.25) for _ in range(3)]
     analysis_spawns = [random.uniform(0.2, 0.7) for _ in range(3)]
     critic_spawns = [random.uniform(0.6, 0.8) for _ in range(2)]
-    synthesis_spawns = [random.uniform(0.8, 0.98) for _ in range(2)]
+    # Note: Synthesis is now handled by CentralPost, not a specialized agent
 
     # Sort to maintain some ordering within types
     research_spawns.sort()
     analysis_spawns.sort()
     critic_spawns.sort()
-    synthesis_spawns.sort()
 
     return [
         ResearchAgent("research_001", research_spawns[0], helix, llm_client, "general",
@@ -1043,7 +668,5 @@ def _create_complex_team(helix: HelixGeometry, llm_client: LMStudioClient,
         AnalysisAgent("analysis_002", analysis_spawns[1], helix, llm_client, "technical", token_budget_manager, 800),
         AnalysisAgent("analysis_003", analysis_spawns[2], helix, llm_client, "critical", token_budget_manager, 800),
         CriticAgent("critic_001", critic_spawns[0], helix, llm_client, "accuracy", token_budget_manager, 800),
-        CriticAgent("critic_002", critic_spawns[1], helix, llm_client, "completeness", token_budget_manager, 800),
-        SynthesisAgent("synthesis_001", synthesis_spawns[0], helix, llm_client, "report", token_budget_manager, 800),
-        SynthesisAgent("synthesis_002", synthesis_spawns[1], helix, llm_client, "executive_summary", token_budget_manager, 800)
+        CriticAgent("critic_002", critic_spawns[1], helix, llm_client, "completeness", token_budget_manager, 800)
     ]

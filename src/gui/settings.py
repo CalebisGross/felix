@@ -83,8 +83,8 @@ class SettingsFrame(ttk.Frame):
         current_row = self._create_section(current_row, "Agent Configuration")
         current_row = self._create_int_field(current_row, "max_agents", "Max Agents:", 25,
                                               "Maximum team size (1-133)")
-        current_row = self._create_int_field(current_row, "base_token_budget", "Base Token Budget:", 2500,
-                                              "Base tokens per agent")
+        current_row = self._create_int_field(current_row, "base_token_budget", "Base Token Budget:", 20000,
+                                              "Base tokens per agent (for 50K context window)")
         current_row += 1
 
         # Dynamic Spawning Section
@@ -95,8 +95,8 @@ class SettingsFrame(ttk.Frame):
                                                 "High volatility triggers stabilizing agents")
         current_row = self._create_float_field(current_row, "time_window_minutes", "Time Window (min):", 5.0,
                                                 "Window for trend analysis")
-        current_row = self._create_int_field(current_row, "token_budget_limit", "Token Budget Limit:", 10000,
-                                              "Total tokens across all agents")
+        current_row = self._create_int_field(current_row, "token_budget_limit", "Token Budget Limit:", 45000,
+                                              "Max tokens per context (for 50K window)")
         current_row += 1
 
         # Memory Settings Section
@@ -178,6 +178,67 @@ class SettingsFrame(ttk.Frame):
                                                 "Confidence threshold for simple tasks (>= this value)")
         current_row = self._create_float_field(current_row, "workflow_medium_threshold", "Medium Threshold:", 0.50,
                                                 "Confidence threshold for medium tasks (>= this value)")
+        current_row += 1
+
+        # Learning Systems Section
+        current_row = self._create_section(current_row, "Learning Systems")
+        current_row = self._create_checkbox_field(current_row, "enable_learning", "Enable Learning", True,
+                                                   "Enable adaptive learning systems (patterns, calibration, thresholds)")
+        current_row = self._create_checkbox_field(current_row, "learning_auto_apply", "Auto-Apply Recommendations", True,
+                                                   "Auto-apply high-confidence recommendations (≥95% success, ≥20 samples)")
+        current_row = self._create_int_field(current_row, "learning_min_samples_patterns",
+                                             "Min Samples (Patterns):", 10,
+                                             "Minimum samples before recommending patterns")
+        current_row = self._create_int_field(current_row, "learning_min_samples_calibration",
+                                             "Min Samples (Calibration):", 10,
+                                             "Minimum samples before calibrating agent confidence")
+        current_row = self._create_int_field(current_row, "learning_min_samples_thresholds",
+                                             "Min Samples (Thresholds):", 20,
+                                             "Minimum samples before learning optimal thresholds")
+        current_row += 1
+
+        # Knowledge Brain Section
+        current_row = self._create_section(current_row, "Knowledge Brain (Autonomous Document Learning)")
+        current_row = self._create_checkbox_field(current_row, "enable_knowledge_brain", "Enable Knowledge Brain", False,
+                                                   "Enable autonomous document ingestion and knowledge retrieval")
+        current_row = self._create_checkbox_field(current_row, "knowledge_auto_augment", "Auto-Augment Workflows", True,
+                                                   "Automatically inject relevant knowledge into workflow context")
+        current_row = self._create_checkbox_field(current_row, "knowledge_daemon_enabled", "Enable Daemon", True,
+                                                   "Run background daemon for continuous processing")
+
+        # Watch directories (text field for comma-separated paths)
+        ttk.Label(self.scrollable_frame, text="Watch Directories:").grid(row=current_row, column=0, sticky=tk.W, pady=5)
+        self.knowledge_watch_dirs_var = tk.StringVar(value="./knowledge_sources")
+        self.setting_widgets["knowledge_watch_dirs"] = self.knowledge_watch_dirs_var
+        ttk.Entry(self.scrollable_frame, textvariable=self.knowledge_watch_dirs_var, width=40).grid(
+            row=current_row, column=1, sticky=tk.W, pady=5, padx=5
+        )
+        ttk.Label(self.scrollable_frame, text="(comma-separated paths)", foreground="gray", font=("TkDefaultFont", 8)).grid(
+            row=current_row, column=2, sticky=tk.W, pady=5
+        )
+        current_row += 1
+
+        # Embedding mode dropdown
+        ttk.Label(self.scrollable_frame, text="Embedding Mode:").grid(row=current_row, column=0, sticky=tk.W, pady=5)
+        self.knowledge_embedding_mode_var = tk.StringVar(value="auto")
+        self.setting_widgets["knowledge_embedding_mode"] = self.knowledge_embedding_mode_var
+        embedding_combo = ttk.Combobox(self.scrollable_frame, textvariable=self.knowledge_embedding_mode_var,
+                                      values=["auto", "lm_studio", "tfidf", "fts5"], state="readonly", width=15)
+        embedding_combo.grid(row=current_row, column=1, sticky=tk.W, pady=5, padx=5)
+        ttk.Label(self.scrollable_frame, text="(auto=best available)", foreground="gray", font=("TkDefaultFont", 8)).grid(
+            row=current_row, column=2, sticky=tk.W, pady=5
+        )
+        current_row += 1
+
+        current_row = self._create_int_field(current_row, "knowledge_refinement_interval",
+                                             "Refinement Interval (sec):", 3600,
+                                             "How often to discover new knowledge relationships (seconds)")
+        current_row = self._create_int_field(current_row, "knowledge_processing_threads",
+                                             "Processing Threads:", 2,
+                                             "Number of concurrent document processing threads")
+        current_row = self._create_int_field(current_row, "knowledge_chunk_size",
+                                             "Chunk Size (chars):", 1000,
+                                             "Characters per document chunk for processing")
         current_row += 1
 
         # Action Buttons
@@ -415,6 +476,22 @@ class SettingsFrame(ttk.Frame):
                 if wf_max_complex < 1:
                     return False, "Workflow max steps (complex) must be at least 1"
 
+            # Validate learning system min samples
+            if "learning_min_samples_patterns" in settings:
+                lrn_patterns = int(settings["learning_min_samples_patterns"])
+                if lrn_patterns < 1:
+                    return False, "Learning min samples (patterns) must be at least 1"
+
+            if "learning_min_samples_calibration" in settings:
+                lrn_calibration = int(settings["learning_min_samples_calibration"])
+                if lrn_calibration < 1:
+                    return False, "Learning min samples (calibration) must be at least 1"
+
+            if "learning_min_samples_thresholds" in settings:
+                lrn_thresholds = int(settings["learning_min_samples_thresholds"])
+                if lrn_thresholds < 1:
+                    return False, "Learning min samples (thresholds) must be at least 1"
+
             return True, ""
 
         except ValueError as e:
@@ -518,11 +595,11 @@ class SettingsFrame(ttk.Frame):
                 "helix_height": "8.0",
                 "helix_turns": "2.0",
                 "max_agents": "25",
-                "base_token_budget": "2500",
+                "base_token_budget": "20000",
                 "confidence_threshold": "0.8",
                 "volatility_threshold": "0.15",
                 "time_window_minutes": "5.0",
-                "token_budget_limit": "10000",
+                "token_budget_limit": "45000",
                 "memory_db_path": "felix_memory.db",
                 "knowledge_db_path": "felix_knowledge.db",
                 "compression_target_length": "100",
@@ -542,6 +619,11 @@ class SettingsFrame(ttk.Frame):
                 "workflow_max_steps_complex": "20",
                 "workflow_simple_threshold": "0.75",
                 "workflow_medium_threshold": "0.50",
+                "enable_learning": True,
+                "learning_auto_apply": True,
+                "learning_min_samples_patterns": "10",
+                "learning_min_samples_calibration": "10",
+                "learning_min_samples_thresholds": "20",
                 "enable_metrics": True,
                 "enable_memory": True,
                 "enable_dynamic_spawning": True,
@@ -564,7 +646,8 @@ class SettingsFrame(ttk.Frame):
         int_fields = ["lm_port", "max_agents", "base_token_budget",
                      "token_budget_limit", "compression_target_length",
                      "web_search_max_results", "web_search_max_queries", "web_search_min_samples",
-                     "workflow_max_steps_simple", "workflow_max_steps_medium", "workflow_max_steps_complex"]
+                     "workflow_max_steps_simple", "workflow_max_steps_medium", "workflow_max_steps_complex",
+                     "learning_min_samples_patterns", "learning_min_samples_calibration", "learning_min_samples_thresholds"]
 
         # Float fields
         float_fields = ["helix_top_radius", "helix_bottom_radius", "helix_height",

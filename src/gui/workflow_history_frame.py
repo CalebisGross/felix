@@ -9,6 +9,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 from datetime import datetime, timedelta
 import json
+import queue
 from typing import Optional
 from .utils import ThreadManager, logger
 
@@ -36,11 +37,17 @@ class WorkflowHistoryFrame(ttk.Frame):
         self.workflow_history = None  # Will be initialized when first accessed
         self.selected_workflow_id = None
 
+        # Queue for thread-safe communication
+        self.result_queue = queue.Queue()
+
         # Create UI components
         self._create_widgets()
 
         # Apply initial theme
         self.apply_theme()
+
+        # Start polling queue on main thread
+        self._poll_results()
 
         # Load initial data
         self.load_workflows()
@@ -153,30 +160,58 @@ class WorkflowHistoryFrame(ttk.Frame):
             self.workflow_history = WorkflowHistory()
         return self.workflow_history
 
+    def _poll_results(self):
+        """Poll the result queue and update GUI (runs on main thread)."""
+        try:
+            while not self.result_queue.empty():
+                result = self.result_queue.get_nowait()
+                action = result.get('action')
+
+                if action == 'update_tree':
+                    self._update_tree(result['workflows'])
+                elif action == 'display_details':
+                    self._display_details(result['workflow'])
+                elif action == 'show_full_details':
+                    self._show_full_details_popup(result['workflow'])
+                elif action == 'show_error':
+                    messagebox.showerror("Error", result['message'])
+                elif action == 'show_warning':
+                    messagebox.showwarning(result['title'], result['message'])
+                elif action == 'show_info':
+                    messagebox.showinfo(result['title'], result['message'])
+                elif action == 'reload':
+                    self.load_workflows()
+                elif action == 'clear_selection':
+                    self.selected_workflow_id = None
+
+        except Exception as e:
+            logger.error(f"Error in poll_results: {e}", exc_info=True)
+
+        # Schedule next poll
+        self.after(100, self._poll_results)
+
     def load_workflows(self):
         """Load workflows from database with current filters."""
-        self.thread_manager.start_thread(self._load_workflows_thread)
+        # Read StringVar on main thread before starting background thread
+        status_filter = self.status_var.get()
+        if status_filter == "all":
+            status_filter = None
+        self.thread_manager.start_thread(self._load_workflows_thread, args=(status_filter,))
 
-    def _load_workflows_thread(self):
+    def _load_workflows_thread(self, status_filter):
         """Background thread to load workflows."""
         try:
             wh = self._get_workflow_history()
 
-            # Get status filter
-            status_filter = self.status_var.get()
-            if status_filter == "all":
-                status_filter = None
-
             # Retrieve workflows
             workflows = wh.get_workflow_outputs(status_filter=status_filter, limit=200)
 
-            # Update UI on main thread
-            self.after(0, lambda: self._update_tree(workflows))
+            # Put result in queue for main thread to process
+            self.result_queue.put({'action': 'update_tree', 'workflows': workflows})
 
         except Exception as e:
             logger.error(f"Error loading workflows: {e}", exc_info=True)
-            error_msg = str(e)
-            self.after(0, lambda: messagebox.showerror("Error", f"Failed to load workflows: {error_msg}"))
+            self.result_queue.put({'action': 'show_error', 'message': f"Failed to load workflows: {str(e)}"})
 
     def _update_tree(self, workflows):
         """Update the treeview with workflow data."""
@@ -239,12 +274,12 @@ class WorkflowHistoryFrame(ttk.Frame):
             wh = self._get_workflow_history()
             workflows = wh.search_workflows(keyword, limit=200)
 
-            self.after(0, lambda: self._update_tree(workflows))
+            # Put result in queue for main thread to process
+            self.result_queue.put({'action': 'update_tree', 'workflows': workflows})
 
         except Exception as e:
             logger.error(f"Error searching workflows: {e}", exc_info=True)
-            error_msg = str(e)
-            self.after(0, lambda: messagebox.showerror("Error", f"Failed to search workflows: {error_msg}"))
+            self.result_queue.put({'action': 'show_error', 'message': f"Failed to search workflows: {str(e)}"})
 
     def clear_search(self):
         """Clear search box and reload all workflows."""
@@ -271,14 +306,14 @@ class WorkflowHistoryFrame(ttk.Frame):
             workflow = wh.get_workflow_by_id(workflow_id)
 
             if workflow:
-                self.after(0, lambda: self._display_details(workflow))
+                # Put result in queue for main thread to process
+                self.result_queue.put({'action': 'display_details', 'workflow': workflow})
             else:
-                self.after(0, lambda: messagebox.showwarning("Not Found", f"Workflow {workflow_id} not found"))
+                self.result_queue.put({'action': 'show_warning', 'title': 'Not Found', 'message': f"Workflow {workflow_id} not found"})
 
         except Exception as e:
             logger.error(f"Error loading workflow details: {e}", exc_info=True)
-            error_msg = str(e)
-            self.after(0, lambda: messagebox.showerror("Error", f"Failed to load details: {error_msg}"))
+            self.result_queue.put({'action': 'show_error', 'message': f"Failed to load details: {str(e)}"})
 
     def _display_details(self, workflow):
         """Display workflow details in the details panel."""
@@ -326,14 +361,14 @@ Final Synthesis:
             workflow = wh.get_workflow_by_id(workflow_id)
 
             if workflow:
-                self.after(0, lambda: self._show_full_details_popup(workflow))
+                # Put result in queue for main thread to process
+                self.result_queue.put({'action': 'show_full_details', 'workflow': workflow})
             else:
-                self.after(0, lambda: messagebox.showwarning("Not Found", f"Workflow {workflow_id} not found"))
+                self.result_queue.put({'action': 'show_warning', 'title': 'Not Found', 'message': f"Workflow {workflow_id} not found"})
 
         except Exception as e:
             logger.error(f"Error loading full details: {e}", exc_info=True)
-            error_msg = str(e)
-            self.after(0, lambda: messagebox.showerror("Error", f"Failed to load details: {error_msg}"))
+            self.result_queue.put({'action': 'show_error', 'message': f"Failed to load details: {str(e)}"})
 
     def _show_full_details_popup(self, workflow):
         """Show a popup window with comprehensive workflow details."""
@@ -421,16 +456,16 @@ METADATA (JSON):
             success = wh.delete_workflow(workflow_id)
 
             if success:
-                self.after(0, lambda: messagebox.showinfo("Success", f"Workflow #{workflow_id} deleted"))
-                self.after(0, self.load_workflows)
-                self.selected_workflow_id = None
+                # Put result in queue for main thread to process
+                self.result_queue.put({'action': 'show_info', 'title': 'Success', 'message': f"Workflow #{workflow_id} deleted"})
+                self.result_queue.put({'action': 'reload'})
+                self.result_queue.put({'action': 'clear_selection'})
             else:
-                self.after(0, lambda: messagebox.showwarning("Not Found", f"Workflow {workflow_id} not found"))
+                self.result_queue.put({'action': 'show_warning', 'title': 'Not Found', 'message': f"Workflow {workflow_id} not found"})
 
         except Exception as e:
             logger.error(f"Error deleting workflow: {e}", exc_info=True)
-            error_msg = str(e)
-            self.after(0, lambda: messagebox.showerror("Error", f"Failed to delete workflow: {error_msg}"))
+            self.result_queue.put({'action': 'show_error', 'message': f"Failed to delete workflow: {str(e)}"})
 
     def refresh_workflows(self):
         """Public method to refresh workflows list (called from workflows tab after save)."""

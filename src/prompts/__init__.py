@@ -15,5 +15,6 @@ The prompt system supports:
 """
 
 from src.prompts.prompt_manager import PromptManager
+from src.prompts.prompt_pipeline import PromptPipeline, PromptBuildResult, PromptStageResult
 
-__all__ = ['PromptManager']
+__all__ = ['PromptManager', 'PromptPipeline', 'PromptBuildResult', 'PromptStageResult']
