@@ -8,6 +8,8 @@ import customtkinter as ctk
 from typing import Optional, Callable
 import logging
 
+from ..styles import BUTTON_ICON, INPUT_MD, SPACE_XS
+
 logger = logging.getLogger(__name__)
 
 
@@ -22,7 +24,7 @@ class SearchEntry(ctk.CTkFrame):
         placeholder: str = "Search...",
         on_search: Optional[Callable[[str], None]] = None,
         on_clear: Optional[Callable[[], None]] = None,
-        width: int = 200,
+        width: int = INPUT_MD,
         **kwargs
     ):
         """
@@ -54,13 +56,13 @@ class SearchEntry(ctk.CTkFrame):
         self.clear_button = ctk.CTkButton(
             self,
             text="X",
-            width=28,
-            height=28,
+            width=BUTTON_ICON[0],
+            height=BUTTON_ICON[1],
             command=self._clear,
             fg_color="transparent",
             hover_color=("gray70", "gray30")
         )
-        self.clear_button.pack(side="left", padx=(5, 0))
+        self.clear_button.pack(side="left", padx=(SPACE_XS, 0))
 
         # Bind events
         self.entry.bind("<Return>", self._on_enter)

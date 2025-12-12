@@ -12,6 +12,7 @@ from typing import List, Tuple, Optional, Callable
 import logging
 
 from ..theme_manager import get_theme_manager
+from ..styles import TREEVIEW_ROW_HEIGHT
 
 logger = logging.getLogger(__name__)
 
@@ -105,10 +106,13 @@ class ThemedTreeview(ctk.CTkFrame):
 
     def _on_destroy(self, event):
         """Clean up when widget is destroyed."""
+        # Only handle our own destruction, not child widgets
+        if event.widget != self:
+            return
         try:
             self.theme_manager.unregister_callback(self._on_theme_change)
-        except Exception:
-            pass
+        except (ValueError, AttributeError):
+            pass  # Already unregistered or theme_manager unavailable
 
     def _on_theme_change(self, mode: str):
         """Handle theme change."""
@@ -125,7 +129,7 @@ class ThemedTreeview(ctk.CTkFrame):
                         foreground=colors["fg_primary"],
                         fieldbackground=colors["bg_primary"],
                         borderwidth=0,
-                        rowheight=28)
+                        rowheight=TREEVIEW_ROW_HEIGHT)
 
         style.configure("Treeview.Heading",
                         background=colors["bg_secondary"],
