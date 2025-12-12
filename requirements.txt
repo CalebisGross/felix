@@ -4,20 +4,19 @@
 openai>=1.0.0
 httpx>=0.24.0
 PyYAML>=6.0  # For configuration files
-jinja2>=3.1.0  # For synthesis prompt templates
 
 # Cloud LLM Providers (optional, install as needed)
 # anthropic>=0.25.0  # For Anthropic Claude support
 # google-generativeai>=0.3.0  # For Google Gemini support
 
-# Scientific Computing
-numpy>=1.24.0
-scipy>=1.10.0
+# Scientific Computing (upgraded for Python 3.14 free-threading support)
+numpy>=1.26.0
+scipy>=1.13.0
 
 # Web Search
 ddgs>=1.0.0
 beautifulsoup4>=4.12.0
-lxml>=4.9.0
+lxml>=5.0.0  # Upgraded for free-threading support
 
 # Optional: SearxNG support uses httpx (already included above)
 
