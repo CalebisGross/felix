@@ -14,6 +14,12 @@ import logging
 
 from ...theme_manager import get_theme_manager
 from ...components.status_card import StatusCard
+from ...styles import (
+    BUTTON_SM, BUTTON_MD, BUTTON_LG,
+    FONT_SECTION, FONT_BODY, FONT_CAPTION,
+    SPACE_XS, SPACE_SM, SPACE_MD, SPACE_LG,
+    CARD_MD, TEXTBOX_MD, TEXTBOX_LG
+)
 
 logger = logging.getLogger(__name__)
 
@@ -82,20 +88,20 @@ class ControlPanel(ctk.CTkScrollableFrame):
     def _create_daemon_control_section(self):
         """Create daemon control section with start/stop and processing buttons."""
         section_frame = ctk.CTkFrame(self, corner_radius=10)
-        section_frame.grid(row=0, column=0, sticky="ew", padx=15, pady=(15, 10))
+        section_frame.grid(row=0, column=0, sticky="ew", padx=SPACE_MD, pady=(SPACE_MD, SPACE_SM))
         section_frame.grid_columnconfigure(0, weight=1)
 
         # Section title
         title_label = ctk.CTkLabel(
             section_frame,
             text="Daemon Control",
-            font=ctk.CTkFont(size=16, weight="bold")
+            font=ctk.CTkFont(size=FONT_SECTION, weight="bold")
         )
-        title_label.grid(row=0, column=0, sticky="w", padx=15, pady=(15, 10))
+        title_label.grid(row=0, column=0, sticky="w", padx=SPACE_MD, pady=(SPACE_MD, SPACE_SM))
 
         # Button container
         button_frame = ctk.CTkFrame(section_frame, fg_color="transparent")
-        button_frame.grid(row=1, column=0, sticky="ew", padx=15, pady=(0, 15))
+        button_frame.grid(row=1, column=0, sticky="ew", padx=SPACE_MD, pady=(0, SPACE_MD))
         button_frame.grid_columnconfigure((0, 1, 2, 3, 4, 5), weight=0)
         button_frame.grid_columnconfigure(6, weight=1)  # Spacer
 
@@ -106,9 +112,10 @@ class ControlPanel(ctk.CTkScrollableFrame):
             command=self._start_daemon,
             fg_color=self.theme_manager.get_color("success"),
             hover_color="#1f8554",
-            width=130
+            width=BUTTON_MD[0],
+            height=BUTTON_MD[1]
         )
-        self.start_daemon_btn.grid(row=0, column=0, padx=(0, 8), pady=5)
+        self.start_daemon_btn.grid(row=0, column=0, padx=(0, SPACE_XS), pady=SPACE_XS)
 
         # Stop daemon button (red)
         self.stop_daemon_btn = ctk.CTkButton(
@@ -117,50 +124,55 @@ class ControlPanel(ctk.CTkScrollableFrame):
             command=self._stop_daemon,
             fg_color=self.theme_manager.get_color("error"),
             hover_color="#b91c1c",
-            width=130,
+            width=BUTTON_MD[0],
+            height=BUTTON_MD[1],
             state="disabled"
         )
-        self.stop_daemon_btn.grid(row=0, column=1, padx=8, pady=5)
+        self.stop_daemon_btn.grid(row=0, column=1, padx=SPACE_XS, pady=SPACE_XS)
 
         # Separator
         separator = ctk.CTkFrame(button_frame, width=2, height=30, fg_color=self.theme_manager.get_color("border"))
-        separator.grid(row=0, column=2, padx=15, pady=5)
+        separator.grid(row=0, column=2, padx=SPACE_MD, pady=SPACE_XS)
 
         # Process directory button
         self.process_dir_btn = ctk.CTkButton(
             button_frame,
             text="📂 Process Directory",
             command=self._add_directory,
-            width=160
+            width=BUTTON_LG[0],
+            height=BUTTON_LG[1]
         )
-        self.process_dir_btn.grid(row=0, column=3, padx=(0, 8), pady=5)
+        self.process_dir_btn.grid(row=0, column=3, padx=(0, SPACE_XS), pady=SPACE_XS)
 
         # Process pending button
         self.process_pending_btn = ctk.CTkButton(
             button_frame,
-            text="⚡ Process Pending Now",
+            text="⚡ Process Pending",
             command=self._process_pending_now,
-            width=180
+            width=BUTTON_LG[0],
+            height=BUTTON_LG[1]
         )
-        self.process_pending_btn.grid(row=0, column=4, padx=8, pady=5)
+        self.process_pending_btn.grid(row=0, column=4, padx=SPACE_XS, pady=SPACE_XS)
 
         # Manage directories button
         manage_btn = ctk.CTkButton(
             button_frame,
             text="🗑️ Manage Directories",
             command=self._manage_directories,
-            width=170
+            width=BUTTON_LG[0],
+            height=BUTTON_LG[1]
         )
-        manage_btn.grid(row=1, column=0, padx=(0, 8), pady=5, columnspan=2)
+        manage_btn.grid(row=1, column=0, padx=(0, SPACE_XS), pady=SPACE_XS, columnspan=2)
 
         # Force refinement button
         refine_btn = ctk.CTkButton(
             button_frame,
             text="🔄 Force Refinement",
             command=self._force_refinement,
-            width=160
+            width=BUTTON_LG[0],
+            height=BUTTON_LG[1]
         )
-        refine_btn.grid(row=1, column=3, padx=(0, 8), pady=5)
+        refine_btn.grid(row=1, column=3, padx=(0, SPACE_XS), pady=SPACE_XS)
 
         # Auto-refresh toggle
         self.auto_refresh_var = ctk.BooleanVar(value=False)
@@ -175,43 +187,43 @@ class ControlPanel(ctk.CTkScrollableFrame):
     def _create_processing_queue_section(self):
         """Create processing queue section showing current queue status."""
         section_frame = ctk.CTkFrame(self, corner_radius=10)
-        section_frame.grid(row=1, column=0, sticky="ew", padx=15, pady=10)
+        section_frame.grid(row=1, column=0, sticky="ew", padx=SPACE_MD, pady=SPACE_SM)
         section_frame.grid_columnconfigure(0, weight=1)
 
         # Section title
         title_label = ctk.CTkLabel(
             section_frame,
             text="Processing Queue",
-            font=ctk.CTkFont(size=16, weight="bold")
+            font=ctk.CTkFont(size=FONT_SECTION, weight="bold")
         )
-        title_label.grid(row=0, column=0, sticky="w", padx=15, pady=(15, 10))
+        title_label.grid(row=0, column=0, sticky="w", padx=SPACE_MD, pady=(SPACE_MD, SPACE_SM))
 
         # Progress textbox
         self.progress_text = ctk.CTkTextbox(
             section_frame,
-            height=80,
-            font=ctk.CTkFont(family="SF Mono", size=12),
+            height=TEXTBOX_MD,
+            font=ctk.CTkFont(family="monospace", size=FONT_BODY),
             wrap="word"
         )
-        self.progress_text.grid(row=1, column=0, sticky="ew", padx=15, pady=(0, 15))
+        self.progress_text.grid(row=1, column=0, sticky="ew", padx=SPACE_MD, pady=(0, SPACE_MD))
         self.progress_text.insert("1.0", "Processing queue status will appear here...\n")
         self.progress_text.configure(state="disabled")
 
     def _create_statistics_section(self):
         """Create statistics dashboard with StatusCards for key metrics."""
         section_frame = ctk.CTkFrame(self, corner_radius=10)
-        section_frame.grid(row=2, column=0, sticky="ew", padx=15, pady=10)
+        section_frame.grid(row=2, column=0, sticky="ew", padx=SPACE_MD, pady=SPACE_SM)
         section_frame.grid_columnconfigure(0, weight=1)
 
         # Section title
         header_frame = ctk.CTkFrame(section_frame, fg_color="transparent")
-        header_frame.grid(row=0, column=0, sticky="ew", padx=15, pady=(15, 10))
+        header_frame.grid(row=0, column=0, sticky="ew", padx=SPACE_MD, pady=(SPACE_MD, SPACE_SM))
         header_frame.grid_columnconfigure(0, weight=1)
 
         title_label = ctk.CTkLabel(
             header_frame,
             text="Statistics Dashboard",
-            font=ctk.CTkFont(size=16, weight="bold")
+            font=ctk.CTkFont(size=FONT_SECTION, weight="bold")
         )
         title_label.pack(side="left")
 
@@ -220,13 +232,14 @@ class ControlPanel(ctk.CTkScrollableFrame):
             header_frame,
             text="🔄 Refresh",
             command=self.refresh,
-            width=100
+            width=BUTTON_SM[0],
+            height=BUTTON_SM[1]
         )
         refresh_btn.pack(side="right")
 
         # Status cards container
         cards_frame = ctk.CTkFrame(section_frame, fg_color="transparent")
-        cards_frame.grid(row=1, column=0, sticky="ew", padx=15, pady=(0, 15))
+        cards_frame.grid(row=1, column=0, sticky="ew", padx=SPACE_MD, pady=(0, SPACE_MD))
         cards_frame.grid_columnconfigure((0, 1, 2, 3), weight=1)
 
         # Create status cards
@@ -235,36 +248,36 @@ class ControlPanel(ctk.CTkScrollableFrame):
             title="Daemon Status",
             value="Stopped",
             subtitle="Not running",
-            width=180
+            width=CARD_MD
         )
-        self.daemon_status_card.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
+        self.daemon_status_card.grid(row=0, column=0, padx=SPACE_XS, pady=SPACE_XS, sticky="ew")
 
         self.documents_card = StatusCard(
             cards_frame,
             title="Total Documents",
             value="--",
             subtitle="Ingested sources",
-            width=180
+            width=CARD_MD
         )
-        self.documents_card.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+        self.documents_card.grid(row=0, column=1, padx=SPACE_XS, pady=SPACE_XS, sticky="ew")
 
         self.concepts_card = StatusCard(
             cards_frame,
             title="Knowledge Entries",
             value="--",
             subtitle="Total concepts",
-            width=180
+            width=CARD_MD
         )
-        self.concepts_card.grid(row=0, column=2, padx=5, pady=5, sticky="ew")
+        self.concepts_card.grid(row=0, column=2, padx=SPACE_XS, pady=SPACE_XS, sticky="ew")
 
         self.relationships_card = StatusCard(
             cards_frame,
             title="Relationships",
             value="--",
             subtitle="Graph connections",
-            width=180
+            width=CARD_MD
         )
-        self.relationships_card.grid(row=0, column=3, padx=5, pady=5, sticky="ew")
+        self.relationships_card.grid(row=0, column=3, padx=SPACE_XS, pady=SPACE_XS, sticky="ew")
 
         # Second row of cards
         self.completed_card = StatusCard(
@@ -273,9 +286,9 @@ class ControlPanel(ctk.CTkScrollableFrame):
             value="--",
             subtitle="Successfully processed",
             status_color=self.theme_manager.get_color("success"),
-            width=180
+            width=CARD_MD
         )
-        self.completed_card.grid(row=1, column=0, padx=5, pady=5, sticky="ew")
+        self.completed_card.grid(row=1, column=0, padx=SPACE_XS, pady=SPACE_XS, sticky="ew")
 
         self.processing_card = StatusCard(
             cards_frame,
@@ -283,9 +296,9 @@ class ControlPanel(ctk.CTkScrollableFrame):
             value="--",
             subtitle="Currently processing",
             status_color=self.theme_manager.get_color("warning"),
-            width=180
+            width=CARD_MD
         )
-        self.processing_card.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
+        self.processing_card.grid(row=1, column=1, padx=SPACE_XS, pady=SPACE_XS, sticky="ew")
 
         self.failed_card = StatusCard(
             cards_frame,
@@ -293,36 +306,36 @@ class ControlPanel(ctk.CTkScrollableFrame):
             value="--",
             subtitle="Processing errors",
             status_color=self.theme_manager.get_color("error"),
-            width=180
+            width=CARD_MD
         )
-        self.failed_card.grid(row=1, column=2, padx=5, pady=5, sticky="ew")
+        self.failed_card.grid(row=1, column=2, padx=SPACE_XS, pady=SPACE_XS, sticky="ew")
 
         self.high_confidence_card = StatusCard(
             cards_frame,
             title="High Confidence",
             value="--",
             subtitle="Reliable knowledge",
-            width=180
+            width=CARD_MD
         )
-        self.high_confidence_card.grid(row=1, column=3, padx=5, pady=5, sticky="ew")
+        self.high_confidence_card.grid(row=1, column=3, padx=SPACE_XS, pady=SPACE_XS, sticky="ew")
 
     def _create_activity_feed_section(self):
         """Create activity feed section with filtering and export."""
         section_frame = ctk.CTkFrame(self, corner_radius=10)
-        section_frame.grid(row=3, column=0, sticky="ew", padx=15, pady=(10, 15))
+        section_frame.grid(row=3, column=0, sticky="ew", padx=SPACE_MD, pady=(SPACE_SM, SPACE_MD))
         section_frame.grid_columnconfigure(0, weight=1)
 
         # Section title
         title_label = ctk.CTkLabel(
             section_frame,
             text="Activity Feed",
-            font=ctk.CTkFont(size=16, weight="bold")
+            font=ctk.CTkFont(size=FONT_SECTION, weight="bold")
         )
-        title_label.grid(row=0, column=0, sticky="w", padx=15, pady=(15, 10))
+        title_label.grid(row=0, column=0, sticky="w", padx=SPACE_MD, pady=(SPACE_MD, SPACE_SM))
 
         # Controls
         controls_frame = ctk.CTkFrame(section_frame, fg_color="transparent")
-        controls_frame.grid(row=1, column=0, sticky="ew", padx=15, pady=(0, 10))
+        controls_frame.grid(row=1, column=0, sticky="ew", padx=SPACE_MD, pady=(0, SPACE_SM))
         controls_frame.grid_columnconfigure(5, weight=1)  # Spacer
 
         # Refresh button
@@ -330,39 +343,42 @@ class ControlPanel(ctk.CTkScrollableFrame):
             controls_frame,
             text="🔄 Refresh",
             command=self._refresh_activity,
-            width=100
+            width=BUTTON_SM[0],
+            height=BUTTON_SM[1]
         )
-        refresh_btn.grid(row=0, column=0, padx=(0, 8), pady=5)
+        refresh_btn.grid(row=0, column=0, padx=(0, SPACE_XS), pady=SPACE_XS)
 
         # Clear button
         clear_btn = ctk.CTkButton(
             controls_frame,
             text="🗑️ Clear Log",
             command=self._clear_activity_log,
-            width=100
+            width=BUTTON_SM[0],
+            height=BUTTON_SM[1]
         )
-        clear_btn.grid(row=0, column=1, padx=8, pady=5)
+        clear_btn.grid(row=0, column=1, padx=SPACE_XS, pady=SPACE_XS)
 
         # Export button
         export_btn = ctk.CTkButton(
             controls_frame,
             text="💾 Export Log",
             command=self._export_activity_log,
-            width=110
+            width=BUTTON_MD[0],
+            height=BUTTON_MD[1]
         )
-        export_btn.grid(row=0, column=2, padx=8, pady=5)
+        export_btn.grid(row=0, column=2, padx=SPACE_XS, pady=SPACE_XS)
 
         # Separator
         separator = ctk.CTkFrame(controls_frame, width=2, height=30, fg_color=self.theme_manager.get_color("border"))
-        separator.grid(row=0, column=3, padx=15, pady=5)
+        separator.grid(row=0, column=3, padx=SPACE_MD, pady=SPACE_XS)
 
         # Filter label
         filter_label = ctk.CTkLabel(
             controls_frame,
             text="Filter:",
-            font=ctk.CTkFont(size=12)
+            font=ctk.CTkFont(size=FONT_BODY)
         )
-        filter_label.grid(row=0, column=4, padx=(0, 8), pady=5)
+        filter_label.grid(row=0, column=4, padx=(0, SPACE_XS), pady=SPACE_XS)
 
         # Severity filter
         self.activity_filter_var = ctk.StringVar(value="All")
@@ -371,10 +387,10 @@ class ControlPanel(ctk.CTkScrollableFrame):
             variable=self.activity_filter_var,
             values=["All", "INFO", "WARNING", "ERROR"],
             command=lambda _: self._refresh_activity(),
-            width=120,
+            width=BUTTON_MD[0],
             state="readonly"
         )
-        filter_combo.grid(row=0, column=6, padx=8, pady=5)
+        filter_combo.grid(row=0, column=6, padx=SPACE_XS, pady=SPACE_XS)
 
         # Auto-scroll toggle
         self.auto_scroll_var = ctk.BooleanVar(value=True)
@@ -383,16 +399,16 @@ class ControlPanel(ctk.CTkScrollableFrame):
             text="Auto-scroll",
             variable=self.auto_scroll_var
         )
-        auto_scroll_switch.grid(row=0, column=7, padx=(15, 0), pady=5)
+        auto_scroll_switch.grid(row=0, column=7, padx=(SPACE_MD, 0), pady=SPACE_XS)
 
         # Activity log textbox
         self.activity_text = ctk.CTkTextbox(
             section_frame,
-            height=250,
-            font=ctk.CTkFont(family="SF Mono", size=11),
+            height=TEXTBOX_LG,
+            font=ctk.CTkFont(family="monospace", size=FONT_CAPTION),
             wrap="word"
         )
-        self.activity_text.grid(row=2, column=0, sticky="ew", padx=15, pady=(0, 15))
+        self.activity_text.grid(row=2, column=0, sticky="ew", padx=SPACE_MD, pady=(0, SPACE_MD))
         self.activity_text.insert("1.0", "Activity log will appear here...\n")
         self.activity_text.configure(state="disabled")
 
@@ -422,6 +438,14 @@ class ControlPanel(ctk.CTkScrollableFrame):
             self.knowledge_store = getattr(felix_system, 'knowledge_store', None)
             self.knowledge_retriever = getattr(felix_system, 'knowledge_retriever', None)
             self.knowledge_daemon = getattr(felix_system, 'knowledge_daemon', None)
+
+            # Sync daemon button states with actual daemon state
+            if self.knowledge_daemon and getattr(self.knowledge_daemon, 'running', False):
+                self.start_daemon_btn.configure(state="disabled")
+                self.stop_daemon_btn.configure(state="normal")
+            else:
+                self.start_daemon_btn.configure(state="normal")
+                self.stop_daemon_btn.configure(state="disabled")
 
             # Defer refresh to avoid blocking GUI thread during startup
             # Use background thread to run database queries
@@ -505,7 +529,7 @@ class ControlPanel(ctk.CTkScrollableFrame):
 
             # Schedule UI updates on main thread
             self.after(0, lambda: self._update_statistics_ui(daemon_data, doc_stats, summary, rel_count))
-            self.after(0, lambda: self._update_progress_ui(progress_data))
+            self.after(0, lambda: self._update_progress_ui(progress_data, daemon_data))
             self.after(0, lambda: self._update_activity_ui(activity_data, daemon_data))
 
         except Exception as e:
@@ -554,7 +578,7 @@ class ControlPanel(ctk.CTkScrollableFrame):
         except Exception as e:
             logger.error(f"Failed to update statistics UI: {e}")
 
-    def _update_progress_ui(self, progress_data):
+    def _update_progress_ui(self, progress_data, daemon_data=None):
         """Update progress UI on main thread with pre-fetched data."""
         try:
             if progress_data is None:
@@ -564,7 +588,12 @@ class ControlPanel(ctk.CTkScrollableFrame):
             processing = progress_data.get('processing', 0)
             completed = progress_data.get('completed', 0)
             failed = progress_data.get('failed', 0)
-            total = sum(progress_data.values())
+
+            # Use daemon's pending count if available (includes queue + db)
+            if daemon_data and hasattr(daemon_data, 'documents_pending'):
+                pending = daemon_data.documents_pending
+
+            total = pending + processing + completed + failed
 
             # Build progress text
             progress_lines = []
@@ -748,7 +777,7 @@ class ControlPanel(ctk.CTkScrollableFrame):
         dialog.title("Manage Watch Directories")
         dialog.geometry("700x500")
         dialog.transient(self.winfo_toplevel())
-        dialog.grab_set()
+        dialog.after(100, lambda: self._safe_grab(dialog))
 
         # Title
         title_label = ctk.CTkLabel(
@@ -817,6 +846,118 @@ class ControlPanel(ctk.CTkScrollableFrame):
                     messagebox.showerror("Error", f"Failed to add watch directory: {e}", parent=dialog)
                     logger.error(f"Failed to add watch directory: {e}")
 
+        def remove_directory():
+            """Remove a directory from persistent watch list."""
+            if not current_dirs:
+                messagebox.showwarning("No Directories", "No directories to remove.", parent=dialog)
+                return
+
+            # Create selection dialog
+            remove_dialog = ctk.CTkToplevel(dialog)
+            remove_dialog.title("Remove Watch Directory")
+            remove_dialog.geometry("500x400")
+            remove_dialog.transient(dialog)
+            remove_dialog.after(100, lambda: self._safe_grab(remove_dialog))
+
+            ctk.CTkLabel(
+                remove_dialog,
+                text="Select directory to remove:",
+                font=ctk.CTkFont(size=14, weight="bold")
+            ).pack(pady=(20, 10))
+
+            # Create listbox frame with scrollbar
+            listbox_frame = ctk.CTkFrame(remove_dialog)
+            listbox_frame.pack(fill="both", expand=True, padx=20, pady=10)
+
+            # Use standard tk Listbox for selection (CTk doesn't have one)
+            import tkinter as tk
+            listbox = tk.Listbox(
+                listbox_frame,
+                font=("TkDefaultFont", 11),
+                selectmode=tk.SINGLE,
+                bg=self.theme_manager.get_color("bg_secondary"),
+                fg=self.theme_manager.get_color("fg_primary"),
+                selectbackground=self.theme_manager.get_color("accent"),
+                selectforeground="white"
+            )
+            listbox.pack(fill="both", expand=True)
+
+            # Populate listbox
+            for directory in current_dirs:
+                listbox.insert(tk.END, directory)
+
+            def confirm_remove():
+                selection = listbox.curselection()
+                if not selection:
+                    messagebox.showwarning("No Selection", "Please select a directory to remove.", parent=remove_dialog)
+                    return
+
+                idx = selection[0]
+                directory = current_dirs[idx]
+
+                if messagebox.askyesno("Confirm Removal",
+                                       f"Remove this directory from watch list?\n\n{directory}\n\n"
+                                       "Note: This will NOT delete any files or knowledge entries.",
+                                       parent=remove_dialog):
+                    try:
+                        # Remove from daemon config
+                        result = self.knowledge_daemon.remove_watch_directory(directory)
+
+                        if result.get('success'):
+                            # Update current_dirs list
+                            current_dirs.remove(directory)
+
+                            # Save to persistent config
+                            if hasattr(self.main_app, 'save_watch_directories'):
+                                self.main_app.save_watch_directories()
+
+                            # Update parent dialog textbox
+                            dir_textbox.configure(state="normal")
+                            dir_textbox.delete("1.0", "end")
+                            for i, d in enumerate(current_dirs):
+                                dir_textbox.insert("end", f"{i+1}. {d}\n")
+                            dir_textbox.configure(state="disabled")
+
+                            info_label.configure(text=f"{len(current_dirs)} director{'y' if len(current_dirs) == 1 else 'ies'} configured")
+
+                            self._log_activity(f"Removed watch directory: {directory}", "INFO")
+                            self.refresh()
+
+                            messagebox.showinfo("Success", f"Removed from watch list:\n{directory}", parent=remove_dialog)
+                            remove_dialog.destroy()
+                        else:
+                            error_msg = result.get('error', 'Unknown error')
+                            messagebox.showwarning("Cannot Remove Directory", error_msg, parent=remove_dialog)
+
+                    except Exception as e:
+                        messagebox.showerror("Error", f"Failed to remove directory: {e}", parent=remove_dialog)
+                        logger.error(f"Failed to remove watch directory: {e}")
+
+            remove_btn_frame = ctk.CTkFrame(remove_dialog, fg_color="transparent")
+            remove_btn_frame.pack(pady=15)
+
+            ctk.CTkButton(
+                remove_btn_frame,
+                text="🗑️ Remove Selected",
+                command=confirm_remove,
+                width=150,
+                fg_color=self.theme_manager.get_color("error"),
+                hover_color="#b91c1c"
+            ).pack(side="left", padx=5)
+
+            ctk.CTkButton(
+                remove_btn_frame,
+                text="Cancel",
+                command=remove_dialog.destroy,
+                width=100
+            ).pack(side="left", padx=5)
+
+            # Center remove dialog on parent
+            remove_dialog.update_idletasks()
+            rx = dialog.winfo_x() + (dialog.winfo_width() - remove_dialog.winfo_width()) // 2
+            ry = dialog.winfo_y() + (dialog.winfo_height() - remove_dialog.winfo_height()) // 2
+            remove_dialog.geometry(f"+{rx}+{ry}")
+
         add_btn = ctk.CTkButton(
             btn_frame,
             text="➕ Add Directory",
@@ -824,6 +965,16 @@ class ControlPanel(ctk.CTkScrollableFrame):
             width=150
         )
         add_btn.pack(side="left", padx=5)
+
+        remove_btn = ctk.CTkButton(
+            btn_frame,
+            text="🗑️ Remove Directory",
+            command=remove_directory,
+            width=150,
+            fg_color=self.theme_manager.get_color("error"),
+            hover_color="#b91c1c"
+        )
+        remove_btn.pack(side="left", padx=5)
 
         close_btn = ctk.CTkButton(
             btn_frame,
@@ -840,20 +991,38 @@ class ControlPanel(ctk.CTkScrollableFrame):
         dialog.geometry(f"+{x}+{y}")
 
     def _force_refinement(self):
-        """Manually trigger a refinement cycle."""
-        if self.knowledge_daemon:
-            try:
-                self._log_activity("Starting manual refinement...", "INFO")
-                result = self.knowledge_daemon.trigger_refinement()
-                messagebox.showinfo("Refinement Complete",
-                                   f"Created {result.get('total_relationships', 0)} relationships")
-                self._log_activity(f"Refinement complete: {result.get('total_relationships', 0)} relationships", "INFO")
-                self.refresh()
-            except Exception as e:
-                messagebox.showerror("Error", f"Refinement failed: {e}")
-                logger.error(f"Refinement failed: {e}")
-        else:
+        """Manually trigger a refinement cycle in background thread."""
+        if not self.knowledge_daemon:
             messagebox.showwarning("Daemon Not Running", "Please start the daemon first")
+            return
+
+        self._log_activity("Starting manual refinement (this may take a while)...", "INFO")
+
+        def run_refinement():
+            try:
+                result = self.knowledge_daemon.trigger_refinement()
+                # Schedule UI update on main thread
+                self.after(0, lambda: self._refinement_complete(result))
+            except Exception as e:
+                self.after(0, lambda: self._refinement_failed(str(e)))
+
+        if self.thread_manager:
+            self.thread_manager.start_thread(run_refinement)
+        else:
+            import threading
+            threading.Thread(target=run_refinement, daemon=True).start()
+
+    def _refinement_complete(self, result):
+        """Handle refinement completion on main thread."""
+        total = result.get('total_relationships', 0)
+        messagebox.showinfo("Refinement Complete", f"Created {total} relationships")
+        self._log_activity(f"Refinement complete: {total} relationships", "INFO")
+        self.refresh()
+
+    def _refinement_failed(self, error_msg):
+        """Handle refinement failure on main thread."""
+        messagebox.showerror("Error", f"Refinement failed: {error_msg}")
+        logger.error(f"Refinement failed: {error_msg}")
 
     def _process_pending_now(self):
         """Manually trigger processing of all pending documents."""
@@ -974,9 +1143,18 @@ class ControlPanel(ctk.CTkScrollableFrame):
             processing = status_counts.get('processing', 0)
             completed = status_counts.get('completed', 0)
             failed = status_counts.get('failed', 0)
-            total = sum(status_counts.values())
 
             conn.close()
+
+            # Use daemon's pending count if available (includes queue + db)
+            if self.knowledge_daemon:
+                try:
+                    daemon_status = self.knowledge_daemon.get_status()
+                    pending = daemon_status.documents_pending
+                except:
+                    pass
+
+            total = pending + processing + completed + failed
 
             # Build progress text
             progress_lines = []
@@ -1055,7 +1233,7 @@ class ControlPanel(ctk.CTkScrollableFrame):
                 if filter_level in ["All", "INFO"]:
                     if status.running:
                         logs.insert(0, f"[{timestamp}] ℹ️ INFO: Daemon is running (uptime: {status.uptime_seconds/3600:.1f}h)\n")
-                        logs.insert(1, f"[{timestamp}] ℹ️ INFO: Pending in queue: {status.documents_pending}\n")
+                        logs.insert(1, f"[{timestamp}] ℹ️ INFO: Documents to process: {status.documents_pending}\n")
                     else:
                         logs.insert(0, f"[{timestamp}] ⚠️ WARNING: Daemon is not running\n")
 
@@ -1166,3 +1344,11 @@ class ControlPanel(ctk.CTkScrollableFrame):
         except Exception as e:
             logger.error(f"Failed to get document stats: {e}")
             return {}
+
+    def _safe_grab(self, dialog):
+        """Safely grab focus after window is rendered."""
+        try:
+            dialog.grab_set()
+            dialog.focus_set()
+        except Exception as e:
+            logger.warning(f"Could not grab dialog focus: {e}")

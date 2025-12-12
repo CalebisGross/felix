@@ -22,6 +22,12 @@ from ...components.themed_treeview import ThemedTreeview
 from ...components.search_entry import SearchEntry
 from ...components.status_card import StatusCard
 from ...theme_manager import get_theme_manager
+from ...styles import (
+    BUTTON_SM, BUTTON_MD, BUTTON_LG,
+    FONT_TITLE, FONT_SECTION, FONT_BODY, FONT_CAPTION,
+    SPACE_XS, SPACE_SM, SPACE_MD, SPACE_LG,
+    CARD_MD, TEXTBOX_MD
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,29 +74,35 @@ class RelationshipsPanel(ctk.CTkFrame):
         self.knowledge_retriever = None
         self.knowledge_daemon = None
 
-        # Configure grid
+        # Configure grid for main container
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(3, weight=1)  # TreeView section expands
+        self.grid_rowconfigure(0, weight=1)
 
-        # Create UI sections
-        self._create_search_section()
-        self._create_filter_section()
-        self._create_statistics_section()
-        self._create_results_section()
-        self._create_actions_section()
+        # Create main container with padding
+        main_container = ctk.CTkFrame(self, fg_color="transparent")
+        main_container.grid(row=0, column=0, sticky="nsew", padx=SPACE_SM, pady=SPACE_SM)
+        main_container.grid_columnconfigure(0, weight=1)
+        main_container.grid_rowconfigure(3, weight=1)  # TreeView section expands
 
-    def _create_search_section(self):
+        # Create UI sections within container
+        self._create_search_section(main_container)
+        self._create_filter_section(main_container)
+        self._create_statistics_section(main_container)
+        self._create_results_section(main_container)
+        self._create_actions_section(main_container)
+
+    def _create_search_section(self, parent):
         """Create search and relationship type filter section."""
-        search_frame = ctk.CTkFrame(self)
-        search_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
+        search_frame = ctk.CTkFrame(parent)
+        search_frame.grid(row=0, column=0, sticky="ew", padx=0, pady=(0, SPACE_SM))
         search_frame.grid_columnconfigure(1, weight=1)
 
         # Search label
         ctk.CTkLabel(
             search_frame,
             text="Search Concept:",
-            font=ctk.CTkFont(size=13, weight="bold")
-        ).grid(row=0, column=0, sticky="w", padx=(10, 10), pady=5)
+            font=ctk.CTkFont(size=FONT_BODY, weight="bold")
+        ).grid(row=0, column=0, sticky="w", padx=(SPACE_SM, SPACE_SM), pady=SPACE_XS)
 
         # Search entry
         self.search_entry = SearchEntry(
@@ -98,16 +110,16 @@ class RelationshipsPanel(ctk.CTkFrame):
             placeholder="Enter concept name...",
             on_search=self._on_search,
             on_clear=self._on_clear_search,
-            width=300
+            width=TEXTBOX_MD * 2
         )
-        self.search_entry.grid(row=0, column=1, sticky="ew", padx=(0, 10), pady=5)
+        self.search_entry.grid(row=0, column=1, sticky="ew", padx=(0, SPACE_SM), pady=SPACE_XS)
 
         # Relationship type filter
         ctk.CTkLabel(
             search_frame,
             text="Type:",
-            font=ctk.CTkFont(size=13)
-        ).grid(row=0, column=2, sticky="w", padx=(10, 5), pady=5)
+            font=ctk.CTkFont(size=FONT_BODY)
+        ).grid(row=0, column=2, sticky="w", padx=(SPACE_SM, SPACE_XS), pady=SPACE_XS)
 
         self.type_var = ctk.StringVar(value="all")
         self.type_dropdown = ctk.CTkOptionMenu(
@@ -115,22 +127,22 @@ class RelationshipsPanel(ctk.CTkFrame):
             variable=self.type_var,
             values=["all", "explicit_mention", "embedding_similarity", "co_occurrence"],
             command=self._on_filter_change,
-            width=180
+            width=CARD_MD
         )
-        self.type_dropdown.grid(row=0, column=3, sticky="w", padx=(0, 10), pady=5)
+        self.type_dropdown.grid(row=0, column=3, sticky="w", padx=(0, SPACE_SM), pady=SPACE_XS)
 
-    def _create_filter_section(self):
+    def _create_filter_section(self, parent):
         """Create minimum strength slider and depth selector."""
-        filter_frame = ctk.CTkFrame(self)
-        filter_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
+        filter_frame = ctk.CTkFrame(parent)
+        filter_frame.grid(row=1, column=0, sticky="ew", padx=0, pady=(0, SPACE_SM))
         filter_frame.grid_columnconfigure(1, weight=1)
 
         # Minimum strength slider
         ctk.CTkLabel(
             filter_frame,
             text="Min Strength:",
-            font=ctk.CTkFont(size=13)
-        ).grid(row=0, column=0, sticky="w", padx=(10, 10), pady=5)
+            font=ctk.CTkFont(size=FONT_BODY)
+        ).grid(row=0, column=0, sticky="w", padx=(SPACE_SM, SPACE_SM), pady=SPACE_XS)
 
         self.strength_var = ctk.DoubleVar(value=0.0)
         self.strength_slider = ctk.CTkSlider(
@@ -139,91 +151,91 @@ class RelationshipsPanel(ctk.CTkFrame):
             to=1.0,
             variable=self.strength_var,
             command=self._on_strength_change,
-            width=200
+            width=TEXTBOX_MD
         )
-        self.strength_slider.grid(row=0, column=1, sticky="ew", padx=(0, 10), pady=5)
+        self.strength_slider.grid(row=0, column=1, sticky="ew", padx=(0, SPACE_SM), pady=SPACE_XS)
 
         self.strength_label = ctk.CTkLabel(
             filter_frame,
             text="0.0",
-            font=ctk.CTkFont(size=12),
+            font=ctk.CTkFont(size=FONT_BODY),
             width=40
         )
-        self.strength_label.grid(row=0, column=2, sticky="w", padx=(0, 10), pady=5)
+        self.strength_label.grid(row=0, column=2, sticky="w", padx=(0, SPACE_SM), pady=SPACE_XS)
 
         # Traversal depth dropdown
         ctk.CTkLabel(
             filter_frame,
             text="Explore Depth:",
-            font=ctk.CTkFont(size=13)
-        ).grid(row=0, column=3, sticky="w", padx=(10, 5), pady=5)
+            font=ctk.CTkFont(size=FONT_BODY)
+        ).grid(row=0, column=3, sticky="w", padx=(SPACE_SM, SPACE_XS), pady=SPACE_XS)
 
         self.depth_var = ctk.StringVar(value="1-hop")
         self.depth_dropdown = ctk.CTkOptionMenu(
             filter_frame,
             variable=self.depth_var,
             values=["1-hop", "2-hop", "3-hop"],
-            width=100
+            width=BUTTON_MD[0]
         )
-        self.depth_dropdown.grid(row=0, column=4, sticky="w", padx=(0, 10), pady=5)
+        self.depth_dropdown.grid(row=0, column=4, sticky="w", padx=(0, SPACE_SM), pady=SPACE_XS)
 
-    def _create_statistics_section(self):
+    def _create_statistics_section(self, parent):
         """Create statistics cards showing relationship counts by type."""
-        stats_frame = ctk.CTkFrame(self)
-        stats_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 10))
+        stats_frame = ctk.CTkFrame(parent)
+        stats_frame.grid(row=2, column=0, sticky="ew", padx=0, pady=(0, SPACE_SM))
 
         # Title
         ctk.CTkLabel(
             stats_frame,
             text="Relationship Statistics",
-            font=ctk.CTkFont(size=14, weight="bold")
-        ).pack(anchor="w", padx=10, pady=(10, 5))
+            font=ctk.CTkFont(size=FONT_SECTION, weight="bold")
+        ).pack(anchor="w", padx=SPACE_SM, pady=(SPACE_SM, SPACE_XS))
 
         # Cards container
         cards_frame = ctk.CTkFrame(stats_frame, fg_color="transparent")
-        cards_frame.pack(fill="x", padx=10, pady=(0, 10))
+        cards_frame.pack(fill="x", padx=SPACE_SM, pady=(0, SPACE_SM))
 
         # Create status cards for each relationship type
         self.total_card = StatusCard(
             cards_frame,
             title="Total Relationships",
             value="--",
-            width=160,
+            width=CARD_MD,
             status_color=self.theme_manager.get_color("accent")
         )
-        self.total_card.pack(side="left", padx=(0, 10))
+        self.total_card.pack(side="left", padx=(0, SPACE_SM))
 
         self.explicit_card = StatusCard(
             cards_frame,
             title="Explicit Mentions",
             value="--",
-            width=160,
+            width=CARD_MD,
             status_color=self.theme_manager.get_color("success")
         )
-        self.explicit_card.pack(side="left", padx=(0, 10))
+        self.explicit_card.pack(side="left", padx=(0, SPACE_SM))
 
         self.similarity_card = StatusCard(
             cards_frame,
             title="Similarity Links",
             value="--",
-            width=160,
+            width=CARD_MD,
             status_color=self.theme_manager.get_color("warning")
         )
-        self.similarity_card.pack(side="left", padx=(0, 10))
+        self.similarity_card.pack(side="left", padx=(0, SPACE_SM))
 
         self.cooccurrence_card = StatusCard(
             cards_frame,
             title="Co-occurrences",
             value="--",
-            width=160,
+            width=CARD_MD,
             status_color="#8b5cf6"  # Purple
         )
-        self.cooccurrence_card.pack(side="left", padx=(0, 10))
+        self.cooccurrence_card.pack(side="left", padx=(0, SPACE_SM))
 
-    def _create_results_section(self):
+    def _create_results_section(self, parent):
         """Create treeview for displaying relationships."""
-        results_frame = ctk.CTkFrame(self)
-        results_frame.grid(row=3, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        results_frame = ctk.CTkFrame(parent)
+        results_frame.grid(row=3, column=0, sticky="nsew", padx=0, pady=(0, SPACE_SM))
         results_frame.grid_columnconfigure(0, weight=1)
         results_frame.grid_rowconfigure(0, weight=1)
 
@@ -231,8 +243,8 @@ class RelationshipsPanel(ctk.CTkFrame):
         ctk.CTkLabel(
             results_frame,
             text="Relationships",
-            font=ctk.CTkFont(size=14, weight="bold")
-        ).grid(row=0, column=0, sticky="w", padx=10, pady=(10, 5))
+            font=ctk.CTkFont(size=FONT_SECTION, weight="bold")
+        ).grid(row=0, column=0, sticky="w", padx=SPACE_SM, pady=(SPACE_SM, SPACE_XS))
 
         # TreeView
         columns = ["source_concept", "rel_type", "target_concept", "strength", "evidence"]
@@ -247,7 +259,7 @@ class RelationshipsPanel(ctk.CTkFrame):
             height=15,
             selectmode="extended"
         )
-        self.tree.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        self.tree.grid(row=1, column=0, sticky="nsew", padx=SPACE_SM, pady=(0, SPACE_SM))
 
         # Configure tags for color-coding
         colors = self.theme_manager.colors
@@ -258,68 +270,75 @@ class RelationshipsPanel(ctk.CTkFrame):
         # Bind events
         self.tree.bind_tree("<Double-1>", self._on_double_click)
         self.tree.bind_tree("<Button-3>", self._on_right_click)
+        self.tree.bind_tree("<<TreeviewSelect>>", self._on_selection_change)
 
         # Status label
         self.status_label = ctk.CTkLabel(
             results_frame,
             text="Ready",
-            font=ctk.CTkFont(size=11),
+            font=ctk.CTkFont(size=FONT_CAPTION),
             text_color=self.theme_manager.get_color("fg_muted")
         )
-        self.status_label.grid(row=2, column=0, sticky="w", padx=10, pady=(0, 10))
+        self.status_label.grid(row=2, column=0, sticky="w", padx=SPACE_SM, pady=(0, SPACE_SM))
 
-    def _create_actions_section(self):
+    def _create_actions_section(self, parent):
         """Create action buttons for graph operations."""
-        actions_frame = ctk.CTkFrame(self)
-        actions_frame.grid(row=4, column=0, sticky="ew", padx=10, pady=(0, 10))
+        actions_frame = ctk.CTkFrame(parent)
+        actions_frame.grid(row=4, column=0, sticky="ew", padx=0, pady=0)
 
         # Left side buttons
         left_frame = ctk.CTkFrame(actions_frame, fg_color="transparent")
-        left_frame.pack(side="left", fill="x", expand=True, padx=10, pady=10)
+        left_frame.pack(side="left", fill="x", expand=True, padx=SPACE_SM, pady=SPACE_SM)
 
         self.refresh_btn = ctk.CTkButton(
             left_frame,
             text="🔄 Refresh",
             command=self.refresh,
-            width=120
+            width=BUTTON_MD[0],
+            height=BUTTON_MD[1]
         )
-        self.refresh_btn.pack(side="left", padx=(0, 10))
+        self.refresh_btn.pack(side="left", padx=(0, SPACE_SM))
 
         self.explore_btn = ctk.CTkButton(
             left_frame,
             text="🔍 Explore Connected",
             command=self._explore_connected,
-            width=160,
+            width=BUTTON_LG[0],
+            height=BUTTON_LG[1],
             state="disabled"
         )
-        self.explore_btn.pack(side="left", padx=(0, 10))
+        self.explore_btn.pack(side="left", padx=(0, SPACE_SM))
 
+        # Path finding button
         self.path_btn = ctk.CTkButton(
             left_frame,
             text="🧭 Find Path",
             command=self._find_path,
-            width=120,
+            width=BUTTON_MD[0],
+            height=BUTTON_MD[1],
             state="disabled"
         )
-        self.path_btn.pack(side="left", padx=(0, 10))
+        self.path_btn.pack(side="left", padx=(0, SPACE_SM))
 
         # Right side buttons
         right_frame = ctk.CTkFrame(actions_frame, fg_color="transparent")
-        right_frame.pack(side="right", padx=10, pady=10)
+        right_frame.pack(side="right", padx=SPACE_SM, pady=SPACE_SM)
 
         self.export_btn = ctk.CTkButton(
             right_frame,
             text="💾 Export JSON",
             command=self._export_graph,
-            width=120
+            width=BUTTON_MD[0],
+            height=BUTTON_MD[1]
         )
-        self.export_btn.pack(side="left", padx=(0, 10))
+        self.export_btn.pack(side="left", padx=(0, SPACE_SM))
 
         self.delete_btn = ctk.CTkButton(
             right_frame,
             text="🗑️ Delete",
             command=self._delete_relationship,
-            width=100,
+            width=BUTTON_SM[0],
+            height=BUTTON_SM[1],
             state="disabled",
             fg_color=self.theme_manager.get_color("error"),
             hover_color="#b91c1c"
@@ -327,6 +346,10 @@ class RelationshipsPanel(ctk.CTkFrame):
         self.delete_btn.pack(side="left")
 
     # Event Handlers
+
+    def _on_selection_change(self, event=None):
+        """Handle selection change in treeview."""
+        self._update_button_states()
 
     def _on_search(self, query: str):
         """Handle search query."""
@@ -617,28 +640,28 @@ class RelationshipsPanel(ctk.CTkFrame):
             dialog.title(f"Connected Concepts: {source_concept}")
             dialog.geometry("900x600")
             dialog.transient(self)
-            dialog.grab_set()
+            dialog.after(100, lambda: self._safe_grab(dialog))
 
             # Title
             title_label = ctk.CTkLabel(
                 dialog,
                 text=f"Exploring connections for: {source_concept}",
-                font=ctk.CTkFont(size=16, weight="bold")
+                font=ctk.CTkFont(size=FONT_SECTION, weight="bold")
             )
-            title_label.pack(pady=15)
+            title_label.pack(pady=SPACE_MD)
 
             # Subtitle
             subtitle_label = ctk.CTkLabel(
                 dialog,
                 text=f"Found {len(related_results)} concepts within {depth} hop(s)",
-                font=ctk.CTkFont(size=12),
+                font=ctk.CTkFont(size=FONT_BODY),
                 text_color=self.theme_manager.get_color("fg_muted")
             )
-            subtitle_label.pack(pady=(0, 10))
+            subtitle_label.pack(pady=(0, SPACE_SM))
 
             # Text display
             text_frame = ctk.CTkFrame(dialog)
-            text_frame.pack(fill="both", expand=True, padx=20, pady=(0, 10))
+            text_frame.pack(fill="both", expand=True, padx=SPACE_LG, pady=(0, SPACE_SM))
 
             text_widget = tk.Text(
                 text_frame,
@@ -657,15 +680,24 @@ class RelationshipsPanel(ctk.CTkFrame):
             network_text = f"SOURCE CONCEPT: {source_concept}\n"
             network_text += "=" * 80 + "\n\n"
 
-            for i, result in enumerate(related_results, 1):
-                concept_name = result.content.get("concept", "Unknown")
-                definition = result.content.get("definition", "No definition")
-                score = result.relevance_score
-                domain = result.domain
+            if related_results:
+                for i, result in enumerate(related_results, 1):
+                    concept_name = result.content.get("concept", "Unknown")
+                    definition = result.content.get("definition", "No definition")
+                    score = result.relevance_score
+                    domain = result.domain
 
-                network_text += f"{i}. {concept_name} (relevance: {score:.2f})\n"
-                network_text += f"   Domain: {domain}\n"
-                network_text += f"   {definition[:200]}{'...' if len(definition) > 200 else ''}\n\n"
+                    network_text += f"{i}. {concept_name} (relevance: {score:.2f})\n"
+                    network_text += f"   Domain: {domain}\n"
+                    network_text += f"   {definition[:200]}{'...' if len(definition) > 200 else ''}\n\n"
+            else:
+                network_text += "No connected concepts found within the specified depth.\n\n"
+                network_text += "This could mean:\n"
+                network_text += "  • This concept has no relationships in the knowledge graph\n"
+                network_text += "  • Relationships haven't been built yet (run refinement)\n"
+                network_text += "  • Try increasing the hop depth setting\n\n"
+                network_text += "Tip: Go to the Control tab and click 'Force Refinement'\n"
+                network_text += "to rebuild the knowledge graph relationships.\n"
 
             text_widget.insert("1.0", network_text)
             text_widget.configure(state="disabled")
@@ -675,9 +707,10 @@ class RelationshipsPanel(ctk.CTkFrame):
                 dialog,
                 text="Close",
                 command=dialog.destroy,
-                width=100
+                width=BUTTON_SM[0],
+                height=BUTTON_SM[1]
             )
-            close_btn.pack(pady=10)
+            close_btn.pack(pady=SPACE_SM)
 
         except Exception as e:
             logger.error(f"Failed to explore connected concepts: {e}")
@@ -1151,6 +1184,13 @@ class RelationshipsPanel(ctk.CTkFrame):
 
     def _enable_features(self):
         """Enable features when Felix system starts."""
+        felix_system = getattr(self.main_app, 'felix_system', None) if self.main_app else None
+        if felix_system:
+            # Wire up references to knowledge brain components
+            self.knowledge_store = getattr(felix_system, 'knowledge_store', None)
+            self.knowledge_retriever = getattr(felix_system, 'knowledge_retriever', None)
+            self.knowledge_daemon = getattr(felix_system, 'knowledge_daemon', None)
+
         self._update_button_states()
         # Defer refresh to avoid blocking GUI thread during startup
         self.after(500, self._async_initial_refresh)
@@ -1165,3 +1205,11 @@ class RelationshipsPanel(ctk.CTkFrame):
         self.tree.clear()
         self.status_label.configure(text="Knowledge Brain not available")
         logger.info("Relationships panel features disabled")
+
+    def _safe_grab(self, dialog):
+        """Safely grab focus after window is rendered."""
+        try:
+            dialog.grab_set()
+            dialog.focus_set()
+        except Exception as e:
+            logger.warning(f"Could not grab dialog focus: {e}")

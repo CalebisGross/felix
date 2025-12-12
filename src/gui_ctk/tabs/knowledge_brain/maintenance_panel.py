@@ -20,6 +20,12 @@ import re
 from ...components.themed_treeview import ThemedTreeview
 from ...components.status_card import StatusCard
 from ...theme_manager import get_theme_manager
+from ...styles import (
+    BUTTON_SM, BUTTON_MD, BUTTON_LG,
+    FONT_TITLE, FONT_SECTION, FONT_BODY, FONT_CAPTION,
+    SPACE_XS, SPACE_SM, SPACE_MD, SPACE_LG,
+    CARD_MD, TEXTBOX_MD
+)
 
 logger = logging.getLogger(__name__)
 
@@ -59,9 +65,13 @@ class MaintenancePanel(ctk.CTkFrame):
         self.knowledge_retriever = None
         self.knowledge_daemon = None
 
+        # Configure main grid
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+
         # Create main tabview with 3 sub-tabs
         self.tabview = ctk.CTkTabview(self)
-        self.tabview.pack(fill="both", expand=True, padx=10, pady=10)
+        self.tabview.grid(row=0, column=0, sticky="nsew", padx=SPACE_MD, pady=SPACE_MD)
 
         # Add tabs
         self.tabview.add("Quality")
@@ -86,9 +96,8 @@ class MaintenancePanel(ctk.CTkFrame):
         self.knowledge_retriever = knowledge_retriever
         self.knowledge_daemon = knowledge_daemon
 
-        # Refresh displays if available
-        if knowledge_store:
-            self.refresh()
+        # Don't auto-refresh on init - quality checks are expensive O(n²) operations
+        # that block the GUI thread. User can manually refresh via the Quality tab.
 
     # ==================== Quality Sub-tab ====================
 
@@ -102,41 +111,42 @@ class MaintenancePanel(ctk.CTkFrame):
 
         # Header with title and refresh button
         header = ctk.CTkFrame(quality_frame, fg_color="transparent")
-        header.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
+        header.grid(row=0, column=0, sticky="ew", padx=SPACE_SM, pady=(SPACE_SM, SPACE_XS))
         header.grid_columnconfigure(1, weight=1)
 
         title_label = ctk.CTkLabel(
             header,
             text="Knowledge Quality Monitor",
-            font=ctk.CTkFont(size=16, weight="bold")
+            font=ctk.CTkFont(size=FONT_SECTION, weight="bold")
         )
         title_label.grid(row=0, column=0, sticky="w")
 
         refresh_btn = ctk.CTkButton(
             header,
             text="Refresh",
-            width=100,
+            width=BUTTON_SM[0],
+            height=BUTTON_SM[1],
             command=self._refresh_quality_stats
         )
-        refresh_btn.grid(row=0, column=2, sticky="e", padx=(10, 0))
+        refresh_btn.grid(row=0, column=2, sticky="e", padx=(SPACE_SM, 0))
 
         # Main content area with scrolling
         content = ctk.CTkScrollableFrame(quality_frame)
-        content.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
+        content.grid(row=1, column=0, sticky="nsew", padx=SPACE_SM, pady=SPACE_XS)
         content.grid_columnconfigure(0, weight=1)
 
         # Quality scores section
         scores_label = ctk.CTkLabel(
             content,
             text="Quality Metrics",
-            font=ctk.CTkFont(size=14, weight="bold"),
+            font=ctk.CTkFont(size=FONT_SECTION, weight="bold"),
             anchor="w"
         )
-        scores_label.grid(row=0, column=0, sticky="w", pady=(0, 10))
+        scores_label.grid(row=0, column=0, sticky="w", pady=(0, SPACE_SM))
 
         # Status cards container
         cards_frame = ctk.CTkFrame(content, fg_color="transparent")
-        cards_frame.grid(row=1, column=0, sticky="ew", pady=(0, 15))
+        cards_frame.grid(row=1, column=0, sticky="ew", pady=(0, SPACE_MD))
 
         # Create status cards
         self.quality_cards = {}
@@ -154,10 +164,9 @@ class MaintenancePanel(ctk.CTkFrame):
                 value=value,
                 subtitle=subtitle,
                 status_color=color,
-                width=160,
-                height=110
+                width=CARD_MD
             )
-            card.grid(row=0, column=i, padx=5, sticky="ew")
+            card.grid(row=0, column=i, padx=SPACE_XS, sticky="ew")
             cards_frame.grid_columnconfigure(i, weight=1)
             self.quality_cards[key] = card
 
@@ -165,10 +174,10 @@ class MaintenancePanel(ctk.CTkFrame):
         duplicates_label = ctk.CTkLabel(
             content,
             text="Potential Duplicates",
-            font=ctk.CTkFont(size=14, weight="bold"),
+            font=ctk.CTkFont(size=FONT_SECTION, weight="bold"),
             anchor="w"
         )
-        duplicates_label.grid(row=2, column=0, sticky="w", pady=(10, 5))
+        duplicates_label.grid(row=2, column=0, sticky="w", pady=(SPACE_SM, SPACE_XS))
 
         # Duplicates tree
         self.duplicates_tree = ThemedTreeview(
@@ -178,16 +187,16 @@ class MaintenancePanel(ctk.CTkFrame):
             widths=[200, 200, 100, 120, 150],
             height=8
         )
-        self.duplicates_tree.grid(row=3, column=0, sticky="ew", pady=(0, 10))
+        self.duplicates_tree.grid(row=3, column=0, sticky="ew", pady=(0, SPACE_SM))
 
         # Low confidence section
         low_conf_label = ctk.CTkLabel(
             content,
             text="Low Confidence Entries",
-            font=ctk.CTkFont(size=14, weight="bold"),
+            font=ctk.CTkFont(size=FONT_SECTION, weight="bold"),
             anchor="w"
         )
-        low_conf_label.grid(row=4, column=0, sticky="w", pady=(10, 5))
+        low_conf_label.grid(row=4, column=0, sticky="w", pady=(SPACE_SM, SPACE_XS))
 
         # Low confidence tree
         self.low_confidence_tree = ThemedTreeview(
@@ -197,29 +206,35 @@ class MaintenancePanel(ctk.CTkFrame):
             widths=[200, 250, 100, 120, 130],
             height=8
         )
-        self.low_confidence_tree.grid(row=5, column=0, sticky="ew", pady=(0, 10))
+        self.low_confidence_tree.grid(row=5, column=0, sticky="ew", pady=(0, SPACE_SM))
 
         # Actions section
         actions_frame = ctk.CTkFrame(content, fg_color="transparent")
-        actions_frame.grid(row=6, column=0, sticky="ew", pady=(10, 0))
+        actions_frame.grid(row=6, column=0, sticky="ew", pady=(SPACE_SM, 0))
 
         ctk.CTkButton(
             actions_frame,
             text="Run Full Quality Check",
-            command=self._run_quality_check
-        ).pack(side="left", padx=5)
+            command=self._run_quality_check,
+            width=BUTTON_MD[0],
+            height=BUTTON_MD[1]
+        ).pack(side="left", padx=SPACE_XS)
 
         ctk.CTkButton(
             actions_frame,
             text="Generate Quality Report",
-            command=self._generate_quality_report
-        ).pack(side="left", padx=5)
+            command=self._generate_quality_report,
+            width=BUTTON_MD[0],
+            height=BUTTON_MD[1]
+        ).pack(side="left", padx=SPACE_XS)
 
         ctk.CTkButton(
             actions_frame,
             text="View Orphaned Concepts",
-            command=self._view_orphaned_concepts
-        ).pack(side="left", padx=5)
+            command=self._view_orphaned_concepts,
+            width=BUTTON_MD[0],
+            height=BUTTON_MD[1]
+        ).pack(side="left", padx=SPACE_XS)
 
     def _refresh_quality_stats(self):
         """Refresh quality statistics and update display."""
@@ -297,31 +312,46 @@ class MaintenancePanel(ctk.CTkFrame):
             self._show_error("Quality Check Error", f"Failed to refresh quality stats: {str(e)}")
 
     def _get_low_confidence_entries(self, threshold: float = 0.5) -> List[Dict[str, Any]]:
-        """Get entries with confidence below threshold."""
+        """Get entries with low confidence level (LOW or SPECULATIVE)."""
         if not self.knowledge_store:
             return []
 
         try:
             import sqlite3
+            import json
             conn = sqlite3.connect(self.knowledge_store.storage_path)
             cursor = conn.cursor()
 
+            # confidence_level is TEXT enum: 'VERIFIED', 'HIGH', 'MEDIUM', 'LOW', 'SPECULATIVE'
             cursor.execute("""
-                SELECT knowledge_id, content, confidence, domain, timestamp
+                SELECT knowledge_id, content_json, confidence_level, domain, created_at
                 FROM knowledge_entries
-                WHERE confidence < ?
-                ORDER BY confidence ASC
+                WHERE confidence_level IN ('LOW', 'SPECULATIVE')
+                ORDER BY created_at DESC
                 LIMIT 100
-            """, (threshold,))
+            """)
 
             entries = []
             for row in cursor.fetchall():
+                # Parse content_json to get displayable content
+                try:
+                    content_data = json.loads(row[1]) if row[1] else {}
+                    content = content_data.get("concept", content_data.get("content", str(row[1])[:100]))
+                except (json.JSONDecodeError, TypeError):
+                    content = str(row[1])[:100] if row[1] else ""
+
+                # Convert Unix timestamp to ISO string
+                created_at = row[4]
+                if isinstance(created_at, (int, float)):
+                    from datetime import datetime
+                    created_at = datetime.fromtimestamp(created_at).isoformat()
+
                 entries.append({
                     "knowledge_id": row[0],
-                    "content": row[1],
-                    "confidence": row[2],
+                    "content": content,
+                    "confidence": row[2],  # This is the confidence_level text
                     "domain": row[3] or "general",
-                    "timestamp": row[4]
+                    "timestamp": created_at
                 })
 
             conn.close()
@@ -338,23 +368,32 @@ class MaintenancePanel(ctk.CTkFrame):
 
         try:
             import sqlite3
+            import json
             conn = sqlite3.connect(self.knowledge_store.storage_path)
             cursor = conn.cursor()
 
+            # Correct column names: source_id and target_id (not from_concept_id/to_concept_id)
             cursor.execute("""
-                SELECT k.knowledge_id, k.content, k.domain
+                SELECT k.knowledge_id, k.content_json, k.domain
                 FROM knowledge_entries k
-                LEFT JOIN knowledge_relationships r1 ON k.knowledge_id = r1.from_concept_id
-                LEFT JOIN knowledge_relationships r2 ON k.knowledge_id = r2.to_concept_id
-                WHERE r1.from_concept_id IS NULL AND r2.to_concept_id IS NULL
+                LEFT JOIN knowledge_relationships r1 ON k.knowledge_id = r1.source_id
+                LEFT JOIN knowledge_relationships r2 ON k.knowledge_id = r2.target_id
+                WHERE r1.source_id IS NULL AND r2.target_id IS NULL
                 LIMIT 100
             """)
 
             orphaned = []
             for row in cursor.fetchall():
+                # Parse content_json to get displayable content
+                try:
+                    content_data = json.loads(row[1]) if row[1] else {}
+                    content = content_data.get("concept", content_data.get("content", str(row[1])[:100]))
+                except (json.JSONDecodeError, TypeError):
+                    content = str(row[1])[:100] if row[1] else ""
+
                 orphaned.append({
                     "knowledge_id": row[0],
-                    "content": row[1],
+                    "content": content,
                     "domain": row[2] or "general"
                 })
 
@@ -520,15 +559,15 @@ class MaintenancePanel(ctk.CTkFrame):
 
         # Make modal
         dialog.transient(self)
-        dialog.grab_set()
+        dialog.after(100, lambda: self._safe_grab(dialog))
 
         # Title
         title = ctk.CTkLabel(
             dialog,
             text=f"Found {len(orphaned)} Orphaned Concepts",
-            font=ctk.CTkFont(size=16, weight="bold")
+            font=ctk.CTkFont(size=FONT_SECTION, weight="bold")
         )
-        title.pack(pady=10)
+        title.pack(pady=SPACE_SM)
 
         # List
         tree = ThemedTreeview(
@@ -538,7 +577,7 @@ class MaintenancePanel(ctk.CTkFrame):
             widths=[200, 250, 120],
             height=15
         )
-        tree.pack(fill="both", expand=True, padx=10, pady=10)
+        tree.pack(fill="both", expand=True, padx=SPACE_SM, pady=SPACE_SM)
 
         for entry in orphaned:
             content_preview = entry["content"][:60] + "..."
@@ -554,8 +593,10 @@ class MaintenancePanel(ctk.CTkFrame):
         ctk.CTkButton(
             dialog,
             text="Close",
+            width=BUTTON_SM[0],
+            height=BUTTON_SM[1],
             command=dialog.destroy
-        ).pack(pady=10)
+        ).pack(pady=SPACE_SM)
 
     # ==================== Audit Sub-tab ====================
 
@@ -569,57 +610,57 @@ class MaintenancePanel(ctk.CTkFrame):
 
         # Header
         header = ctk.CTkFrame(audit_frame, fg_color="transparent")
-        header.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
+        header.grid(row=0, column=0, sticky="ew", padx=SPACE_SM, pady=(SPACE_SM, SPACE_XS))
 
         title_label = ctk.CTkLabel(
             header,
             text="Audit Log - Knowledge Base Operations",
-            font=ctk.CTkFont(size=16, weight="bold")
+            font=ctk.CTkFont(size=FONT_SECTION, weight="bold")
         )
         title_label.pack(side="left")
 
         # Filters section
         filters_frame = ctk.CTkFrame(audit_frame)
-        filters_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=5)
+        filters_frame.grid(row=1, column=0, sticky="ew", padx=SPACE_SM, pady=SPACE_XS)
         filters_frame.grid_columnconfigure(1, weight=1)
 
         # Row 1: Operation type and User/Agent
         row1 = ctk.CTkFrame(filters_frame, fg_color="transparent")
-        row1.grid(row=0, column=0, sticky="ew", pady=5, padx=10)
+        row1.grid(row=0, column=0, sticky="ew", pady=SPACE_XS, padx=SPACE_SM)
 
-        ctk.CTkLabel(row1, text="Operation:").pack(side="left", padx=(0, 5))
+        ctk.CTkLabel(row1, text="Operation:").pack(side="left", padx=(0, SPACE_XS))
         self.audit_operation_var = tk.StringVar(value="ALL")
         operation_combo = ctk.CTkComboBox(
             row1,
             variable=self.audit_operation_var,
             values=["ALL", "INSERT", "UPDATE", "DELETE", "MERGE", "CLEANUP", "SYSTEM"],
-            width=120
+            width=BUTTON_MD[0]
         )
-        operation_combo.pack(side="left", padx=5)
+        operation_combo.pack(side="left", padx=SPACE_XS)
 
-        ctk.CTkLabel(row1, text="User/Agent:").pack(side="left", padx=(15, 5))
+        ctk.CTkLabel(row1, text="User/Agent:").pack(side="left", padx=(SPACE_MD, SPACE_XS))
         self.audit_user_var = tk.StringVar()
-        user_entry = ctk.CTkEntry(row1, textvariable=self.audit_user_var, width=150)
-        user_entry.pack(side="left", padx=5)
+        user_entry = ctk.CTkEntry(row1, textvariable=self.audit_user_var, width=TEXTBOX_MD)
+        user_entry.pack(side="left", padx=SPACE_XS)
 
         # Row 2: Knowledge ID filter
         row2 = ctk.CTkFrame(filters_frame, fg_color="transparent")
-        row2.grid(row=1, column=0, sticky="ew", pady=5, padx=10)
+        row2.grid(row=1, column=0, sticky="ew", pady=SPACE_XS, padx=SPACE_SM)
 
-        ctk.CTkLabel(row2, text="Knowledge ID:").pack(side="left", padx=(0, 5))
+        ctk.CTkLabel(row2, text="Knowledge ID:").pack(side="left", padx=(0, SPACE_XS))
         self.audit_knowledge_id_var = tk.StringVar()
-        knowledge_id_entry = ctk.CTkEntry(row2, textvariable=self.audit_knowledge_id_var, width=300)
-        knowledge_id_entry.pack(side="left", padx=5)
+        knowledge_id_entry = ctk.CTkEntry(row2, textvariable=self.audit_knowledge_id_var, width=TEXTBOX_MD * 2)
+        knowledge_id_entry.pack(side="left", padx=SPACE_XS)
 
         # Row 3: Action buttons
         row3 = ctk.CTkFrame(filters_frame, fg_color="transparent")
-        row3.grid(row=2, column=0, sticky="ew", pady=5, padx=10)
+        row3.grid(row=2, column=0, sticky="ew", pady=SPACE_XS, padx=SPACE_SM)
 
-        ctk.CTkButton(row3, text="Search", width=100, command=self._search_audit_log).pack(side="left", padx=5)
-        ctk.CTkButton(row3, text="Refresh", width=100, command=self._refresh_audit_log).pack(side="left", padx=5)
-        ctk.CTkButton(row3, text="Export CSV", width=120, command=self._export_audit_log).pack(side="left", padx=5)
-        ctk.CTkButton(row3, text="Clear Filters", width=120, command=self._clear_audit_filters).pack(side="left", padx=5)
-        ctk.CTkButton(row3, text="Clear Old Entries", width=140, command=self._clear_old_audit_entries).pack(side="left", padx=5)
+        ctk.CTkButton(row3, text="Search", width=BUTTON_SM[0], height=BUTTON_SM[1], command=self._search_audit_log).pack(side="left", padx=SPACE_XS)
+        ctk.CTkButton(row3, text="Refresh", width=BUTTON_SM[0], height=BUTTON_SM[1], command=self._refresh_audit_log).pack(side="left", padx=SPACE_XS)
+        ctk.CTkButton(row3, text="Export CSV", width=BUTTON_MD[0], height=BUTTON_MD[1], command=self._export_audit_log).pack(side="left", padx=SPACE_XS)
+        ctk.CTkButton(row3, text="Clear Filters", width=BUTTON_MD[0], height=BUTTON_MD[1], command=self._clear_audit_filters).pack(side="left", padx=SPACE_XS)
+        ctk.CTkButton(row3, text="Clear Old Entries", width=BUTTON_LG[0], height=BUTTON_LG[1], command=self._clear_old_audit_entries).pack(side="left", padx=SPACE_XS)
 
         # Audit log tree
         self.audit_tree = ThemedTreeview(
@@ -629,21 +670,21 @@ class MaintenancePanel(ctk.CTkFrame):
             widths=[150, 100, 200, 250, 120],
             height=15
         )
-        self.audit_tree.grid(row=2, column=0, sticky="nsew", padx=10, pady=5)
+        self.audit_tree.grid(row=2, column=0, sticky="nsew", padx=SPACE_SM, pady=SPACE_XS)
 
         # Bind double-click to view details
         self.audit_tree.bind_tree("<Double-1>", self._view_audit_details)
 
         # Statistics section
         stats_frame = ctk.CTkFrame(audit_frame)
-        stats_frame.grid(row=3, column=0, sticky="ew", padx=10, pady=(5, 10))
+        stats_frame.grid(row=3, column=0, sticky="ew", padx=SPACE_SM, pady=(SPACE_XS, SPACE_SM))
 
         self.audit_stats_label = ctk.CTkLabel(
             stats_frame,
             text="Statistics: Loading...",
-            font=ctk.CTkFont(size=11)
+            font=ctk.CTkFont(size=FONT_CAPTION)
         )
-        self.audit_stats_label.pack(pady=10)
+        self.audit_stats_label.pack(pady=SPACE_SM)
 
     def _refresh_audit_log(self):
         """Refresh audit log display."""
@@ -873,19 +914,19 @@ class MaintenancePanel(ctk.CTkFrame):
 
         # Make modal
         dialog.transient(self)
-        dialog.grab_set()
+        dialog.after(100, lambda: self._safe_grab(dialog))
 
         # Title
         title = ctk.CTkLabel(
             dialog,
             text="Audit Entry Details",
-            font=ctk.CTkFont(size=16, weight="bold")
+            font=ctk.CTkFont(size=FONT_SECTION, weight="bold")
         )
-        title.pack(pady=10)
+        title.pack(pady=SPACE_SM)
 
         # Details text
         details_frame = ctk.CTkScrollableFrame(dialog)
-        details_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        details_frame.pack(fill="both", expand=True, padx=SPACE_SM, pady=SPACE_SM)
 
         details_text = ctk.CTkTextbox(details_frame, wrap="word")
         details_text.pack(fill="both", expand=True)
@@ -908,8 +949,10 @@ Details:
         ctk.CTkButton(
             dialog,
             text="Close",
+            width=BUTTON_SM[0],
+            height=BUTTON_SM[1],
             command=dialog.destroy
-        ).pack(pady=10)
+        ).pack(pady=SPACE_SM)
 
     # ==================== Cleanup Sub-tab ====================
 
@@ -923,36 +966,39 @@ Details:
 
         # Scrollable content
         content = ctk.CTkScrollableFrame(cleanup_frame)
-        content.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+        content.grid(row=0, column=0, sticky="nsew", padx=SPACE_SM, pady=SPACE_SM)
         content.grid_columnconfigure(0, weight=1)
 
-        # Title
+        # ===== SYSTEM RESET SECTION (at top) =====
+        self._create_system_reset_section(content, row=0)
+
+        # Title for knowledge-specific cleanup
         title_label = ctk.CTkLabel(
             content,
-            text="Knowledge Base Cleanup & Maintenance",
-            font=ctk.CTkFont(size=16, weight="bold")
+            text="Knowledge Base Cleanup",
+            font=ctk.CTkFont(size=FONT_SECTION, weight="bold")
         )
-        title_label.grid(row=0, column=0, sticky="w", pady=(0, 15))
+        title_label.grid(row=1, column=0, sticky="w", pady=(SPACE_MD, SPACE_MD))
 
         # Pattern-based cleanup section
         pattern_frame = ctk.CTkFrame(content)
-        pattern_frame.grid(row=1, column=0, sticky="ew", pady=(0, 15))
+        pattern_frame.grid(row=2, column=0, sticky="ew", pady=(0, SPACE_MD))
         pattern_frame.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
             pattern_frame,
             text="Pattern-Based Deletion",
-            font=ctk.CTkFont(size=14, weight="bold")
-        ).grid(row=0, column=0, sticky="w", padx=15, pady=(15, 10))
+            font=ctk.CTkFont(size=FONT_SECTION, weight="bold")
+        ).grid(row=0, column=0, sticky="w", padx=SPACE_MD, pady=(SPACE_MD, SPACE_SM))
 
         ctk.CTkLabel(
             pattern_frame,
             text="Path Pattern (glob or SQL LIKE):",
-            font=ctk.CTkFont(size=12)
-        ).grid(row=1, column=0, sticky="w", padx=15, pady=(0, 5))
+            font=ctk.CTkFont(size=FONT_BODY)
+        ).grid(row=1, column=0, sticky="w", padx=SPACE_MD, pady=(0, SPACE_XS))
 
         self.pattern_entry = ctk.CTkEntry(pattern_frame, placeholder_text="*/test_data/*")
-        self.pattern_entry.grid(row=2, column=0, sticky="ew", padx=15, pady=(0, 10))
+        self.pattern_entry.grid(row=2, column=0, sticky="ew", padx=SPACE_MD, pady=(0, SPACE_SM))
 
         # Cascade option
         self.cascade_var = tk.BooleanVar(value=True)
@@ -961,31 +1007,35 @@ Details:
             text="Delete associated knowledge entries",
             variable=self.cascade_var
         )
-        cascade_check.grid(row=3, column=0, sticky="w", padx=15, pady=(0, 10))
+        cascade_check.grid(row=3, column=0, sticky="w", padx=SPACE_MD, pady=(0, SPACE_SM))
 
         # Pattern buttons
         pattern_buttons = ctk.CTkFrame(pattern_frame, fg_color="transparent")
-        pattern_buttons.grid(row=4, column=0, sticky="ew", padx=15, pady=(0, 10))
+        pattern_buttons.grid(row=4, column=0, sticky="ew", padx=SPACE_MD, pady=(0, SPACE_SM))
 
         ctk.CTkButton(
             pattern_buttons,
             text="Preview Pattern",
+            width=BUTTON_MD[0],
+            height=BUTTON_MD[1],
             command=self._preview_custom_pattern
-        ).pack(side="left", padx=(0, 5))
+        ).pack(side="left", padx=(0, SPACE_XS))
 
         ctk.CTkButton(
             pattern_buttons,
             text="Clean Pattern",
+            width=BUTTON_MD[0],
+            height=BUTTON_MD[1],
             command=self._execute_custom_pattern,
             fg_color=self.theme_manager.get_color("error"),
             hover_color=self.theme_manager.get_color("error")
-        ).pack(side="left", padx=5)
+        ).pack(side="left", padx=SPACE_XS)
 
         # Common patterns
         common_frame = ctk.CTkFrame(pattern_frame, fg_color="transparent")
-        common_frame.grid(row=5, column=0, sticky="ew", padx=15, pady=(0, 15))
+        common_frame.grid(row=5, column=0, sticky="ew", padx=SPACE_MD, pady=(0, SPACE_MD))
 
-        ctk.CTkLabel(common_frame, text="Quick patterns:").pack(side="left", padx=(0, 10))
+        ctk.CTkLabel(common_frame, text="Quick patterns:").pack(side="left", padx=(0, SPACE_SM))
 
         for pattern_name, pattern in [
             (".venv", "*/.venv/*"),
@@ -996,79 +1046,82 @@ Details:
             ctk.CTkButton(
                 common_frame,
                 text=pattern_name,
-                width=100,
+                width=BUTTON_SM[0],
+                height=BUTTON_SM[1],
                 command=lambda p=pattern: self.pattern_entry.delete(0, "end") or self.pattern_entry.insert(0, p)
             ).pack(side="left", padx=2)
 
         # Delete by domain section
         domain_frame = ctk.CTkFrame(content)
-        domain_frame.grid(row=2, column=0, sticky="ew", pady=(0, 15))
+        domain_frame.grid(row=3, column=0, sticky="ew", pady=(0, SPACE_MD))
         domain_frame.grid_columnconfigure(1, weight=1)
 
         ctk.CTkLabel(
             domain_frame,
             text="Delete by Domain",
-            font=ctk.CTkFont(size=14, weight="bold")
-        ).grid(row=0, column=0, columnspan=3, sticky="w", padx=15, pady=(15, 10))
+            font=ctk.CTkFont(size=FONT_SECTION, weight="bold")
+        ).grid(row=0, column=0, columnspan=3, sticky="w", padx=SPACE_MD, pady=(SPACE_MD, SPACE_SM))
 
-        ctk.CTkLabel(domain_frame, text="Domain:").grid(row=1, column=0, sticky="w", padx=15, pady=5)
+        ctk.CTkLabel(domain_frame, text="Domain:").grid(row=1, column=0, sticky="w", padx=SPACE_MD, pady=SPACE_XS)
 
         self.domain_entry = ctk.CTkEntry(domain_frame, placeholder_text="e.g., test, deprecated")
-        self.domain_entry.grid(row=1, column=1, sticky="ew", padx=5, pady=5)
+        self.domain_entry.grid(row=1, column=1, sticky="ew", padx=SPACE_XS, pady=SPACE_XS)
 
         ctk.CTkButton(
             domain_frame,
             text="Delete",
-            width=100,
+            width=BUTTON_SM[0],
+            height=BUTTON_SM[1],
             command=self._delete_by_domain,
             fg_color=self.theme_manager.get_color("error"),
             hover_color=self.theme_manager.get_color("error")
-        ).grid(row=1, column=2, padx=(5, 15), pady=5)
+        ).grid(row=1, column=2, padx=(SPACE_XS, SPACE_MD), pady=SPACE_XS)
 
         # Delete by date range section
         date_frame = ctk.CTkFrame(content)
-        date_frame.grid(row=3, column=0, sticky="ew", pady=(0, 15))
+        date_frame.grid(row=4, column=0, sticky="ew", pady=(0, SPACE_MD))
         date_frame.grid_columnconfigure(1, weight=1)
 
         ctk.CTkLabel(
             date_frame,
             text="Delete by Date Range",
-            font=ctk.CTkFont(size=14, weight="bold")
-        ).grid(row=0, column=0, columnspan=3, sticky="w", padx=15, pady=(15, 10))
+            font=ctk.CTkFont(size=FONT_SECTION, weight="bold")
+        ).grid(row=0, column=0, columnspan=3, sticky="w", padx=SPACE_MD, pady=(SPACE_MD, SPACE_SM))
 
-        ctk.CTkLabel(date_frame, text="Delete entries older than:").grid(row=1, column=0, sticky="w", padx=15, pady=5)
+        ctk.CTkLabel(date_frame, text="Delete entries older than:").grid(row=1, column=0, sticky="w", padx=SPACE_MD, pady=SPACE_XS)
 
-        self.days_entry = ctk.CTkEntry(date_frame, placeholder_text="Days (e.g., 30, 90, 365)", width=200)
-        self.days_entry.grid(row=1, column=1, sticky="w", padx=5, pady=5)
+        self.days_entry = ctk.CTkEntry(date_frame, placeholder_text="Days (e.g., 30, 90, 365)", width=TEXTBOX_MD)
+        self.days_entry.grid(row=1, column=1, sticky="w", padx=SPACE_XS, pady=SPACE_XS)
 
         ctk.CTkButton(
             date_frame,
             text="Delete",
-            width=100,
+            width=BUTTON_SM[0],
+            height=BUTTON_SM[1],
             command=self._delete_by_date_range,
             fg_color=self.theme_manager.get_color("error"),
             hover_color=self.theme_manager.get_color("error")
-        ).grid(row=1, column=2, padx=(5, 15), pady=5)
+        ).grid(row=1, column=2, padx=(SPACE_XS, SPACE_MD), pady=SPACE_XS)
 
         # Delete low confidence section
         confidence_frame = ctk.CTkFrame(content)
-        confidence_frame.grid(row=4, column=0, sticky="ew", pady=(0, 15))
+        confidence_frame.grid(row=5, column=0, sticky="ew", pady=(0, SPACE_MD))
         confidence_frame.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
             confidence_frame,
             text="Delete Low Confidence Entries",
-            font=ctk.CTkFont(size=14, weight="bold")
-        ).grid(row=0, column=0, sticky="w", padx=15, pady=(15, 10))
+            font=ctk.CTkFont(size=FONT_SECTION, weight="bold")
+        ).grid(row=0, column=0, sticky="w", padx=SPACE_MD, pady=(SPACE_MD, SPACE_SM))
 
         ctk.CTkLabel(
             confidence_frame,
             text="Confidence Threshold:",
-            font=ctk.CTkFont(size=12)
-        ).grid(row=1, column=0, sticky="w", padx=15, pady=(0, 5))
+            font=ctk.CTkFont(size=FONT_BODY)
+        ).grid(row=1, column=0, sticky="w", padx=SPACE_MD, pady=(0, SPACE_XS))
 
         slider_frame = ctk.CTkFrame(confidence_frame, fg_color="transparent")
-        slider_frame.grid(row=2, column=0, sticky="ew", padx=15, pady=(0, 10))
+        slider_frame.grid(row=2, column=0, sticky="ew", padx=SPACE_MD, pady=(0, SPACE_SM))
         slider_frame.grid_columnconfigure(0, weight=1)
 
         self.confidence_threshold = tk.DoubleVar(value=0.3)
@@ -1079,37 +1132,41 @@ Details:
             variable=self.confidence_threshold,
             command=self._update_confidence_label
         )
-        self.confidence_slider.grid(row=0, column=0, sticky="ew", padx=(0, 10))
+        self.confidence_slider.grid(row=0, column=0, sticky="ew", padx=(0, SPACE_SM))
 
         self.confidence_label = ctk.CTkLabel(slider_frame, text="0.30")
         self.confidence_label.grid(row=0, column=1, sticky="e")
 
         confidence_buttons = ctk.CTkFrame(confidence_frame, fg_color="transparent")
-        confidence_buttons.grid(row=3, column=0, sticky="ew", padx=15, pady=(0, 15))
+        confidence_buttons.grid(row=3, column=0, sticky="ew", padx=SPACE_MD, pady=(0, SPACE_MD))
 
         ctk.CTkButton(
             confidence_buttons,
             text="Preview",
+            width=BUTTON_SM[0],
+            height=BUTTON_SM[1],
             command=self._preview_low_confidence
-        ).pack(side="left", padx=(0, 5))
+        ).pack(side="left", padx=(0, SPACE_XS))
 
         ctk.CTkButton(
             confidence_buttons,
             text="Delete",
+            width=BUTTON_SM[0],
+            height=BUTTON_SM[1],
             command=self._delete_low_confidence,
             fg_color=self.theme_manager.get_color("error"),
             hover_color=self.theme_manager.get_color("error")
-        ).pack(side="left", padx=5)
+        ).pack(side="left", padx=SPACE_XS)
 
         # Database maintenance section
         maintenance_frame = ctk.CTkFrame(content)
-        maintenance_frame.grid(row=5, column=0, sticky="ew", pady=(0, 15))
+        maintenance_frame.grid(row=6, column=0, sticky="ew", pady=(0, SPACE_MD))
 
         ctk.CTkLabel(
             maintenance_frame,
             text="Database Maintenance",
-            font=ctk.CTkFont(size=14, weight="bold")
-        ).grid(row=0, column=0, sticky="w", padx=15, pady=(15, 10))
+            font=ctk.CTkFont(size=FONT_SECTION, weight="bold")
+        ).grid(row=0, column=0, sticky="w", padx=SPACE_MD, pady=(SPACE_MD, SPACE_SM))
 
         # Backup before cleanup
         self.backup_var = tk.BooleanVar(value=True)
@@ -1118,42 +1175,371 @@ Details:
             text="Create backup before destructive operations",
             variable=self.backup_var
         )
-        backup_check.grid(row=1, column=0, sticky="w", padx=15, pady=(0, 10))
+        backup_check.grid(row=1, column=0, sticky="w", padx=SPACE_MD, pady=(0, SPACE_SM))
 
         maintenance_buttons = ctk.CTkFrame(maintenance_frame, fg_color="transparent")
-        maintenance_buttons.grid(row=2, column=0, sticky="ew", padx=15, pady=(0, 15))
+        maintenance_buttons.grid(row=2, column=0, sticky="ew", padx=SPACE_MD, pady=(0, SPACE_MD))
 
         ctk.CTkButton(
             maintenance_buttons,
             text="Vacuum Database",
+            width=BUTTON_MD[0],
+            height=BUTTON_MD[1],
             command=self._vacuum_database
-        ).pack(side="left", padx=(0, 5))
+        ).pack(side="left", padx=(0, SPACE_XS))
 
         ctk.CTkButton(
             maintenance_buttons,
             text="Create Backup",
+            width=BUTTON_MD[0],
+            height=BUTTON_MD[1],
             command=self._create_backup
-        ).pack(side="left", padx=5)
+        ).pack(side="left", padx=SPACE_XS)
 
         ctk.CTkButton(
             maintenance_buttons,
             text="Refresh Statistics",
+            width=BUTTON_MD[0],
+            height=BUTTON_MD[1],
             command=self._refresh_cleanup_stats
-        ).pack(side="left", padx=5)
+        ).pack(side="left", padx=SPACE_XS)
 
         # Results section
         results_frame = ctk.CTkFrame(content)
-        results_frame.grid(row=6, column=0, sticky="ew")
+        results_frame.grid(row=7, column=0, sticky="ew")
         results_frame.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
             results_frame,
             text="Cleanup Results",
-            font=ctk.CTkFont(size=14, weight="bold")
-        ).grid(row=0, column=0, sticky="w", padx=15, pady=(15, 10))
+            font=ctk.CTkFont(size=FONT_SECTION, weight="bold")
+        ).grid(row=0, column=0, sticky="w", padx=SPACE_MD, pady=(SPACE_MD, SPACE_SM))
 
-        self.cleanup_results = ctk.CTkTextbox(results_frame, height=150, wrap="word")
-        self.cleanup_results.grid(row=1, column=0, sticky="ew", padx=15, pady=(0, 15))
+        self.cleanup_results = ctk.CTkTextbox(results_frame, height=TEXTBOX_MD, wrap="word")
+        self.cleanup_results.grid(row=1, column=0, sticky="ew", padx=SPACE_MD, pady=(0, SPACE_MD))
+
+    # ==================== System Reset Section ====================
+
+    def _create_system_reset_section(self, parent, row: int):
+        """Create System Reset section at the top of Cleanup tab."""
+        # Main frame with warning color border
+        reset_frame = ctk.CTkFrame(parent, border_width=2, border_color="#e74c3c")
+        reset_frame.grid(row=row, column=0, sticky="ew", pady=(0, SPACE_MD))
+        reset_frame.grid_columnconfigure(0, weight=1)
+
+        # Header with warning icon
+        header = ctk.CTkFrame(reset_frame, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", padx=SPACE_MD, pady=(SPACE_MD, SPACE_SM))
+
+        ctk.CTkLabel(
+            header,
+            text="System Reset",
+            font=ctk.CTkFont(size=FONT_SECTION, weight="bold"),
+            text_color="#e74c3c"
+        ).pack(side="left")
+
+        ctk.CTkButton(
+            header,
+            text="Refresh",
+            width=BUTTON_SM[0],
+            height=BUTTON_SM[1],
+            command=self._refresh_system_reset_stats
+        ).pack(side="right")
+
+        # Description
+        ctk.CTkLabel(
+            reset_frame,
+            text="Backup and/or wipe ALL Felix databases to start fresh.",
+            font=ctk.CTkFont(size=FONT_BODY),
+            text_color="gray"
+        ).grid(row=1, column=0, sticky="w", padx=SPACE_MD, pady=(0, SPACE_SM))
+
+        # Database status list
+        self.db_status_frame = ctk.CTkFrame(reset_frame)
+        self.db_status_frame.grid(row=2, column=0, sticky="ew", padx=SPACE_MD, pady=(0, SPACE_SM))
+        self.db_status_frame.grid_columnconfigure(0, weight=1)
+
+        # Create labels for each database (will be populated by refresh)
+        self.db_status_labels = {}
+
+        # Last backup info
+        self.last_backup_label = ctk.CTkLabel(
+            reset_frame,
+            text="Last Backup: Never",
+            font=ctk.CTkFont(size=FONT_CAPTION),
+            text_color="gray"
+        )
+        self.last_backup_label.grid(row=3, column=0, sticky="w", padx=SPACE_MD, pady=(SPACE_XS, SPACE_SM))
+
+        # Buttons frame
+        buttons_frame = ctk.CTkFrame(reset_frame, fg_color="transparent")
+        buttons_frame.grid(row=4, column=0, sticky="ew", padx=SPACE_MD, pady=(0, SPACE_MD))
+
+        ctk.CTkButton(
+            buttons_frame,
+            text="Backup All Databases",
+            command=self._backup_all_databases,
+            width=BUTTON_LG[0],
+            height=BUTTON_LG[1]
+        ).pack(side="left", padx=(0, SPACE_SM))
+
+        ctk.CTkButton(
+            buttons_frame,
+            text="Reset All (Fresh Start)",
+            command=self._reset_all_databases,
+            fg_color="#e74c3c",
+            hover_color="#c0392b",
+            width=BUTTON_LG[0],
+            height=BUTTON_LG[1]
+        ).pack(side="left")
+
+        # Initial refresh
+        self.after(100, self._refresh_system_reset_stats)
+
+    def _refresh_system_reset_stats(self):
+        """Refresh the system reset database status display."""
+        try:
+            from src.knowledge.system_reset import SystemResetManager
+
+            manager = SystemResetManager()
+            stats = manager.get_database_stats()
+
+            # Clear old labels
+            for widget in self.db_status_frame.winfo_children():
+                widget.destroy()
+            self.db_status_labels.clear()
+
+            # Create header row
+            header_frame = ctk.CTkFrame(self.db_status_frame, fg_color="transparent")
+            header_frame.grid(row=0, column=0, sticky="ew", pady=(SPACE_XS, SPACE_XS))
+            header_frame.grid_columnconfigure(0, weight=1)
+
+            ctk.CTkLabel(
+                header_frame,
+                text="Database",
+                font=ctk.CTkFont(size=FONT_CAPTION, weight="bold"),
+                width=250,
+                anchor="w"
+            ).grid(row=0, column=0, sticky="w")
+
+            ctk.CTkLabel(
+                header_frame,
+                text="Size",
+                font=ctk.CTkFont(size=FONT_CAPTION, weight="bold"),
+                width=BUTTON_SM[0],
+                anchor="e"
+            ).grid(row=0, column=1, sticky="e", padx=(SPACE_SM, 0))
+
+            ctk.CTkLabel(
+                header_frame,
+                text="Status",
+                font=ctk.CTkFont(size=FONT_CAPTION, weight="bold"),
+                width=BUTTON_SM[0],
+                anchor="e"
+            ).grid(row=0, column=2, sticky="e", padx=(SPACE_SM, 0))
+
+            # Create row for each database
+            total_size = 0
+            for i, db_stat in enumerate(stats):
+                row_frame = ctk.CTkFrame(self.db_status_frame, fg_color="transparent")
+                row_frame.grid(row=i + 1, column=0, sticky="ew", pady=2)
+                row_frame.grid_columnconfigure(0, weight=1)
+
+                # Database name
+                ctk.CTkLabel(
+                    row_frame,
+                    text=db_stat["name"],
+                    font=ctk.CTkFont(size=FONT_CAPTION),
+                    width=250,
+                    anchor="w"
+                ).grid(row=0, column=0, sticky="w")
+
+                # Size
+                ctk.CTkLabel(
+                    row_frame,
+                    text=db_stat["size_display"] if db_stat["exists"] else "-",
+                    font=ctk.CTkFont(size=FONT_CAPTION),
+                    width=BUTTON_SM[0],
+                    anchor="e"
+                ).grid(row=0, column=1, sticky="e", padx=(SPACE_SM, 0))
+
+                # Status
+                status_text = "exists" if db_stat["exists"] else "missing"
+                status_color = "green" if db_stat["exists"] else "gray"
+                ctk.CTkLabel(
+                    row_frame,
+                    text=status_text,
+                    font=ctk.CTkFont(size=FONT_CAPTION),
+                    text_color=status_color,
+                    width=BUTTON_SM[0],
+                    anchor="e"
+                ).grid(row=0, column=2, sticky="e", padx=(SPACE_SM, 0))
+
+                if db_stat["exists"]:
+                    total_size += db_stat["size_bytes"]
+
+            # Total row
+            total_frame = ctk.CTkFrame(self.db_status_frame, fg_color="transparent")
+            total_frame.grid(row=len(stats) + 1, column=0, sticky="ew", pady=(SPACE_XS, SPACE_XS))
+            total_frame.grid_columnconfigure(0, weight=1)
+
+            ctk.CTkLabel(
+                total_frame,
+                text="Total",
+                font=ctk.CTkFont(size=FONT_CAPTION, weight="bold"),
+                width=250,
+                anchor="w"
+            ).grid(row=0, column=0, sticky="w")
+
+            total_display = f"{total_size / (1024 * 1024):.1f} MB" if total_size >= 1024 * 1024 else f"{total_size / 1024:.1f} KB"
+            ctk.CTkLabel(
+                total_frame,
+                text=total_display,
+                font=ctk.CTkFont(size=FONT_CAPTION, weight="bold"),
+                width=BUTTON_SM[0],
+                anchor="e"
+            ).grid(row=0, column=1, sticky="e", padx=(SPACE_SM, 0))
+
+            # Update last backup time
+            last_backup = manager.get_last_backup_time()
+            if last_backup:
+                self.last_backup_label.configure(
+                    text=f"Last Backup: {last_backup.strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+            else:
+                self.last_backup_label.configure(text="Last Backup: Never")
+
+        except Exception as e:
+            logger.error(f"Error refreshing system reset stats: {e}")
+
+    def _backup_all_databases(self):
+        """Backup all Felix databases."""
+        try:
+            from src.knowledge.system_reset import SystemResetManager
+
+            manager = SystemResetManager()
+
+            # Confirm
+            stats = manager.get_database_stats()
+            existing = [s["name"] for s in stats if s["exists"]]
+
+            if not existing:
+                self._show_warning("Backup", "No databases found to backup.")
+                return
+
+            result = messagebox.askyesno(
+                "Confirm Backup",
+                f"This will backup {len(existing)} database(s):\n\n"
+                + "\n".join(f"  - {name}" for name in existing)
+                + "\n\nContinue?"
+            )
+
+            if not result:
+                return
+
+            # Perform backup
+            backup_result = manager.backup_all_databases()
+
+            if backup_result["success"]:
+                self._show_info(
+                    "Backup Complete",
+                    f"Successfully backed up {len(backup_result['backed_up'])} database(s) to:\n\n"
+                    f"{backup_result['backup_path']}"
+                )
+                self._refresh_system_reset_stats()
+            else:
+                self._show_error("Backup Failed", backup_result.get("error", "Unknown error"))
+
+        except Exception as e:
+            logger.error(f"Error backing up databases: {e}")
+            self._show_error("Backup Error", f"Failed to backup databases: {str(e)}")
+
+    def _reset_all_databases(self):
+        """Reset (wipe) all Felix databases."""
+        # Check if Felix system is running
+        if self.main_app and hasattr(self.main_app, 'felix_system') and self.main_app.felix_system:
+            self._show_warning(
+                "System Running",
+                "Please stop the Felix system before resetting databases.\n\n"
+                "Go to Dashboard and click 'Stop Felix' first."
+            )
+            return
+
+        try:
+            from src.knowledge.system_reset import SystemResetManager
+
+            manager = SystemResetManager()
+            stats = manager.get_database_stats()
+            existing = [s["name"] for s in stats if s["exists"]]
+
+            if not existing:
+                self._show_info("Reset", "No databases found. System is already clean.")
+                return
+
+            # First confirmation
+            result = messagebox.askyesno(
+                "Confirm Reset",
+                "WARNING: This will permanently delete ALL Felix data!\n\n"
+                f"Databases to delete ({len(existing)}):\n"
+                + "\n".join(f"  - {name}" for name in existing)
+                + "\n\nIndex files (.felix_index.json) will also be deleted.\n\n"
+                "This action cannot be undone!\n\n"
+                "Do you want to backup first?"
+            )
+
+            if result:
+                # User wants to backup first
+                backup_result = manager.backup_all_databases()
+                if not backup_result["success"]:
+                    self._show_error("Backup Failed", "Backup failed. Reset aborted.")
+                    return
+                self._show_info("Backup Created", f"Backup saved to:\n{backup_result['backup_path']}")
+
+            # Final confirmation - require typing RESET
+            dialog = ctk.CTkInputDialog(
+                text="Type RESET to confirm deletion of all databases:",
+                title="Final Confirmation"
+            )
+            confirmation = dialog.get_input()
+
+            if confirmation != "RESET":
+                self._show_info("Cancelled", "Reset cancelled. No changes were made.")
+                return
+
+            # Perform reset
+            wipe_result = manager.wipe_all_databases(delete_indexes=True)
+
+            if wipe_result["success"]:
+                deleted_count = len(wipe_result["deleted"])
+                index_count = len(wipe_result["index_files_deleted"])
+
+                # Re-initialize databases with empty schemas
+                init_result = manager.initialize_all_databases()
+
+                if init_result["success"]:
+                    self._show_info(
+                        "Reset Complete",
+                        f"Successfully deleted:\n\n"
+                        f"  - {deleted_count} database(s)\n"
+                        f"  - {index_count} index file(s)\n\n"
+                        f"Re-initialized {len(init_result['initialized'])} database(s) with fresh schemas.\n\n"
+                        "You may need to restart the application."
+                    )
+                else:
+                    error_list = "\n".join(init_result["errors"][:5])
+                    self._show_warning(
+                        "Reset Partial",
+                        f"Databases deleted but some failed to re-initialize:\n\n"
+                        f"{error_list}\n\n"
+                        "Please restart the application."
+                    )
+                self._refresh_system_reset_stats()
+            else:
+                self._show_error("Reset Failed", wipe_result.get("error", "Unknown error"))
+
+        except Exception as e:
+            logger.error(f"Error resetting databases: {e}")
+            self._show_error("Reset Error", f"Failed to reset databases: {str(e)}")
 
     def _update_confidence_label(self, value):
         """Update confidence threshold label."""
@@ -1318,15 +1704,16 @@ Details:
 
             import sqlite3
 
-            cutoff_date = (datetime.now() - timedelta(days=days)).isoformat()
+            # created_at is stored as Unix timestamp (REAL), not ISO string
+            cutoff_timestamp = (datetime.now() - timedelta(days=days)).timestamp()
 
             conn = sqlite3.connect(self.knowledge_store.storage_path)
             cursor = conn.cursor()
 
             cursor.execute("""
                 DELETE FROM knowledge_entries
-                WHERE timestamp < ?
-            """, (cutoff_date,))
+                WHERE created_at < ?
+            """, (cutoff_timestamp,))
 
             deleted_count = cursor.rowcount
             conn.commit()
@@ -1346,6 +1733,24 @@ Details:
             logger.error(f"Error deleting by date range: {e}")
             self._show_error("Deletion Error", f"Failed to delete by date range: {str(e)}")
 
+    def _get_confidence_levels_for_threshold(self, threshold: float) -> List[str]:
+        """Map numeric threshold to confidence level names.
+
+        confidence_level is TEXT: 'VERIFIED', 'HIGH', 'MEDIUM', 'LOW', 'SPECULATIVE'
+        Lower threshold = delete fewer entries (only lowest confidence)
+        Higher threshold = delete more entries (include higher confidence levels)
+        """
+        if threshold <= 0.2:
+            return ['SPECULATIVE']
+        elif threshold <= 0.4:
+            return ['SPECULATIVE', 'LOW']
+        elif threshold <= 0.6:
+            return ['SPECULATIVE', 'LOW', 'MEDIUM']
+        elif threshold <= 0.8:
+            return ['SPECULATIVE', 'LOW', 'MEDIUM', 'HIGH']
+        else:
+            return ['SPECULATIVE', 'LOW', 'MEDIUM', 'HIGH', 'VERIFIED']
+
     def _preview_low_confidence(self):
         """Preview deletion of low confidence entries."""
         if not self.knowledge_store:
@@ -1353,6 +1758,7 @@ Details:
             return
 
         threshold = self.confidence_threshold.get()
+        levels_to_delete = self._get_confidence_levels_for_threshold(threshold)
 
         try:
             import sqlite3
@@ -1360,10 +1766,12 @@ Details:
             conn = sqlite3.connect(self.knowledge_store.storage_path)
             cursor = conn.cursor()
 
-            cursor.execute("""
+            # confidence_level is TEXT enum, not a float
+            placeholders = ','.join('?' * len(levels_to_delete))
+            cursor.execute(f"""
                 SELECT COUNT(*) FROM knowledge_entries
-                WHERE confidence < ?
-            """, (threshold,))
+                WHERE confidence_level IN ({placeholders})
+            """, levels_to_delete)
 
             count = cursor.fetchone()[0]
             conn.close()
@@ -1372,6 +1780,7 @@ Details:
             self.cleanup_results.insert("1.0",
                 f"Preview - Low Confidence Cleanup\n\n"
                 f"Threshold: {threshold:.2f}\n"
+                f"Confidence levels to delete: {', '.join(levels_to_delete)}\n"
                 f"Entries to delete: {count}\n\n"
                 f"This is a preview. Click 'Delete' to execute."
             )
@@ -1387,11 +1796,13 @@ Details:
             return
 
         threshold = self.confidence_threshold.get()
+        levels_to_delete = self._get_confidence_levels_for_threshold(threshold)
 
         # Confirm
         result = messagebox.askyesno(
             "Confirm Deletion",
-            f"This will permanently delete all entries with confidence below {threshold:.2f}\n\n"
+            f"This will permanently delete all entries with confidence levels:\n"
+            f"{', '.join(levels_to_delete)}\n\n"
             f"Continue?"
         )
 
@@ -1408,10 +1819,12 @@ Details:
             conn = sqlite3.connect(self.knowledge_store.storage_path)
             cursor = conn.cursor()
 
-            cursor.execute("""
+            # confidence_level is TEXT enum, not a float
+            placeholders = ','.join('?' * len(levels_to_delete))
+            cursor.execute(f"""
                 DELETE FROM knowledge_entries
-                WHERE confidence < ?
-            """, (threshold,))
+                WHERE confidence_level IN ({placeholders})
+            """, levels_to_delete)
 
             deleted_count = cursor.rowcount
             conn.commit()
@@ -1420,7 +1833,7 @@ Details:
             self.cleanup_results.delete("1.0", "end")
             self.cleanup_results.insert("1.0",
                 f"Low Confidence Cleanup Complete\n\n"
-                f"Threshold: {threshold:.2f}\n"
+                f"Confidence levels deleted: {', '.join(levels_to_delete)}\n"
                 f"Deleted: {deleted_count} entries"
             )
 
@@ -1428,7 +1841,7 @@ Details:
 
             # Refresh displays
             self.refresh()
-            logger.info(f"Deleted {deleted_count} entries with confidence < {threshold:.2f}")
+            logger.info(f"Deleted {deleted_count} entries with confidence_level IN {levels_to_delete}")
 
         except Exception as e:
             logger.error(f"Error deleting low confidence entries: {e}")
@@ -1494,10 +1907,10 @@ Details:
             return
 
         try:
-            from src.knowledge.backup_manager_extended import BackupManagerExtended
+            from src.knowledge.backup_manager_extended import KnowledgeBackupManager
 
-            backup_manager = BackupManagerExtended()
-            backup_path = backup_manager.create_backup(self.knowledge_store.storage_path)
+            backup_manager = KnowledgeBackupManager(self.knowledge_store)
+            backup_path = backup_manager.export_to_json()
 
             if backup_path:
                 self._show_info("Backup Created", f"Backup saved to:\n{backup_path}")
@@ -1535,7 +1948,8 @@ Details:
             cursor.execute("SELECT page_count * page_size as size FROM pragma_page_count(), pragma_page_size()")
             db_size = cursor.fetchone()[0] / (1024 * 1024)
 
-            cursor.execute("SELECT COUNT(*) FROM knowledge_entries WHERE confidence < 0.5")
+            # confidence_level is TEXT enum: 'VERIFIED', 'HIGH', 'MEDIUM', 'LOW', 'SPECULATIVE'
+            cursor.execute("SELECT COUNT(*) FROM knowledge_entries WHERE confidence_level IN ('LOW', 'SPECULATIVE')")
             low_conf = cursor.fetchone()[0]
 
             conn.close()
@@ -1547,7 +1961,7 @@ Details:
                 f"Total Documents: {total_docs}\n"
                 f"Total Relationships: {total_relationships}\n"
                 f"Database Size: {db_size:.2f} MB\n"
-                f"Low Confidence Entries (<0.5): {low_conf}\n\n"
+                f"Low Confidence Entries (LOW/SPECULATIVE): {low_conf}\n\n"
                 f"Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
             )
 
@@ -1617,3 +2031,11 @@ Details:
     def _show_error(self, title: str, message: str):
         """Show error message."""
         messagebox.showerror(title, message)
+
+    def _safe_grab(self, dialog):
+        """Safely grab focus after window is rendered."""
+        try:
+            dialog.grab_set()
+            dialog.focus_set()
+        except Exception as e:
+            logger.warning(f"Could not grab dialog focus: {e}")

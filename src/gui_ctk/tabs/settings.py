@@ -52,6 +52,7 @@ class SettingsTab(ctk.CTkFrame):
         self.main_app = main_app
         self.theme_manager = get_theme_manager()
         self.config_file = "felix_gui_config.json"
+        self._layout_manager = None
 
         # Dictionary to store all setting widgets (key -> widget)
         self.setting_widgets: Dict[str, Union[ctk.CTkEntry, ctk.CTkComboBox, ctk.CTkSwitch, ctk.StringVar]] = {}
@@ -63,6 +64,16 @@ class SettingsTab(ctk.CTkFrame):
         self.load_settings()
 
         logger.info("Settings tab initialized")
+
+    def set_layout_manager(self, layout_manager):
+        """
+        Set the layout manager for responsive updates.
+        Settings tab doesn't need responsive layouts but implements interface.
+
+        Args:
+            layout_manager: ResponsiveLayoutManager instance from main app
+        """
+        self._layout_manager = layout_manager
 
     def _setup_ui(self):
         """Setup the UI components."""

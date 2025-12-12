@@ -21,6 +21,11 @@ from datetime import datetime
 from ..utils import ThreadManager, DBHelper, logger
 from ..theme_manager import get_theme_manager
 from ..components.themed_treeview import ThemedTreeview
+from ..styles import (
+    BUTTON_SM, BUTTON_MD,
+    FONT_SECTION, FONT_BODY, FONT_CAPTION,
+    SPACE_XS, SPACE_SM, SPACE_MD
+)
 
 # Try to import Felix memory modules
 try:
@@ -42,7 +47,7 @@ class MemoryTab(ctk.CTkFrame):
     Main Memory tab with nested sub-tabs for different memory types.
     """
 
-    def __init__(self, master, thread_manager, db_helper, **kwargs):
+    def __init__(self, master, thread_manager, db_helper, main_app=None, **kwargs):
         """
         Initialize Memory tab.
 
@@ -50,15 +55,47 @@ class MemoryTab(ctk.CTkFrame):
             master: Parent widget
             thread_manager: ThreadManager instance
             db_helper: DBHelper instance
+            main_app: Reference to main FelixApp
             **kwargs: Additional arguments passed to CTkFrame
         """
         super().__init__(master, **kwargs)
 
         self.thread_manager = thread_manager
         self.db_helper = db_helper
+        self.main_app = main_app
         self.theme_manager = get_theme_manager()
+        self._layout_manager = None
 
         self._setup_ui()
+
+    def set_layout_manager(self, layout_manager):
+        """
+        Set the layout manager for responsive updates.
+        MemoryTab handles its own internal responsive layouts.
+
+        Args:
+            layout_manager: ResponsiveLayoutManager instance from main app
+        """
+        self._layout_manager = layout_manager
+        # Register callback for breakpoint changes
+        layout_manager.register_callback(self._on_breakpoint_change)
+        # Trigger initial layout
+        current_breakpoint = layout_manager.get_current_breakpoint()
+        current_config = layout_manager.get_current_config()
+        self._on_breakpoint_change(current_breakpoint, current_config)
+
+    def _on_breakpoint_change(self, breakpoint, config):
+        """
+        Handle breakpoint changes.
+        Forward to subtabs that support responsive layouts.
+        """
+        # Forward breakpoint changes to subtabs if they support it
+        if hasattr(self, 'memory_subtab') and hasattr(self.memory_subtab, '_build_layout'):
+            mode = breakpoint.value if hasattr(breakpoint, 'value') else str(breakpoint)
+            self.memory_subtab._build_layout(mode)
+        if hasattr(self, 'knowledge_subtab') and hasattr(self.knowledge_subtab, '_build_layout'):
+            mode = breakpoint.value if hasattr(breakpoint, 'value') else str(breakpoint)
+            self.knowledge_subtab._build_layout(mode)
 
     def _setup_ui(self):
         """Set up the UI with nested tabs."""
@@ -68,7 +105,7 @@ class MemoryTab(ctk.CTkFrame):
 
         # Create nested tabview
         self.tabview = ctk.CTkTabview(self)
-        self.tabview.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+        self.tabview.grid(row=0, column=0, sticky="nsew", padx=SPACE_SM, pady=SPACE_SM)
 
         # Add sub-tabs
         self.tabview.add("Memory")
@@ -83,6 +120,7 @@ class MemoryTab(ctk.CTkFrame):
             "felix_memory.db",
             "tasks"
         )
+        self.memory_subtab.main_app = self.main_app  # Set reference to main app
         self.memory_subtab.pack(fill="both", expand=True)
 
         self.knowledge_subtab = MemorySubTab(
@@ -92,12 +130,14 @@ class MemoryTab(ctk.CTkFrame):
             "felix_knowledge.db",
             "knowledge"
         )
+        self.knowledge_subtab.main_app = self.main_app  # Set reference to main app
         self.knowledge_subtab.pack(fill="both", expand=True)
 
         self.workflow_history_subtab = WorkflowHistorySubTab(
             self.tabview.tab("Workflow History"),
             self.thread_manager
         )
+        self.workflow_history_subtab.main_app = self.main_app  # Set reference to main app
         self.workflow_history_subtab.pack(fill="both", expand=True)
 
     def refresh_all(self):
@@ -109,7 +149,8 @@ class MemoryTab(ctk.CTkFrame):
 
 class MemorySubTab(ctk.CTkFrame):
     """
-    Sub-tab for displaying memory entries (tasks or knowledge).
+    Sub-tab for displaying memory entries (tasks or knowledge) with master-detail-sidebar layout.
+    Responsive layout adapts from single column (compact) to 3-column (ultrawide).
     """
 
     def __init__(self, master, thread_manager, db_helper, db_name, table_name, **kwargs):
@@ -132,105 +173,299 @@ class MemorySubTab(ctk.CTkFrame):
         self.table_name = table_name
         self.theme_manager = get_theme_manager()
         self.entries = []  # List of (id, content, display) tuples
+        self.main_app = None  # Will be set by MemoryTab
+        self.selected_entry_id = None
 
         # Queue for thread-safe communication
         self.result_queue = queue.Queue()
 
+        # Lazy loading flag - don't load until tab is visible
+        self._data_loaded = False
+
+        # Determine initial layout (fallback if no responsive manager)
+        self.current_layout = "standard"  # compact, standard, wide, ultrawide
+
         self._setup_ui()
         self._start_polling()
-        self.load_entries()
+        # Removed immediate load_entries() - now loads on first visibility
 
     def _setup_ui(self):
-        """Set up the UI components."""
-        # Configure grid
+        """Set up the UI components with responsive master-detail-sidebar layout."""
+        # Configure grid for main container
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=1)  # Entry list expands
-        self.grid_rowconfigure(3, weight=1)  # Details expands
+        self.grid_rowconfigure(0, weight=1)
+
+        # Create main container
+        self.main_container = ctk.CTkFrame(self, fg_color="transparent")
+        self.main_container.grid(row=0, column=0, sticky="nsew")
+
+        # Build initial layout (will be updated by responsive manager if available)
+        self._build_layout("standard")
+
+    def _build_layout(self, layout_mode: str):
+        """Build the layout based on breakpoint mode."""
+        self.current_layout = layout_mode
+
+        # Clear existing layout
+        for widget in self.main_container.winfo_children():
+            widget.destroy()
+
+        if layout_mode == "ultrawide":
+            self._build_three_column_layout()
+        elif layout_mode in ("wide", "standard"):
+            self._build_two_column_layout()
+        else:  # compact
+            self._build_single_column_layout()
+
+    def _build_three_column_layout(self):
+        """Build 3-column layout: list | detail | related sidebar."""
+        self.main_container.grid_columnconfigure(0, weight=0, minsize=300)  # List (fixed width)
+        self.main_container.grid_columnconfigure(1, weight=1)  # Detail (expands)
+        self.main_container.grid_columnconfigure(2, weight=0, minsize=250)  # Related (fixed width)
+        self.main_container.grid_rowconfigure(0, weight=1)
+
+        # Left: List panel
+        list_panel = self._create_list_panel(self.main_container)
+        list_panel.grid(row=0, column=0, sticky="nsew", padx=(0, SPACE_XS), pady=0)
+
+        # Center: Detail panel
+        detail_panel = self._create_detail_panel(self.main_container)
+        detail_panel.grid(row=0, column=1, sticky="nsew", padx=SPACE_XS, pady=0)
+
+        # Right: Related sidebar
+        related_panel = self._create_related_panel(self.main_container)
+        related_panel.grid(row=0, column=2, sticky="nsew", padx=(SPACE_XS, 0), pady=0)
+
+    def _build_two_column_layout(self):
+        """Build 2-column layout: list | detail (related in expandable section)."""
+        self.main_container.grid_columnconfigure(0, weight=0, minsize=300)  # List
+        self.main_container.grid_columnconfigure(1, weight=1)  # Detail
+        self.main_container.grid_rowconfigure(0, weight=1)
+
+        # Left: List panel
+        list_panel = self._create_list_panel(self.main_container)
+        list_panel.grid(row=0, column=0, sticky="nsew", padx=(0, SPACE_XS), pady=0)
+
+        # Right: Detail panel (with related section at bottom)
+        detail_panel = self._create_detail_panel_with_related(self.main_container)
+        detail_panel.grid(row=0, column=1, sticky="nsew", padx=(SPACE_XS, 0), pady=0)
+
+    def _build_single_column_layout(self):
+        """Build single column layout for compact screens."""
+        self.main_container.grid_columnconfigure(0, weight=1)
+        self.main_container.grid_rowconfigure(0, weight=1)
+
+        # Create tabbed interface for compact mode
+        compact_tabview = ctk.CTkTabview(self.main_container)
+        compact_tabview.grid(row=0, column=0, sticky="nsew")
+
+        compact_tabview.add("List")
+        compact_tabview.add("Detail")
+
+        # List tab
+        list_panel = self._create_list_panel(compact_tabview.tab("List"))
+        list_panel.pack(fill="both", expand=True)
+
+        # Detail tab
+        detail_panel = self._create_detail_panel_with_related(compact_tabview.tab("Detail"))
+        detail_panel.pack(fill="both", expand=True)
+
+    def _create_list_panel(self, parent):
+        """Create list panel with search and entries."""
+        panel = ctk.CTkFrame(parent)
+        panel.grid_columnconfigure(0, weight=1)
+        panel.grid_rowconfigure(1, weight=1)
 
         # Search section
-        search_frame = ctk.CTkFrame(self, fg_color="transparent")
-        search_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
-        search_frame.grid_columnconfigure(1, weight=1)
+        search_frame = ctk.CTkFrame(panel, fg_color="transparent")
+        search_frame.grid(row=0, column=0, sticky="ew", padx=SPACE_SM, pady=(SPACE_SM, SPACE_XS))
+        search_frame.grid_columnconfigure(0, weight=1)
 
-        ctk.CTkLabel(search_frame, text="Search:").grid(row=0, column=0, padx=(0, 5), sticky="w")
-
-        self.search_entry = ctk.CTkEntry(search_frame, placeholder_text="Enter search keyword...")
-        self.search_entry.grid(row=0, column=1, sticky="ew", padx=5)
+        self.search_entry = ctk.CTkEntry(search_frame, placeholder_text="Search entries...")
+        self.search_entry.grid(row=0, column=0, sticky="ew", padx=(0, SPACE_XS))
         self.search_entry.bind('<Return>', lambda e: self.search())
 
+        button_row = ctk.CTkFrame(search_frame, fg_color="transparent")
+        button_row.grid(row=1, column=0, sticky="ew", pady=(SPACE_XS, 0))
+
         self.search_button = ctk.CTkButton(
-            search_frame,
+            button_row,
             text="Search",
             command=self.search,
-            width=80
+            width=BUTTON_SM[0],
+            height=BUTTON_SM[1]
         )
-        self.search_button.grid(row=0, column=2, padx=5)
+        self.search_button.pack(side="left", padx=(0, SPACE_XS))
 
         self.clear_button = ctk.CTkButton(
-            search_frame,
+            button_row,
             text="Clear",
             command=self.clear_search,
-            width=80,
+            width=BUTTON_SM[0],
+            height=BUTTON_SM[1],
             fg_color="transparent",
             border_width=1
         )
-        self.clear_button.grid(row=0, column=3, padx=(0, 5))
+        self.clear_button.pack(side="left")
 
-        # Entry list section
-        list_frame = ctk.CTkFrame(self)
-        list_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
-        list_frame.grid_columnconfigure(0, weight=1)
-        list_frame.grid_rowconfigure(0, weight=1)
+        # Count label
+        self.count_label = ctk.CTkLabel(button_row, text="0 entries", font=ctk.CTkFont(size=FONT_CAPTION))
+        self.count_label.pack(side="right", padx=SPACE_XS)
 
-        # Use scrollable frame for entry list
-        self.list_scrollable = ctk.CTkScrollableFrame(list_frame)
-        self.list_scrollable.grid(row=0, column=0, sticky="nsew")
+        # Entry list
+        self.list_scrollable = ctk.CTkScrollableFrame(panel)
+        self.list_scrollable.grid(row=1, column=0, sticky="nsew", padx=SPACE_SM, pady=SPACE_XS)
         self.list_scrollable.grid_columnconfigure(0, weight=1)
 
-        # Placeholder for entry buttons
         self.entry_buttons = []
 
-        # Details section
-        details_label = ctk.CTkLabel(self, text="Details:", anchor="w")
-        details_label.grid(row=2, column=0, sticky="ew", padx=10, pady=(10, 5))
+        return panel
 
-        details_frame = ctk.CTkFrame(self)
-        details_frame.grid(row=3, column=0, sticky="nsew", padx=10, pady=5)
-        details_frame.grid_columnconfigure(0, weight=1)
-        details_frame.grid_rowconfigure(0, weight=1)
+    def _create_detail_panel(self, parent):
+        """Create detail panel with full preview."""
+        panel = ctk.CTkFrame(parent)
+        panel.grid_columnconfigure(0, weight=1)
+        panel.grid_rowconfigure(1, weight=1)
 
-        self.details_textbox = ctk.CTkTextbox(
-            details_frame,
-            font=ctk.CTkFont(family="Courier", size=11),
-            wrap="word"
-        )
-        self.details_textbox.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+        # Header
+        header_frame = ctk.CTkFrame(panel, fg_color="transparent")
+        header_frame.grid(row=0, column=0, sticky="ew", padx=SPACE_SM, pady=(SPACE_SM, SPACE_XS))
 
-        # Action buttons
-        button_frame = ctk.CTkFrame(self, fg_color="transparent")
-        button_frame.grid(row=4, column=0, sticky="ew", padx=10, pady=(5, 10))
+        ctk.CTkLabel(header_frame, text="Details", font=ctk.CTkFont(size=FONT_SECTION, weight="bold")).pack(side="left")
+
+        # Action buttons on right
+        actions = ctk.CTkFrame(header_frame, fg_color="transparent")
+        actions.pack(side="right")
 
         self.delete_button = ctk.CTkButton(
-            button_frame,
-            text="Delete Entry",
+            actions,
+            text="Delete",
             command=self.delete_entry,
-            width=120,
+            width=BUTTON_SM[0],
+            height=BUTTON_SM[1],
             fg_color=self.theme_manager.get_color("error"),
             hover_color="#a93226"
         )
-        self.delete_button.pack(side="left", padx=5)
+        self.delete_button.pack(side="left", padx=SPACE_XS)
 
         self.refresh_button = ctk.CTkButton(
-            button_frame,
+            actions,
             text="Refresh",
             command=self.refresh_entries,
-            width=100
+            width=BUTTON_SM[0],
+            height=BUTTON_SM[1]
         )
-        self.refresh_button.pack(side="left", padx=5)
+        self.refresh_button.pack(side="left")
 
-        # Count label
-        self.count_label = ctk.CTkLabel(button_frame, text="0 entries")
-        self.count_label.pack(side="right", padx=5)
+        # Details textbox
+        self.details_textbox = ctk.CTkTextbox(
+            panel,
+            font=ctk.CTkFont(family="Courier", size=FONT_CAPTION),
+            wrap="word"
+        )
+        self.details_textbox.grid(row=1, column=0, sticky="nsew", padx=SPACE_SM, pady=(0, SPACE_SM))
+
+        return panel
+
+    def _create_detail_panel_with_related(self, parent):
+        """Create detail panel with related section at bottom (2-column mode)."""
+        panel = ctk.CTkFrame(parent)
+        panel.grid_columnconfigure(0, weight=1)
+        panel.grid_rowconfigure(1, weight=1)
+
+        # Header
+        header_frame = ctk.CTkFrame(panel, fg_color="transparent")
+        header_frame.grid(row=0, column=0, sticky="ew", padx=SPACE_SM, pady=(SPACE_SM, SPACE_XS))
+
+        ctk.CTkLabel(header_frame, text="Details", font=ctk.CTkFont(size=FONT_SECTION, weight="bold")).pack(side="left")
+
+        # Action buttons
+        actions = ctk.CTkFrame(header_frame, fg_color="transparent")
+        actions.pack(side="right")
+
+        self.delete_button = ctk.CTkButton(
+            actions,
+            text="Delete",
+            command=self.delete_entry,
+            width=BUTTON_SM[0],
+            height=BUTTON_SM[1],
+            fg_color=self.theme_manager.get_color("error"),
+            hover_color="#a93226"
+        )
+        self.delete_button.pack(side="left", padx=SPACE_XS)
+
+        self.refresh_button = ctk.CTkButton(
+            actions,
+            text="Refresh",
+            command=self.refresh_entries,
+            width=BUTTON_SM[0],
+            height=BUTTON_SM[1]
+        )
+        self.refresh_button.pack(side="left")
+
+        # Details textbox
+        self.details_textbox = ctk.CTkTextbox(
+            panel,
+            font=ctk.CTkFont(family="Courier", size=FONT_CAPTION),
+            wrap="word"
+        )
+        self.details_textbox.grid(row=1, column=0, sticky="nsew", padx=SPACE_SM, pady=(0, SPACE_XS))
+
+        # Related entries section (expandable)
+        related_frame = ctk.CTkFrame(panel)
+        related_frame.grid(row=2, column=0, sticky="ew", padx=SPACE_SM, pady=(SPACE_XS, SPACE_SM))
+        related_frame.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            related_frame,
+            text="Related Entries (coming soon)",
+            font=ctk.CTkFont(size=FONT_CAPTION),
+            text_color="gray"
+        ).grid(row=0, column=0, sticky="w", padx=SPACE_SM, pady=SPACE_SM)
+
+        return panel
+
+    def _create_related_panel(self, parent):
+        """Create related entries sidebar (ultrawide mode only)."""
+        panel = ctk.CTkFrame(parent)
+        panel.grid_columnconfigure(0, weight=1)
+        panel.grid_rowconfigure(1, weight=1)
+
+        # Header
+        ctk.CTkLabel(
+            panel,
+            text="Related",
+            font=ctk.CTkFont(size=FONT_SECTION, weight="bold")
+        ).grid(row=0, column=0, sticky="w", padx=SPACE_SM, pady=(SPACE_SM, SPACE_XS))
+
+        # Placeholder for related entries
+        placeholder = ctk.CTkTextbox(panel, height=100, font=ctk.CTkFont(size=FONT_CAPTION))
+        placeholder.grid(row=1, column=0, sticky="nsew", padx=SPACE_SM, pady=(0, SPACE_SM))
+        placeholder.insert("1.0", "Related entries will appear here when available.")
+        placeholder.configure(state="disabled")
+
+        return panel
+
+    def _is_visible(self) -> bool:
+        """Check if this tab is currently visible."""
+        try:
+            if self.main_app and hasattr(self.main_app, 'tabview'):
+                # Check if main Memory tab is visible
+                if self.main_app.tabview.get() != "Memory":
+                    return False
+                # Check if this specific sub-tab is visible
+                parent_memory_tab = self.winfo_parent()
+                if hasattr(self.master, 'master') and hasattr(self.master.master, 'get'):
+                    # Get the nested tabview's current tab
+                    current_subtab = self.master.master.get()
+                    # Match table_name to subtab name
+                    if self.table_name == 'tasks' and current_subtab != "Memory":
+                        return False
+                    elif self.table_name == 'knowledge' and current_subtab != "Knowledge":
+                        return False
+        except Exception:
+            pass
+        return True
 
     def _start_polling(self):
         """Start polling the result queue."""
@@ -238,31 +473,46 @@ class MemorySubTab(ctk.CTkFrame):
 
     def _poll_results(self):
         """Poll the result queue and update GUI (runs on main thread)."""
-        try:
-            while not self.result_queue.empty():
-                result = self.result_queue.get_nowait()
-                action = result.get('action')
+        # Check if shutdown signaled
+        if not self.thread_manager.is_active:
+            return  # Stop polling
 
-                if action == 'update_list':
-                    self._update_entry_list()
-                elif action == 'display_details':
-                    self._display_details(result['entry_id'], result['content'])
-                elif action == 'show_no_entries':
-                    self._show_no_entries_message()
-                elif action == 'show_error':
-                    messagebox.showerror("Error", result['message'])
-                elif action == 'show_warning':
-                    messagebox.showwarning(result['title'], result['message'])
-                elif action == 'show_info':
-                    messagebox.showinfo(result['title'], result['message'])
-                elif action == 'reload':
-                    self.load_entries()
+        try:
+            is_visible = self._is_visible()
+
+            # Lazy load on first visibility
+            if is_visible and not self._data_loaded:
+                self._data_loaded = True
+                self.load_entries()
+
+            # Only process results if this tab is visible
+            if is_visible:
+                while not self.result_queue.empty():
+                    result = self.result_queue.get_nowait()
+                    action = result.get('action')
+
+                    if action == 'update_list':
+                        self._update_entry_list()
+                    elif action == 'display_details':
+                        self._display_details(result['entry_id'], result['content'])
+                    elif action == 'show_no_entries':
+                        self._show_no_entries_message()
+                    elif action == 'show_error':
+                        messagebox.showerror("Error", result['message'])
+                    elif action == 'show_warning':
+                        messagebox.showwarning(result['title'], result['message'])
+                    elif action == 'show_info':
+                        messagebox.showinfo(result['title'], result['message'])
+                    elif action == 'reload':
+                        self.load_entries()
 
         except Exception as e:
             logger.error(f"Error in poll_results: {e}", exc_info=True)
 
-        # Schedule next poll
-        self.after(100, self._poll_results)
+        # Schedule next poll - slower when not visible
+        if self.thread_manager.is_active:
+            poll_interval = 100 if self._is_visible() else 500
+            self.after(poll_interval, self._poll_results)
 
     def load_entries(self):
         """Load entries from database."""
@@ -534,13 +784,17 @@ class WorkflowHistorySubTab(ctk.CTkFrame):
         self.theme_manager = get_theme_manager()
         self.workflow_history = None  # Lazy initialization
         self.selected_workflow_id = None
+        self.main_app = None  # Will be set by MemoryTab
 
         # Queue for thread-safe communication
         self.result_queue = queue.Queue()
 
+        # Lazy loading flag - don't load until tab is visible
+        self._data_loaded = False
+
         self._setup_ui()
         self._start_polling()
-        self.load_workflows()
+        # Removed immediate load_workflows() - now loads on first visibility
 
     def _setup_ui(self):
         """Set up the UI components."""
@@ -551,24 +805,25 @@ class WorkflowHistorySubTab(ctk.CTkFrame):
 
         # Search and filter section
         control_frame = ctk.CTkFrame(self, fg_color="transparent")
-        control_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
+        control_frame.grid(row=0, column=0, sticky="ew", padx=SPACE_SM, pady=(SPACE_SM, SPACE_XS))
         control_frame.grid_columnconfigure(1, weight=1)
 
-        ctk.CTkLabel(control_frame, text="Search:").grid(row=0, column=0, padx=(0, 5), sticky="w")
+        ctk.CTkLabel(control_frame, text="Search:").grid(row=0, column=0, padx=(0, SPACE_XS), sticky="w")
 
         self.search_entry = ctk.CTkEntry(control_frame, placeholder_text="Search workflows...")
-        self.search_entry.grid(row=0, column=1, sticky="ew", padx=5)
+        self.search_entry.grid(row=0, column=1, sticky="ew", padx=SPACE_XS)
         self.search_entry.bind('<Return>', lambda e: self.search_workflows())
 
         self.search_button = ctk.CTkButton(
             control_frame,
             text="Search",
             command=self.search_workflows,
-            width=80
+            width=BUTTON_SM[0],
+            height=BUTTON_SM[1]
         )
-        self.search_button.grid(row=0, column=2, padx=5)
+        self.search_button.grid(row=0, column=2, padx=SPACE_XS)
 
-        ctk.CTkLabel(control_frame, text="Status:").grid(row=0, column=3, padx=(10, 5), sticky="w")
+        ctk.CTkLabel(control_frame, text="Status:").grid(row=0, column=3, padx=(SPACE_SM, SPACE_XS), sticky="w")
 
         self.status_var = ctk.StringVar(value="all")
         self.status_dropdown = ctk.CTkOptionMenu(
@@ -576,35 +831,37 @@ class WorkflowHistorySubTab(ctk.CTkFrame):
             variable=self.status_var,
             values=["all", "completed", "failed"],
             command=lambda _: self.load_workflows(),
-            width=100
+            width=BUTTON_SM[0]
         )
-        self.status_dropdown.grid(row=0, column=4, padx=5)
+        self.status_dropdown.grid(row=0, column=4, padx=SPACE_XS)
 
         self.refresh_button = ctk.CTkButton(
             control_frame,
             text="Refresh",
             command=self.load_workflows,
-            width=80
+            width=BUTTON_SM[0],
+            height=BUTTON_SM[1]
         )
-        self.refresh_button.grid(row=0, column=5, padx=5)
+        self.refresh_button.grid(row=0, column=5, padx=SPACE_XS)
 
         self.clear_button = ctk.CTkButton(
             control_frame,
             text="Clear",
             command=self.clear_search,
-            width=80,
+            width=BUTTON_SM[0],
+            height=BUTTON_SM[1],
             fg_color="transparent",
             border_width=1
         )
-        self.clear_button.grid(row=0, column=6, padx=(0, 5))
+        self.clear_button.grid(row=0, column=6, padx=(0, SPACE_XS))
 
         # Count label
         self.count_label = ctk.CTkLabel(control_frame, text="0 workflows")
-        self.count_label.grid(row=0, column=7, padx=5)
+        self.count_label.grid(row=0, column=7, padx=SPACE_XS)
 
         # Workflow tree section
         tree_frame = ctk.CTkFrame(self)
-        tree_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
+        tree_frame.grid(row=1, column=0, sticky="nsew", padx=SPACE_SM, pady=SPACE_XS)
         tree_frame.grid_columnconfigure(0, weight=1)
         tree_frame.grid_rowconfigure(0, weight=1)
 
@@ -627,41 +884,59 @@ class WorkflowHistorySubTab(ctk.CTkFrame):
 
         # Details section
         details_label = ctk.CTkLabel(self, text="Details:", anchor="w")
-        details_label.grid(row=2, column=0, sticky="ew", padx=10, pady=(10, 5))
+        details_label.grid(row=2, column=0, sticky="ew", padx=SPACE_SM, pady=(SPACE_SM, SPACE_XS))
 
         details_frame = ctk.CTkFrame(self)
-        details_frame.grid(row=3, column=0, sticky="nsew", padx=10, pady=5)
+        details_frame.grid(row=3, column=0, sticky="nsew", padx=SPACE_SM, pady=SPACE_XS)
         details_frame.grid_columnconfigure(0, weight=1)
         details_frame.grid_rowconfigure(0, weight=1)
 
         self.details_textbox = ctk.CTkTextbox(
             details_frame,
-            font=ctk.CTkFont(family="Courier", size=11),
+            font=ctk.CTkFont(family="Courier", size=FONT_CAPTION),
             wrap="word"
         )
-        self.details_textbox.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+        self.details_textbox.grid(row=0, column=0, sticky="nsew", padx=SPACE_XS, pady=SPACE_XS)
 
         # Action buttons
         button_frame = ctk.CTkFrame(self, fg_color="transparent")
-        button_frame.grid(row=4, column=0, sticky="ew", padx=10, pady=(5, 10))
+        button_frame.grid(row=4, column=0, sticky="ew", padx=SPACE_SM, pady=(SPACE_XS, SPACE_SM))
 
         self.delete_button = ctk.CTkButton(
             button_frame,
             text="Delete",
             command=self.delete_workflow,
-            width=100,
+            width=BUTTON_SM[0],
+            height=BUTTON_SM[1],
             fg_color=self.theme_manager.get_color("error"),
             hover_color="#a93226"
         )
-        self.delete_button.pack(side="left", padx=5)
+        self.delete_button.pack(side="left", padx=SPACE_XS)
 
         self.view_full_button = ctk.CTkButton(
             button_frame,
             text="View Full Details",
             command=self.view_full_details,
-            width=140
+            width=BUTTON_MD[0],
+            height=BUTTON_MD[1]
         )
-        self.view_full_button.pack(side="left", padx=5)
+        self.view_full_button.pack(side="left", padx=SPACE_XS)
+
+    def _is_visible(self) -> bool:
+        """Check if this tab is currently visible."""
+        try:
+            if self.main_app and hasattr(self.main_app, 'tabview'):
+                # Check if main Memory tab is visible
+                if self.main_app.tabview.get() != "Memory":
+                    return False
+                # Check if this specific sub-tab (Workflow History) is visible
+                if hasattr(self.master, 'master') and hasattr(self.master.master, 'get'):
+                    current_subtab = self.master.master.get()
+                    if current_subtab != "Workflow History":
+                        return False
+        except Exception:
+            pass
+        return True
 
     def _start_polling(self):
         """Start polling the result queue."""
@@ -669,33 +944,48 @@ class WorkflowHistorySubTab(ctk.CTkFrame):
 
     def _poll_results(self):
         """Poll the result queue and update GUI (runs on main thread)."""
-        try:
-            while not self.result_queue.empty():
-                result = self.result_queue.get_nowait()
-                action = result.get('action')
+        # Check if shutdown signaled
+        if not self.thread_manager.is_active:
+            return  # Stop polling
 
-                if action == 'update_tree':
-                    self._update_tree(result['workflows'])
-                elif action == 'display_details':
-                    self._display_details(result['workflow'])
-                elif action == 'show_full_details':
-                    self._show_full_details_popup(result['workflow'])
-                elif action == 'show_error':
-                    messagebox.showerror("Error", result['message'])
-                elif action == 'show_warning':
-                    messagebox.showwarning(result['title'], result['message'])
-                elif action == 'show_info':
-                    messagebox.showinfo(result['title'], result['message'])
-                elif action == 'reload':
-                    self.load_workflows()
-                elif action == 'clear_selection':
-                    self.selected_workflow_id = None
+        try:
+            is_visible = self._is_visible()
+
+            # Lazy load on first visibility
+            if is_visible and not self._data_loaded:
+                self._data_loaded = True
+                self.load_workflows()
+
+            # Only process results if this tab is visible
+            if is_visible:
+                while not self.result_queue.empty():
+                    result = self.result_queue.get_nowait()
+                    action = result.get('action')
+
+                    if action == 'update_tree':
+                        self._update_tree(result['workflows'])
+                    elif action == 'display_details':
+                        self._display_details(result['workflow'])
+                    elif action == 'show_full_details':
+                        self._show_full_details_popup(result['workflow'])
+                    elif action == 'show_error':
+                        messagebox.showerror("Error", result['message'])
+                    elif action == 'show_warning':
+                        messagebox.showwarning(result['title'], result['message'])
+                    elif action == 'show_info':
+                        messagebox.showinfo(result['title'], result['message'])
+                    elif action == 'reload':
+                        self.load_workflows()
+                    elif action == 'clear_selection':
+                        self.selected_workflow_id = None
 
         except Exception as e:
             logger.error(f"Error in poll_results: {e}", exc_info=True)
 
-        # Schedule next poll
-        self.after(100, self._poll_results)
+        # Schedule next poll - slower when not visible
+        if self.thread_manager.is_active:
+            poll_interval = 100 if self._is_visible() else 500
+            self.after(poll_interval, self._poll_results)
 
     def _get_workflow_history(self):
         """Lazy initialization of WorkflowHistory."""
@@ -948,10 +1238,10 @@ Final Synthesis:
         # Create textbox with comprehensive details
         text_widget = ctk.CTkTextbox(
             popup,
-            font=ctk.CTkFont(family="Courier", size=11),
+            font=ctk.CTkFont(family="Courier", size=FONT_CAPTION),
             wrap="word"
         )
-        text_widget.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+        text_widget.grid(row=0, column=0, sticky="nsew", padx=SPACE_SM, pady=SPACE_SM)
 
         # Format comprehensive details
         details = f"""WORKFLOW #{workflow.workflow_id} - COMPREHENSIVE DETAILS
@@ -992,9 +1282,10 @@ METADATA (JSON):
             popup,
             text="Close",
             command=popup.destroy,
-            width=100
+            width=BUTTON_SM[0],
+            height=BUTTON_SM[1]
         )
-        close_button.grid(row=1, column=0, pady=10)
+        close_button.grid(row=1, column=0, pady=SPACE_SM)
 
     def delete_workflow(self):
         """Delete the selected workflow after confirmation."""

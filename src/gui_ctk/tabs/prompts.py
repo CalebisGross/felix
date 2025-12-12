@@ -19,6 +19,12 @@ import logging
 
 from ..utils import ThreadManager, logger
 from ..theme_manager import get_theme_manager
+from ..styles import (
+    BUTTON_SM, BUTTON_MD,
+    FONT_TITLE, FONT_SECTION, FONT_BODY, FONT_CAPTION, FONT_SMALL,
+    SPACE_XS, SPACE_SM, SPACE_MD, SPACE_LG,
+    SIDEBAR_WIDTH, TEXTBOX_SM
+)
 
 # Import PromptManager
 try:
@@ -52,9 +58,13 @@ class PromptsTab(ctk.CTkFrame):
         self.current_prompt_key: Optional[str] = None
         self.is_modified = False
         self.selected_category = None
+        self._layout_manager = None
 
         # Queue for thread-safe communication
         self.result_queue = queue.Queue()
+
+        # Lazy loading flag - don't load until tab is visible
+        self._data_loaded = False
 
         # Initialize PromptManager
         if PromptManager:
@@ -65,7 +75,11 @@ class PromptsTab(ctk.CTkFrame):
 
         self._setup_ui()
         self._start_polling()
-        self._load_prompt_tree()
+
+    def set_layout_manager(self, layout_manager):
+        """Set the layout manager (interface compliance)."""
+        self._layout_manager = layout_manager
+        # Removed immediate _load_prompt_tree() - now loads on first visibility
 
     def _setup_ui(self):
         """Set up the UI components."""
@@ -74,8 +88,8 @@ class PromptsTab(ctk.CTkFrame):
         self.grid_rowconfigure(0, weight=1)
 
         # Left panel: Prompt categories and list
-        left_panel = ctk.CTkFrame(self, width=300)
-        left_panel.grid(row=0, column=0, sticky="nsew", padx=(10, 5), pady=10)
+        left_panel = ctk.CTkFrame(self, width=SIDEBAR_WIDTH)
+        left_panel.grid(row=0, column=0, sticky="nsew", padx=(SPACE_SM, SPACE_XS), pady=SPACE_SM)
         left_panel.grid_columnconfigure(0, weight=1)
         left_panel.grid_rowconfigure(1, weight=1)
         left_panel.grid_propagate(False)
@@ -84,13 +98,13 @@ class PromptsTab(ctk.CTkFrame):
         header_label = ctk.CTkLabel(
             left_panel,
             text="Prompt Categories",
-            font=ctk.CTkFont(size=14, weight="bold")
+            font=ctk.CTkFont(size=FONT_SECTION, weight="bold")
         )
-        header_label.grid(row=0, column=0, sticky="w", padx=10, pady=(10, 5))
+        header_label.grid(row=0, column=0, sticky="w", padx=SPACE_SM, pady=(SPACE_SM, SPACE_XS))
 
         # Scrollable frame for prompt list
         self.prompt_list_frame = ctk.CTkScrollableFrame(left_panel)
-        self.prompt_list_frame.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
+        self.prompt_list_frame.grid(row=1, column=0, sticky="nsew", padx=SPACE_XS, pady=SPACE_XS)
         self.prompt_list_frame.grid_columnconfigure(0, weight=1)
 
         # Placeholder for prompt buttons
@@ -98,19 +112,19 @@ class PromptsTab(ctk.CTkFrame):
 
         # Right panel: Editor
         right_panel = ctk.CTkFrame(self)
-        right_panel.grid(row=0, column=1, sticky="nsew", padx=(5, 10), pady=10)
+        right_panel.grid(row=0, column=1, sticky="nsew", padx=(SPACE_XS, SPACE_SM), pady=SPACE_SM)
         right_panel.grid_columnconfigure(0, weight=1)
         right_panel.grid_rowconfigure(2, weight=1)  # Editor expands
 
         # Editor header
         header_frame = ctk.CTkFrame(right_panel, fg_color="transparent")
-        header_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
+        header_frame.grid(row=0, column=0, sticky="ew", padx=SPACE_SM, pady=(SPACE_SM, SPACE_XS))
         header_frame.grid_columnconfigure(0, weight=1)
 
         self.prompt_label = ctk.CTkLabel(
             header_frame,
             text="Select a prompt",
-            font=ctk.CTkFont(size=14, weight="bold"),
+            font=ctk.CTkFont(size=FONT_SECTION, weight="bold"),
             anchor="w"
         )
         self.prompt_label.grid(row=0, column=0, sticky="w")
@@ -139,17 +153,17 @@ class PromptsTab(ctk.CTkFrame):
             anchor="w",
             wraplength=600
         )
-        self.desc_label.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 5))
+        self.desc_label.grid(row=1, column=0, sticky="ew", padx=SPACE_SM, pady=(0, SPACE_XS))
 
         # Text editor
         editor_frame = ctk.CTkFrame(right_panel)
-        editor_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=5)
+        editor_frame.grid(row=2, column=0, sticky="nsew", padx=SPACE_SM, pady=SPACE_XS)
         editor_frame.grid_columnconfigure(0, weight=1)
         editor_frame.grid_rowconfigure(0, weight=1)
 
         self.text_editor = ctk.CTkTextbox(
             editor_frame,
-            font=ctk.CTkFont(family="Courier", size=11),
+            font=ctk.CTkFont(family="Courier", size=FONT_CAPTION),
             wrap="word"
         )
         self.text_editor.grid(row=0, column=0, sticky="nsew")
@@ -159,63 +173,68 @@ class PromptsTab(ctk.CTkFrame):
         vars_label = ctk.CTkLabel(
             right_panel,
             text="Available Variables:",
-            font=ctk.CTkFont(weight="bold"),
+            font=ctk.CTkFont(size=FONT_BODY, weight="bold"),
             anchor="w"
         )
-        vars_label.grid(row=3, column=0, sticky="w", padx=10, pady=(10, 2))
+        vars_label.grid(row=3, column=0, sticky="w", padx=SPACE_SM, pady=(SPACE_SM, 2))
 
         self.vars_textbox = ctk.CTkTextbox(
             right_panel,
-            height=40,
-            font=ctk.CTkFont(family="Courier", size=10)
+            height=TEXTBOX_SM,
+            font=ctk.CTkFont(family="Courier", size=FONT_SMALL)
         )
-        self.vars_textbox.grid(row=4, column=0, sticky="ew", padx=10, pady=(0, 5))
+        self.vars_textbox.grid(row=4, column=0, sticky="ew", padx=SPACE_SM, pady=(0, SPACE_XS))
 
         # Button bar
         button_frame = ctk.CTkFrame(right_panel, fg_color="transparent")
-        button_frame.grid(row=5, column=0, sticky="ew", padx=10, pady=(5, 10))
+        button_frame.grid(row=5, column=0, sticky="ew", padx=SPACE_SM, pady=(SPACE_XS, SPACE_SM))
 
         self.save_btn = ctk.CTkButton(
             button_frame,
             text="Save Custom",
             command=self._save_custom,
-            width=120
+            width=BUTTON_MD[0],
+            height=BUTTON_MD[1]
         )
-        self.save_btn.pack(side="left", padx=5)
+        self.save_btn.pack(side="left", padx=SPACE_XS)
 
         self.reset_btn = ctk.CTkButton(
             button_frame,
             text="Reset to Default",
             command=self._reset_to_default,
-            width=130,
+            width=BUTTON_MD[0],
+            height=BUTTON_MD[1],
             fg_color="transparent",
             border_width=1
         )
-        self.reset_btn.pack(side="left", padx=5)
+        self.reset_btn.pack(side="left", padx=SPACE_XS)
 
         self.preview_btn = ctk.CTkButton(
             button_frame,
             text="Preview",
             command=self._preview_prompt,
-            width=100
+            width=BUTTON_SM[0],
+            height=BUTTON_SM[1]
         )
-        self.preview_btn.pack(side="left", padx=5)
+        self.preview_btn.pack(side="left", padx=SPACE_XS)
 
         self.history_btn = ctk.CTkButton(
             button_frame,
             text="View History",
             command=self._view_history,
-            width=120
+            width=BUTTON_MD[0],
+            height=BUTTON_MD[1]
         )
-        self.history_btn.pack(side="left", padx=5)
+        self.history_btn.pack(side="left", padx=SPACE_XS)
 
         self.reload_btn = ctk.CTkButton(
             button_frame,
             text="Reload YAML",
             command=self._reload_yaml,
-            width=110
+            width=BUTTON_SM[0],
+            height=BUTTON_SM[1]
         )
-        self.reload_btn.pack(side="right", padx=5)
+        self.reload_btn.pack(side="right", padx=SPACE_XS)
 
         # Initially disable buttons
         self._set_buttons_enabled(False)
@@ -224,9 +243,36 @@ class PromptsTab(ctk.CTkFrame):
         """Start polling the result queue."""
         self._poll_results()
 
+    def _is_visible(self) -> bool:
+        """Check if this tab is currently visible."""
+        try:
+            if self.main_app and hasattr(self.main_app, 'tabview'):
+                return self.main_app.tabview.get() == "Prompts"
+        except Exception:
+            pass
+        return False
+
     def _poll_results(self):
         """Poll the result queue and update GUI (runs on main thread)."""
+        # Check if shutdown signaled
+        if not self.thread_manager.is_active:
+            return  # Stop polling
+
         try:
+            is_visible = self._is_visible()
+
+            # Lazy load on first visibility
+            if is_visible and not self._data_loaded:
+                self._data_loaded = True
+                self._load_prompt_tree()
+
+            # Skip expensive updates if tab is not visible
+            if not is_visible:
+                # Schedule slower poll when not visible
+                if self.thread_manager.is_active and self.winfo_exists():
+                    self.after(500, self._poll_results)
+                return
+
             while not self.result_queue.empty():
                 result = self.result_queue.get_nowait()
                 action = result.get('action')
@@ -254,7 +300,7 @@ class PromptsTab(ctk.CTkFrame):
             logger.error(f"Error in poll_results: {e}", exc_info=True)
 
         # Schedule next poll
-        if self.winfo_exists():
+        if self.thread_manager.is_active and self.winfo_exists():
             self.after(100, self._poll_results)
 
     def _load_prompt_tree(self):
@@ -325,10 +371,10 @@ class PromptsTab(ctk.CTkFrame):
             category_label = ctk.CTkLabel(
                 self.prompt_list_frame,
                 text=type_names.get(agent_type, agent_type.title()),
-                font=ctk.CTkFont(size=12, weight="bold"),
+                font=ctk.CTkFont(size=FONT_BODY, weight="bold"),
                 anchor="w"
             )
-            category_label.grid(row=row, column=0, sticky="ew", padx=5, pady=(10, 5))
+            category_label.grid(row=row, column=0, sticky="ew", padx=SPACE_XS, pady=(SPACE_SM, SPACE_XS))
             self.prompt_buttons.append(category_label)
             row += 1
 
@@ -341,9 +387,9 @@ class PromptsTab(ctk.CTkFrame):
                     anchor="w",
                     fg_color="transparent",
                     border_width=1,
-                    height=32
+                    height=BUTTON_MD[1]
                 )
-                btn.grid(row=row, column=0, sticky="ew", padx=5, pady=2)
+                btn.grid(row=row, column=0, sticky="ew", padx=SPACE_XS, pady=2)
                 self.prompt_buttons.append(btn)
                 row += 1
 
@@ -490,7 +536,7 @@ class PromptsTab(ctk.CTkFrame):
         dialog.title("Save Custom Prompt")
         dialog.geometry("500x250")
         dialog.transient(self)
-        dialog.grab_set()
+        dialog.after(100, lambda: self._safe_grab(dialog))
 
         # Configure grid
         dialog.grid_columnconfigure(0, weight=1)
@@ -499,17 +545,18 @@ class PromptsTab(ctk.CTkFrame):
         label = ctk.CTkLabel(
             dialog,
             text="Optional notes about this version:",
+            font=ctk.CTkFont(size=FONT_BODY),
             anchor="w"
         )
-        label.grid(row=0, column=0, sticky="w", padx=20, pady=(20, 5))
+        label.grid(row=0, column=0, sticky="w", padx=SPACE_LG, pady=(SPACE_LG, SPACE_XS))
 
         # Notes entry
-        notes_textbox = ctk.CTkTextbox(dialog, height=80)
-        notes_textbox.grid(row=1, column=0, sticky="ew", padx=20, pady=5)
+        notes_textbox = ctk.CTkTextbox(dialog, height=TEXTBOX_SM)
+        notes_textbox.grid(row=1, column=0, sticky="ew", padx=SPACE_LG, pady=SPACE_XS)
 
         # Buttons
         button_frame = ctk.CTkFrame(dialog, fg_color="transparent")
-        button_frame.grid(row=2, column=0, pady=20)
+        button_frame.grid(row=2, column=0, pady=SPACE_LG)
 
         def save():
             notes = notes_textbox.get("1.0", "end").strip()
@@ -522,18 +569,19 @@ class PromptsTab(ctk.CTkFrame):
         def cancel():
             dialog.destroy()
 
-        save_btn = ctk.CTkButton(button_frame, text="Save", command=save, width=100)
-        save_btn.pack(side="left", padx=5)
+        save_btn = ctk.CTkButton(button_frame, text="Save", command=save, width=BUTTON_SM[0], height=BUTTON_SM[1])
+        save_btn.pack(side="left", padx=SPACE_XS)
 
         cancel_btn = ctk.CTkButton(
             button_frame,
             text="Cancel",
             command=cancel,
-            width=100,
+            width=BUTTON_SM[0],
+            height=BUTTON_SM[1],
             fg_color="transparent",
             border_width=1
         )
-        cancel_btn.pack(side="left", padx=5)
+        cancel_btn.pack(side="left", padx=SPACE_XS)
 
     def _save_custom_thread(self, template: str, notes: str):
         """Background thread to save custom prompt."""
@@ -685,47 +733,47 @@ class PromptsTab(ctk.CTkFrame):
 
         # Test variables display
         vars_frame = ctk.CTkFrame(popup)
-        vars_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
+        vars_frame.grid(row=0, column=0, sticky="ew", padx=SPACE_SM, pady=(SPACE_SM, SPACE_XS))
         vars_frame.grid_columnconfigure(0, weight=1)
 
         vars_label = ctk.CTkLabel(
             vars_frame,
             text="Test Variables:",
-            font=ctk.CTkFont(weight="bold"),
+            font=ctk.CTkFont(size=FONT_BODY, weight="bold"),
             anchor="w"
         )
-        vars_label.pack(anchor="w", padx=10, pady=(5, 2))
+        vars_label.pack(anchor="w", padx=SPACE_SM, pady=(SPACE_XS, 2))
 
         vars_text = "\n".join(f"{k} = {v}" for k, v in variables.items())
-        vars_textbox = ctk.CTkTextbox(vars_frame, height=60, font=ctk.CTkFont(family="Courier", size=10))
-        vars_textbox.pack(fill="x", padx=10, pady=(0, 10))
+        vars_textbox = ctk.CTkTextbox(vars_frame, height=TEXTBOX_SM, font=ctk.CTkFont(family="Courier", size=FONT_SMALL))
+        vars_textbox.pack(fill="x", padx=SPACE_SM, pady=(0, SPACE_SM))
         vars_textbox.insert("1.0", vars_text)
 
         # Rendered output
         output_frame = ctk.CTkFrame(popup)
-        output_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
+        output_frame.grid(row=1, column=0, sticky="nsew", padx=SPACE_SM, pady=SPACE_XS)
         output_frame.grid_columnconfigure(0, weight=1)
         output_frame.grid_rowconfigure(0, weight=1)
 
         output_label = ctk.CTkLabel(
             output_frame,
             text="Rendered Prompt:",
-            font=ctk.CTkFont(weight="bold"),
+            font=ctk.CTkFont(size=FONT_BODY, weight="bold"),
             anchor="w"
         )
-        output_label.grid(row=0, column=0, sticky="w", padx=10, pady=(5, 2))
+        output_label.grid(row=0, column=0, sticky="w", padx=SPACE_SM, pady=(SPACE_XS, 2))
 
         output_textbox = ctk.CTkTextbox(
             output_frame,
-            font=ctk.CTkFont(family="Courier", size=11),
+            font=ctk.CTkFont(family="Courier", size=FONT_CAPTION),
             wrap="word"
         )
-        output_textbox.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        output_textbox.grid(row=1, column=0, sticky="nsew", padx=SPACE_SM, pady=(0, SPACE_SM))
         output_textbox.insert("1.0", rendered)
 
         # Close button
-        close_btn = ctk.CTkButton(popup, text="Close", command=popup.destroy, width=100)
-        close_btn.grid(row=2, column=0, pady=(5, 10))
+        close_btn = ctk.CTkButton(popup, text="Close", command=popup.destroy, width=BUTTON_SM[0], height=BUTTON_SM[1])
+        close_btn.grid(row=2, column=0, pady=(SPACE_XS, SPACE_SM))
 
     def _view_history(self):
         """View prompt version history."""
@@ -781,54 +829,57 @@ class PromptsTab(ctk.CTkFrame):
 
         # Scrollable frame for history entries
         scroll_frame = ctk.CTkScrollableFrame(popup)
-        scroll_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+        scroll_frame.grid(row=0, column=0, sticky="nsew", padx=SPACE_SM, pady=SPACE_SM)
         scroll_frame.grid_columnconfigure(0, weight=1)
 
         # Display history entries
         for i, entry in enumerate(history):
             entry_frame = ctk.CTkFrame(scroll_frame, fg_color=self.theme_manager.get_color("bg_secondary"))
-            entry_frame.grid(row=i, column=0, sticky="ew", pady=5)
+            entry_frame.grid(row=i, column=0, sticky="ew", pady=SPACE_XS)
             entry_frame.grid_columnconfigure(1, weight=1)
 
             # Version and action
             version_label = ctk.CTkLabel(
                 entry_frame,
                 text=f"v{entry['version']}",
-                font=ctk.CTkFont(weight="bold"),
+                font=ctk.CTkFont(size=FONT_BODY, weight="bold"),
                 width=50
             )
-            version_label.grid(row=0, column=0, sticky="w", padx=10, pady=5)
+            version_label.grid(row=0, column=0, sticky="w", padx=SPACE_SM, pady=SPACE_XS)
 
             action_label = ctk.CTkLabel(
                 entry_frame,
                 text=entry['action'].replace('_', ' ').title(),
+                font=ctk.CTkFont(size=FONT_BODY),
                 anchor="w"
             )
-            action_label.grid(row=0, column=1, sticky="w", padx=5, pady=5)
+            action_label.grid(row=0, column=1, sticky="w", padx=SPACE_XS, pady=SPACE_XS)
 
             # Timestamp
             timestamp_label = ctk.CTkLabel(
                 entry_frame,
                 text=entry['timestamp'],
+                font=ctk.CTkFont(size=FONT_CAPTION),
                 text_color=self.theme_manager.get_color("fg_muted"),
                 anchor="e"
             )
-            timestamp_label.grid(row=0, column=2, sticky="e", padx=10, pady=5)
+            timestamp_label.grid(row=0, column=2, sticky="e", padx=SPACE_SM, pady=SPACE_XS)
 
             # Notes
             if entry.get('notes'):
                 notes_label = ctk.CTkLabel(
                     entry_frame,
                     text=entry['notes'],
+                    font=ctk.CTkFont(size=FONT_CAPTION),
                     text_color=self.theme_manager.get_color("fg_secondary"),
                     anchor="w",
                     wraplength=700
                 )
-                notes_label.grid(row=1, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 5))
+                notes_label.grid(row=1, column=0, columnspan=3, sticky="w", padx=SPACE_SM, pady=(0, SPACE_XS))
 
         # Close button
-        close_btn = ctk.CTkButton(popup, text="Close", command=popup.destroy, width=100)
-        close_btn.grid(row=1, column=0, pady=(5, 10))
+        close_btn = ctk.CTkButton(popup, text="Close", command=popup.destroy, width=BUTTON_SM[0], height=BUTTON_SM[1])
+        close_btn.grid(row=1, column=0, pady=(SPACE_XS, SPACE_SM))
 
     def _reload_yaml(self):
         """Reload YAML file."""
@@ -875,3 +926,11 @@ class PromptsTab(ctk.CTkFrame):
         """Disable features when Felix system is stopped."""
         # Prompts tab doesn't depend on Felix system running
         pass
+
+    def _safe_grab(self, dialog):
+        """Safely grab focus after window is rendered."""
+        try:
+            dialog.grab_set()
+            dialog.focus_set()
+        except Exception:
+            pass  # Silently ignore if grab fails

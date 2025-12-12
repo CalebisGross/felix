@@ -15,6 +15,7 @@ from .control_panel import ControlPanel
 from .knowledge_base_panel import KnowledgeBasePanel
 from .relationships_panel import RelationshipsPanel
 from .maintenance_panel import MaintenancePanel
+from ...styles import SPACE_XS
 
 logger = logging.getLogger("felix_gui_ctk")
 
@@ -39,19 +40,24 @@ class KnowledgeBrainTab(ctk.CTkFrame):
             **kwargs: Additional arguments for CTkFrame
         """
         super().__init__(master, fg_color="transparent", **kwargs)
-        
+
         self.thread_manager = thread_manager
         self.main_app = main_app
-        
+        self._layout_manager = None
+
         # Knowledge brain component references
         self.knowledge_daemon = None
         self.knowledge_retriever = None
         self.knowledge_store = None
-        
+
         # Set up UI
         self._setup_ui()
-        
+
         logger.info("Knowledge Brain tab initialized")
+
+    def set_layout_manager(self, layout_manager):
+        """Set the layout manager (interface compliance)."""
+        self._layout_manager = layout_manager
 
     def _setup_ui(self):
         """Set up the main UI layout with tabbed interface."""
@@ -61,7 +67,7 @@ class KnowledgeBrainTab(ctk.CTkFrame):
         
         # Create tabview for sub-sections
         self.tabview = ctk.CTkTabview(self)
-        self.tabview.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+        self.tabview.grid(row=0, column=0, sticky="nsew", padx=SPACE_XS, pady=SPACE_XS)
         
         # Tab 1: Control & Processing
         self.tabview.add("⚙️ Control")

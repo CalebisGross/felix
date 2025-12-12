@@ -21,8 +21,48 @@ from typing import Optional, Dict, Any
 from ...components.themed_treeview import ThemedTreeview
 from ...components.search_entry import SearchEntry
 from ...theme_manager import get_theme_manager
+from ...styles import (
+    BUTTON_SM, BUTTON_MD, BUTTON_ICON,
+    FONT_TITLE, FONT_SECTION, FONT_BODY, FONT_CAPTION,
+    SPACE_XS, SPACE_SM, SPACE_MD, SPACE_LG,
+    TEXTBOX_MD, RADIUS_LG
+)
 
 logger = logging.getLogger(__name__)
+
+# Map categorical confidence levels to numeric values for display
+CONFIDENCE_LEVEL_MAP = {
+    "verified": 1.00,
+    "high": 0.80,
+    "medium": 0.60,
+    "low": 0.40,
+    "speculative": 0.20,
+}
+
+
+def format_confidence(confidence_level: str) -> str:
+    """
+    Convert categorical confidence level to numeric display string.
+
+    Args:
+        confidence_level: String like "low", "medium", "high", "verified"
+
+    Returns:
+        Formatted string like "0.80"
+    """
+    if not confidence_level:
+        return "0.50"
+
+    # Try numeric conversion first (in case it's already a float)
+    try:
+        return f"{float(confidence_level):.2f}"
+    except (ValueError, TypeError):
+        pass
+
+    # Map categorical level to numeric
+    level_lower = str(confidence_level).lower().strip()
+    numeric_value = CONFIDENCE_LEVEL_MAP.get(level_lower, 0.50)
+    return f"{numeric_value:.2f}"
 
 
 class KnowledgeBasePanel(ctk.CTkFrame):
@@ -58,7 +98,7 @@ class KnowledgeBasePanel(ctk.CTkFrame):
         self._create_layout()
 
     def _create_layout(self):
-        """Create horizontal split view with Documents (left) and Concepts (right)."""
+        """Create horizontal split view with Documents (left) and Concepts (right) with proper spacing."""
         # Configure grid weights for split
         self.grid_columnconfigure(0, weight=1)  # Documents pane
         self.grid_columnconfigure(1, weight=0)  # Separator
@@ -66,17 +106,17 @@ class KnowledgeBasePanel(ctk.CTkFrame):
         self.grid_rowconfigure(0, weight=1)
 
         # Left pane: Documents
-        self.documents_pane = ctk.CTkFrame(self, corner_radius=10)
-        self.documents_pane.grid(row=0, column=0, sticky="nsew", padx=(0, 5), pady=0)
+        self.documents_pane = ctk.CTkFrame(self, corner_radius=RADIUS_LG)
+        self.documents_pane.grid(row=0, column=0, sticky="nsew", padx=(SPACE_SM, SPACE_XS), pady=SPACE_SM)
         self._create_documents_pane()
 
-        # Separator (visual divider)
-        separator = ctk.CTkFrame(self, width=2, fg_color=self.theme_manager.get_color("border"))
-        separator.grid(row=0, column=1, sticky="ns", padx=0, pady=0)
+        # Separator (visual divider) - slightly thicker for better visibility
+        separator = ctk.CTkFrame(self, width=4, fg_color=self.theme_manager.get_color("border"))
+        separator.grid(row=0, column=1, sticky="ns", padx=SPACE_XS, pady=SPACE_SM)
 
         # Right pane: Concepts
-        self.concepts_pane = ctk.CTkFrame(self, corner_radius=10)
-        self.concepts_pane.grid(row=0, column=2, sticky="nsew", padx=(5, 0), pady=0)
+        self.concepts_pane = ctk.CTkFrame(self, corner_radius=RADIUS_LG)
+        self.concepts_pane.grid(row=0, column=2, sticky="nsew", padx=(SPACE_XS, SPACE_SM), pady=SPACE_SM)
         self._create_concepts_pane()
 
     def _create_documents_pane(self):
@@ -89,13 +129,13 @@ class KnowledgeBasePanel(ctk.CTkFrame):
         header_label = ctk.CTkLabel(
             self.documents_pane,
             text="DOCUMENTS",
-            font=ctk.CTkFont(size=14, weight="bold")
+            font=ctk.CTkFont(size=FONT_SECTION, weight="bold")
         )
-        header_label.grid(row=0, column=0, sticky="w", padx=15, pady=(15, 10))
+        header_label.grid(row=0, column=0, sticky="w", padx=SPACE_MD, pady=(SPACE_MD, SPACE_SM))
 
         # Controls frame
         controls_frame = ctk.CTkFrame(self.documents_pane, fg_color="transparent")
-        controls_frame.grid(row=1, column=0, sticky="ew", padx=15, pady=(0, 10))
+        controls_frame.grid(row=1, column=0, sticky="ew", padx=SPACE_MD, pady=(0, SPACE_SM))
         controls_frame.grid_columnconfigure(1, weight=1)  # Space between controls and refresh
 
         # Status filter
@@ -105,15 +145,15 @@ class KnowledgeBasePanel(ctk.CTkFrame):
         ctk.CTkLabel(
             filter_frame,
             text="Status:",
-            font=ctk.CTkFont(size=12)
-        ).pack(side="left", padx=(0, 5))
+            font=ctk.CTkFont(size=FONT_BODY)
+        ).pack(side="left", padx=(0, SPACE_XS))
 
         self.doc_filter_var = ctk.StringVar(value="all")
         self.doc_filter_combo = ctk.CTkComboBox(
             filter_frame,
             variable=self.doc_filter_var,
             values=["all", "completed", "processing", "pending", "failed"],
-            width=130,
+            width=BUTTON_MD[0],
             command=lambda _: self._refresh_documents()
         )
         self.doc_filter_combo.pack(side="left", padx=2)
@@ -122,7 +162,8 @@ class KnowledgeBasePanel(ctk.CTkFrame):
         self.doc_refresh_btn = ctk.CTkButton(
             controls_frame,
             text="🔄",
-            width=32,
+            width=BUTTON_ICON[0],
+            height=BUTTON_ICON[1],
             command=self._refresh_documents,
             fg_color="transparent",
             hover_color=self.theme_manager.get_color("bg_hover")
@@ -138,20 +179,21 @@ class KnowledgeBasePanel(ctk.CTkFrame):
             height=15,
             selectmode="extended"
         )
-        self.doc_tree.grid(row=2, column=0, sticky="nsew", padx=15, pady=(0, 10))
+        self.doc_tree.grid(row=2, column=0, sticky="nsew", padx=SPACE_MD, pady=(0, SPACE_SM))
 
         # Bind double-click to view details
         self.doc_tree.bind_tree("<Double-1>", self._view_document_details)
 
         # Action buttons
         action_frame = ctk.CTkFrame(self.documents_pane, fg_color="transparent")
-        action_frame.grid(row=3, column=0, sticky="ew", padx=15, pady=(0, 15))
+        action_frame.grid(row=3, column=0, sticky="ew", padx=SPACE_MD, pady=(0, SPACE_MD))
 
         self.process_btn = ctk.CTkButton(
             action_frame,
             text="⚡ Process Selected",
             command=self._process_selected_documents,
-            width=140
+            width=BUTTON_MD[0],
+            height=BUTTON_MD[1]
         )
         self.process_btn.pack(side="left", padx=2)
 
@@ -159,7 +201,8 @@ class KnowledgeBasePanel(ctk.CTkFrame):
             action_frame,
             text="🔄 Re-process",
             command=self._reprocess_selected_documents,
-            width=120
+            width=BUTTON_MD[0],
+            height=BUTTON_MD[1]
         )
         self.reprocess_btn.pack(side="left", padx=2)
 
@@ -167,7 +210,8 @@ class KnowledgeBasePanel(ctk.CTkFrame):
             action_frame,
             text="🗑️ Delete",
             command=self._delete_selected_documents,
-            width=100,
+            width=BUTTON_SM[0],
+            height=BUTTON_SM[1],
             fg_color=self.theme_manager.get_color("error"),
             hover_color="#b91c1c"
         )
@@ -183,18 +227,18 @@ class KnowledgeBasePanel(ctk.CTkFrame):
         header_label = ctk.CTkLabel(
             self.concepts_pane,
             text="CONCEPTS",
-            font=ctk.CTkFont(size=14, weight="bold")
+            font=ctk.CTkFont(size=FONT_SECTION, weight="bold")
         )
-        header_label.grid(row=0, column=0, sticky="w", padx=15, pady=(15, 10))
+        header_label.grid(row=0, column=0, sticky="w", padx=SPACE_MD, pady=(SPACE_MD, SPACE_SM))
 
         # Search and filter controls
         controls_frame = ctk.CTkFrame(self.concepts_pane, fg_color="transparent")
-        controls_frame.grid(row=1, column=0, sticky="ew", padx=15, pady=(0, 10))
+        controls_frame.grid(row=1, column=0, sticky="ew", padx=SPACE_MD, pady=(0, SPACE_SM))
         controls_frame.grid_columnconfigure(0, weight=1)
 
         # Top row: Search entry
         search_row = ctk.CTkFrame(controls_frame, fg_color="transparent")
-        search_row.grid(row=0, column=0, sticky="ew", pady=(0, 5))
+        search_row.grid(row=0, column=0, sticky="ew", pady=(0, SPACE_XS))
         search_row.grid_columnconfigure(0, weight=1)
 
         self.concept_search = SearchEntry(
@@ -203,13 +247,14 @@ class KnowledgeBasePanel(ctk.CTkFrame):
             on_search=lambda q: self._search_concepts(),
             on_clear=lambda: self._refresh_concepts()
         )
-        self.concept_search.grid(row=0, column=0, sticky="ew", padx=(0, 5))
+        self.concept_search.grid(row=0, column=0, sticky="ew", padx=(0, SPACE_XS))
 
         # Search button
         self.search_btn = ctk.CTkButton(
             search_row,
             text="🔍",
-            width=32,
+            width=BUTTON_ICON[0],
+            height=BUTTON_ICON[1],
             command=self._search_concepts,
             fg_color="transparent",
             hover_color=self.theme_manager.get_color("bg_hover")
@@ -220,7 +265,8 @@ class KnowledgeBasePanel(ctk.CTkFrame):
         self.concept_refresh_btn = ctk.CTkButton(
             search_row,
             text="🔄",
-            width=32,
+            width=BUTTON_ICON[0],
+            height=BUTTON_ICON[1],
             command=self._refresh_concepts,
             fg_color="transparent",
             hover_color=self.theme_manager.get_color("bg_hover")
@@ -234,15 +280,15 @@ class KnowledgeBasePanel(ctk.CTkFrame):
         ctk.CTkLabel(
             filter_row,
             text="Domain:",
-            font=ctk.CTkFont(size=12)
-        ).pack(side="left", padx=(0, 5))
+            font=ctk.CTkFont(size=FONT_BODY)
+        ).pack(side="left", padx=(0, SPACE_XS))
 
         self.concept_domain_var = ctk.StringVar(value="all")
         self.concept_domain_combo = ctk.CTkComboBox(
             filter_row,
             variable=self.concept_domain_var,
             values=["all", "python", "web", "ai", "database", "general"],
-            width=120,
+            width=BUTTON_MD[0],
             command=lambda _: self._refresh_concepts()
         )
         self.concept_domain_combo.pack(side="left", padx=2)
@@ -256,7 +302,7 @@ class KnowledgeBasePanel(ctk.CTkFrame):
             height=15,
             selectmode="extended"
         )
-        self.concepts_tree.grid(row=2, column=0, sticky="nsew", padx=15, pady=(0, 10))
+        self.concepts_tree.grid(row=2, column=0, sticky="nsew", padx=SPACE_MD, pady=(0, SPACE_SM))
 
         # Bind events
         self.concepts_tree.bind_tree("<Double-1>", self._edit_concept_entry)
@@ -264,13 +310,14 @@ class KnowledgeBasePanel(ctk.CTkFrame):
 
         # Action buttons
         action_frame = ctk.CTkFrame(self.concepts_pane, fg_color="transparent")
-        action_frame.grid(row=3, column=0, sticky="ew", padx=15, pady=(0, 15))
+        action_frame.grid(row=3, column=0, sticky="ew", padx=SPACE_MD, pady=(0, SPACE_MD))
 
         self.edit_btn = ctk.CTkButton(
             action_frame,
             text="✏️ Edit",
             command=self._edit_concept_entry,
-            width=80
+            width=BUTTON_SM[0],
+            height=BUTTON_SM[1]
         )
         self.edit_btn.pack(side="left", padx=2)
 
@@ -278,25 +325,34 @@ class KnowledgeBasePanel(ctk.CTkFrame):
             action_frame,
             text="🗑️ Delete",
             command=self._delete_selected_concepts,
-            width=80,
+            width=BUTTON_SM[0],
+            height=BUTTON_SM[1],
             fg_color=self.theme_manager.get_color("error"),
             hover_color="#b91c1c"
         )
         self.delete_concept_btn.pack(side="left", padx=2)
 
+        # Merge button - disabled (not yet implemented)
         self.merge_btn = ctk.CTkButton(
             action_frame,
             text="🔗 Merge",
             command=self._merge_selected_concepts,
-            width=80
+            width=BUTTON_SM[0],
+            height=BUTTON_SM[1],
+            state="disabled",
+            fg_color="gray"
         )
         self.merge_btn.pack(side="left", padx=2)
 
+        # Export button - disabled (not yet implemented)
         self.export_btn = ctk.CTkButton(
             action_frame,
             text="💾 Export",
             command=self._export_selected_concepts,
-            width=80
+            width=BUTTON_SM[0],
+            height=BUTTON_SM[1],
+            state="disabled",
+            fg_color="gray"
         )
         self.export_btn.pack(side="left", padx=2)
 
@@ -453,25 +509,24 @@ class KnowledgeBasePanel(ctk.CTkFrame):
                         data = json.loads(content_json)
                         concept_text = data.get("concept", "Unknown")
                         definition = data.get("definition", "")
-                    except:
-                        pass
+                    except (json.JSONDecodeError, TypeError) as e:
+                        logger.warning(f"Failed to parse content_json: {e}")
+                        concept_text = "[Parse Error]"
                 elif content_compressed:
                     try:
                         data = pickle.loads(content_compressed)
                         concept_text = data.get("concept", "Unknown")
                         definition = data.get("definition", "")
-                    except:
-                        pass
+                    except (pickle.UnpicklingError, TypeError, AttributeError) as e:
+                        logger.warning(f"Failed to unpickle content_compressed: {e}")
+                        concept_text = "[Parse Error]"
 
                 # Truncate definition for display
                 if len(definition) > 100:
                     definition = definition[:97] + "..."
 
-                # Format confidence
-                try:
-                    conf_str = f"{float(confidence):.2f}" if confidence else "0.00"
-                except (ValueError, TypeError):
-                    conf_str = "0.00"
+                # Format confidence (maps categorical levels to numeric)
+                conf_str = format_confidence(confidence)
 
                 # Insert into tree
                 item_id = self.concepts_tree.insert(
@@ -484,6 +539,17 @@ class KnowledgeBasePanel(ctk.CTkFrame):
 
     def _enable_features(self):
         """Enable features when Felix system starts."""
+        felix_system = getattr(self.main_app, 'felix_system', None) if self.main_app else None
+        if felix_system:
+            # Wire up references to knowledge brain components
+            self.knowledge_store = getattr(felix_system, 'knowledge_store', None)
+            self.knowledge_retriever = getattr(felix_system, 'knowledge_retriever', None)
+            self.knowledge_daemon = getattr(felix_system, 'knowledge_daemon', None)
+
+            # Defer initial refresh
+            if self.knowledge_store:
+                self.after(500, self._async_initial_refresh)
+
         # Enable all buttons
         for btn in [self.process_btn, self.reprocess_btn, self.delete_doc_btn,
                     self.edit_btn, self.delete_concept_btn, self.merge_btn, self.export_btn]:
@@ -560,14 +626,14 @@ class KnowledgeBasePanel(ctk.CTkFrame):
             tags = self.doc_tree.tree.item(item, "tags")
             if not tags:
                 return
-            doc_id = int(tags[0])
+            doc_id = tags[0]  # IDs are hex strings, not integers
 
             # Fetch full document info
             if not self.knowledge_store:
                 return
 
             conn = sqlite3.connect(self.knowledge_store.storage_path)
-            cursor = conn.execute("SELECT * FROM document_sources WHERE id = ?", (doc_id,))
+            cursor = conn.execute("SELECT * FROM document_sources WHERE doc_id = ?", (doc_id,))
             row = cursor.fetchone()
             conn.close()
 
@@ -624,9 +690,9 @@ class KnowledgeBasePanel(ctk.CTkFrame):
             for item in selection:
                 tags = self.doc_tree.tree.item(item, "tags")
                 if tags:
-                    doc_id = int(tags[0])
+                    doc_id = tags[0]  # IDs are hex strings, not integers
                     # Delete document and associated entries (cascade)
-                    conn.execute("DELETE FROM document_sources WHERE id = ?", (doc_id,))
+                    conn.execute("DELETE FROM document_sources WHERE doc_id = ?", (doc_id,))
                     deleted_count += 1
 
             conn.commit()
@@ -694,25 +760,24 @@ class KnowledgeBasePanel(ctk.CTkFrame):
                         data = json.loads(content_json)
                         concept_text = data.get("concept", "Unknown")
                         definition = data.get("definition", "")
-                    except:
-                        pass
+                    except (json.JSONDecodeError, TypeError) as e:
+                        logger.warning(f"Failed to parse content_json: {e}")
+                        concept_text = "[Parse Error]"
                 elif content_compressed:
                     try:
                         data = pickle.loads(content_compressed)
                         concept_text = data.get("concept", "Unknown")
                         definition = data.get("definition", "")
-                    except:
-                        pass
+                    except (pickle.UnpicklingError, TypeError, AttributeError) as e:
+                        logger.warning(f"Failed to unpickle content_compressed: {e}")
+                        concept_text = "[Parse Error]"
 
                 # Truncate definition for display
                 if len(definition) > 100:
                     definition = definition[:97] + "..."
 
-                # Format confidence
-                try:
-                    conf_str = f"{float(confidence):.2f}" if confidence else "0.00"
-                except (ValueError, TypeError):
-                    conf_str = "0.00"
+                # Format confidence (maps categorical levels to numeric)
+                conf_str = format_confidence(confidence)
 
                 # Insert into tree
                 item_id = self.concepts_tree.insert(
@@ -772,24 +837,24 @@ class KnowledgeBasePanel(ctk.CTkFrame):
                         data = json.loads(content_json)
                         concept_text = data.get("concept", "Unknown")
                         definition = data.get("definition", "")
-                    except:
-                        pass
+                    except (json.JSONDecodeError, TypeError) as e:
+                        logger.warning(f"Failed to parse content_json: {e}")
+                        concept_text = "[Parse Error]"
                 elif content_compressed:
                     try:
                         data = pickle.loads(content_compressed)
                         concept_text = data.get("concept", "Unknown")
                         definition = data.get("definition", "")
-                    except:
-                        pass
+                    except (pickle.UnpicklingError, TypeError, AttributeError) as e:
+                        logger.warning(f"Failed to unpickle content_compressed: {e}")
+                        concept_text = "[Parse Error]"
 
                 # Truncate definition
                 if len(definition) > 100:
                     definition = definition[:97] + "..."
 
-                try:
-                    conf_str = f"{float(confidence):.2f}" if confidence else "0.00"
-                except (ValueError, TypeError):
-                    conf_str = "0.00"
+                # Format confidence (maps categorical levels to numeric)
+                conf_str = format_confidence(confidence)
 
                 item_id = self.concepts_tree.insert(
                     values=(concept_text, domain, conf_str, definition)
@@ -816,7 +881,7 @@ class KnowledgeBasePanel(ctk.CTkFrame):
             tags = self.concepts_tree.tree.item(item, "tags")
             if not tags:
                 return
-            knowledge_id = int(tags[0])
+            knowledge_id = tags[0]  # IDs are hex strings, not integers
 
             # Fetch full concept data
             if not self.knowledge_store:
@@ -859,7 +924,7 @@ class KnowledgeBasePanel(ctk.CTkFrame):
             for item in selection:
                 tags = self.concepts_tree.tree.item(item, "tags")
                 if tags:
-                    knowledge_id = int(tags[0])
+                    knowledge_id = tags[0]  # IDs are hex strings, not integers
                     conn.execute("DELETE FROM knowledge_entries WHERE knowledge_id = ?", (knowledge_id,))
                     deleted_count += 1
 
@@ -947,7 +1012,7 @@ class DocumentDetailsDialog(ctk.CTkToplevel):
 
         # Make modal
         self.transient(parent)
-        self.grab_set()
+        self.after(100, self._delayed_grab)
 
         # Extract document data
         doc_id = document_row[0]
@@ -959,18 +1024,18 @@ class DocumentDetailsDialog(ctk.CTkToplevel):
         chunks = document_row[15] or 0
         concepts = document_row[16] or 0
         added_at = datetime.fromtimestamp(document_row[18]).strftime('%Y-%m-%d %H:%M:%S') if document_row[18] else "N/A"
-        processed_at = datetime.fromtimestamp(document_row[19]).strftime('%Y-%m-%d %H:%M:%S') if document_row[19] else "N/A"
+        processed_at = datetime.fromtimestamp(document_row[14]).strftime('%Y-%m-%d %H:%M:%S') if document_row[14] else "N/A"
 
         # Create scrollable frame
         scroll_frame = ctk.CTkScrollableFrame(self)
-        scroll_frame.pack(fill="both", expand=True, padx=20, pady=20)
+        scroll_frame.pack(fill="both", expand=True, padx=SPACE_LG, pady=SPACE_LG)
 
         # Title
         ctk.CTkLabel(
             scroll_frame,
             text=file_name,
-            font=ctk.CTkFont(size=18, weight="bold")
-        ).pack(pady=(0, 20))
+            font=ctk.CTkFont(size=FONT_TITLE, weight="bold")
+        ).pack(pady=(0, SPACE_LG))
 
         # Details
         details = [
@@ -987,12 +1052,12 @@ class DocumentDetailsDialog(ctk.CTkToplevel):
 
         for label, value in details:
             row_frame = ctk.CTkFrame(scroll_frame, fg_color="transparent")
-            row_frame.pack(fill="x", pady=5)
+            row_frame.pack(fill="x", pady=SPACE_XS)
 
             ctk.CTkLabel(
                 row_frame,
                 text=label,
-                font=ctk.CTkFont(weight="bold"),
+                font=ctk.CTkFont(size=FONT_BODY, weight="bold"),
                 width=150,
                 anchor="w"
             ).pack(side="left")
@@ -1000,6 +1065,7 @@ class DocumentDetailsDialog(ctk.CTkToplevel):
             ctk.CTkLabel(
                 row_frame,
                 text=value,
+                font=ctk.CTkFont(size=FONT_BODY),
                 anchor="w"
             ).pack(side="left", fill="x", expand=True)
 
@@ -1008,14 +1074,23 @@ class DocumentDetailsDialog(ctk.CTkToplevel):
             self,
             text="Close",
             command=self.destroy,
-            width=100
-        ).pack(pady=(0, 20))
+            width=BUTTON_SM[0],
+            height=BUTTON_SM[1]
+        ).pack(pady=(0, SPACE_LG))
 
         # Center on parent
         self.update_idletasks()
         x = parent.winfo_x() + (parent.winfo_width() - self.winfo_width()) // 2
         y = parent.winfo_y() + (parent.winfo_height() - self.winfo_height()) // 2
         self.geometry(f"+{x}+{y}")
+
+    def _delayed_grab(self):
+        """Grab focus after window is rendered."""
+        try:
+            self.grab_set()
+            self.focus_set()
+        except Exception as e:
+            logger.warning(f"Could not grab dialog focus: {e}")
 
 
 class ConceptEditDialog(ctk.CTkToplevel):
@@ -1042,7 +1117,7 @@ class ConceptEditDialog(ctk.CTkToplevel):
 
         # Make modal
         self.transient(parent)
-        self.grab_set()
+        self.after(100, self._delayed_grab)
 
         # Parse concept data
         content_json, content_compressed, domain, confidence = concept_row
@@ -1051,13 +1126,15 @@ class ConceptEditDialog(ctk.CTkToplevel):
         if content_json:
             try:
                 self.concept_data = json.loads(content_json)
-            except:
-                pass
+            except (json.JSONDecodeError, TypeError) as e:
+                logger.warning(f"Failed to parse content_json in edit dialog: {e}")
+                self.concept_data = {"concept": "[Parse Error]", "definition": ""}
         elif content_compressed:
             try:
                 self.concept_data = pickle.loads(content_compressed)
-            except:
-                pass
+            except (pickle.UnpicklingError, TypeError, AttributeError) as e:
+                logger.warning(f"Failed to unpickle content in edit dialog: {e}")
+                self.concept_data = {"concept": "[Parse Error]", "definition": ""}
 
         # Create form
         self._create_form()
@@ -1072,76 +1149,121 @@ class ConceptEditDialog(ctk.CTkToplevel):
         """Create edit form."""
         # Form container
         form_frame = ctk.CTkScrollableFrame(self)
-        form_frame.pack(fill="both", expand=True, padx=20, pady=20)
+        form_frame.pack(fill="both", expand=True, padx=SPACE_LG, pady=SPACE_LG)
 
         # Title
         ctk.CTkLabel(
             form_frame,
             text="Edit Concept Entry",
-            font=ctk.CTkFont(size=16, weight="bold")
-        ).pack(pady=(0, 20))
+            font=ctk.CTkFont(size=FONT_SECTION, weight="bold")
+        ).pack(pady=(0, SPACE_LG))
 
         # Concept name
-        ctk.CTkLabel(form_frame, text="Concept:", anchor="w").pack(fill="x", pady=(5, 2))
+        ctk.CTkLabel(form_frame, text="Concept:", font=ctk.CTkFont(size=FONT_BODY), anchor="w").pack(fill="x", pady=(SPACE_XS, 2))
         self.concept_entry = ctk.CTkEntry(form_frame)
-        self.concept_entry.pack(fill="x", pady=(0, 10))
+        self.concept_entry.pack(fill="x", pady=(0, SPACE_SM))
         self.concept_entry.insert(0, self.concept_data.get("concept", ""))
 
         # Domain
-        ctk.CTkLabel(form_frame, text="Domain:", anchor="w").pack(fill="x", pady=(5, 2))
+        ctk.CTkLabel(form_frame, text="Domain:", font=ctk.CTkFont(size=FONT_BODY), anchor="w").pack(fill="x", pady=(SPACE_XS, 2))
         self.domain_entry = ctk.CTkEntry(form_frame)
-        self.domain_entry.pack(fill="x", pady=(0, 10))
+        self.domain_entry.pack(fill="x", pady=(0, SPACE_SM))
         self.domain_entry.insert(0, self.concept_data.get("domain", ""))
 
         # Definition
-        ctk.CTkLabel(form_frame, text="Definition:", anchor="w").pack(fill="x", pady=(5, 2))
-        self.definition_text = ctk.CTkTextbox(form_frame, height=150)
-        self.definition_text.pack(fill="both", expand=True, pady=(0, 10))
+        ctk.CTkLabel(form_frame, text="Definition:", font=ctk.CTkFont(size=FONT_BODY), anchor="w").pack(fill="x", pady=(SPACE_XS, 2))
+        self.definition_text = ctk.CTkTextbox(form_frame, height=TEXTBOX_MD)
+        self.definition_text.pack(fill="both", expand=True, pady=(0, SPACE_SM))
         self.definition_text.insert("1.0", self.concept_data.get("definition", ""))
 
         # Confidence
-        ctk.CTkLabel(form_frame, text="Confidence (0-1):", anchor="w").pack(fill="x", pady=(5, 2))
+        ctk.CTkLabel(form_frame, text="Confidence (0-1):", font=ctk.CTkFont(size=FONT_BODY), anchor="w").pack(fill="x", pady=(SPACE_XS, 2))
         self.confidence_entry = ctk.CTkEntry(form_frame)
-        self.confidence_entry.pack(fill="x", pady=(0, 10))
+        self.confidence_entry.pack(fill="x", pady=(0, SPACE_SM))
         self.confidence_entry.insert(0, str(self.concept_data.get("confidence", 0.5)))
 
         # Buttons
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
-        btn_frame.pack(pady=(0, 20))
+        btn_frame.pack(pady=(0, SPACE_LG))
 
         ctk.CTkButton(
             btn_frame,
             text="Save",
             command=self._save_changes,
-            width=100
-        ).pack(side="left", padx=5)
+            width=BUTTON_SM[0],
+            height=BUTTON_SM[1]
+        ).pack(side="left", padx=SPACE_XS)
 
         ctk.CTkButton(
             btn_frame,
             text="Cancel",
             command=self.destroy,
-            width=100,
+            width=BUTTON_SM[0],
+            height=BUTTON_SM[1],
             fg_color="gray"
-        ).pack(side="left", padx=5)
+        ).pack(side="left", padx=SPACE_XS)
 
     def _save_changes(self):
-        """Save edited concept data."""
+        """Save edited concept data to the database."""
         try:
-            # Update concept data
+            # Update concept data from form
             self.concept_data["concept"] = self.concept_entry.get()
-            self.concept_data["domain"] = self.domain_entry.get()
+            new_domain = self.domain_entry.get()
+            self.concept_data["domain"] = new_domain
             self.concept_data["definition"] = self.definition_text.get("1.0", "end-1c")
 
+            # Parse confidence and map to confidence_level
+            confidence_level = "MEDIUM"  # default
             try:
                 confidence = float(self.confidence_entry.get())
-                if 0 <= confidence <= 1:
-                    self.concept_data["confidence"] = confidence
+                if confidence >= 0.9:
+                    confidence_level = "VERIFIED"
+                elif confidence >= 0.7:
+                    confidence_level = "HIGH"
+                elif confidence >= 0.5:
+                    confidence_level = "MEDIUM"
+                elif confidence >= 0.3:
+                    confidence_level = "LOW"
+                else:
+                    confidence_level = "SPECULATIVE"
+                self.concept_data["confidence"] = confidence
             except ValueError:
                 pass
 
-            # Save to database (simplified - would need knowledge_store reference)
-            messagebox.showinfo("Success", "Concept updated successfully!\n\n"
-                              "(Note: Full save implementation requires knowledge_store integration)")
+            # Get knowledge_store from parent
+            knowledge_store = getattr(self.parent, 'knowledge_store', None)
+            if not knowledge_store:
+                messagebox.showerror("Error", "Knowledge store not available. Cannot save changes.")
+                return
+
+            # Save to database
+            import sqlite3
+            import time
+
+            conn = sqlite3.connect(knowledge_store.storage_path)
+            cursor = conn.cursor()
+
+            # Update the knowledge entry
+            content_json = json.dumps(self.concept_data)
+            cursor.execute("""
+                UPDATE knowledge_entries
+                SET content_json = ?,
+                    domain = ?,
+                    confidence_level = ?,
+                    updated_at = ?
+                WHERE knowledge_id = ?
+            """, (content_json, new_domain, confidence_level, time.time(), self.knowledge_id))
+
+            conn.commit()
+            rows_affected = cursor.rowcount
+            conn.close()
+
+            if rows_affected > 0:
+                messagebox.showinfo("Success", "Concept updated successfully!")
+                logger.info(f"Updated knowledge entry: {self.knowledge_id}")
+            else:
+                messagebox.showwarning("Warning", "No changes were saved. Entry may not exist.")
+                logger.warning(f"No rows updated for knowledge_id: {self.knowledge_id}")
 
             # Refresh parent and close
             if self.refresh_callback:
@@ -1151,3 +1273,11 @@ class ConceptEditDialog(ctk.CTkToplevel):
         except Exception as e:
             logger.error(f"Failed to save concept: {e}")
             messagebox.showerror("Error", f"Failed to save changes: {e}")
+
+    def _delayed_grab(self):
+        """Grab focus after window is rendered."""
+        try:
+            self.grab_set()
+            self.focus_set()
+        except Exception as e:
+            logger.warning(f"Could not grab dialog focus: {e}")

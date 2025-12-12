@@ -18,7 +18,17 @@ from ..utils import logger, ThreadManager
 from ..theme_manager import get_theme_manager
 from ..components.themed_treeview import ThemedTreeview
 from ..components.search_entry import SearchEntry
+from ..components.responsive_grid import ResponsiveCardGrid
+from ..components.resizable_separator import ResizableSeparator
 from ..dialogs.approval_dialog import ApprovalDialog
+from ..responsive import Breakpoint, BreakpointConfig
+from .base_tab import ResponsiveTab
+from ..styles import (
+    BUTTON_SM, BUTTON_MD,
+    FONT_TITLE, FONT_SECTION, FONT_BODY, FONT_CAPTION, FONT_SMALL,
+    SPACE_XS, SPACE_SM, SPACE_MD, SPACE_LG,
+    INPUT_LG
+)
 
 # Import Felix modules (with fallback)
 try:
@@ -28,7 +38,7 @@ except ImportError:
     logger.warning("ApprovalDecision not available")
 
 
-class ApprovalsTab(ctk.CTkFrame):
+class ApprovalsTab(ResponsiveTab):
     """
     Tab showing approval request history and current pending approvals.
 
@@ -38,6 +48,7 @@ class ApprovalsTab(ctk.CTkFrame):
     - Quick approve/deny actions from list
     - Risk-level color coding
     - Automatic polling for new approvals
+    - Responsive layout with card grid for pending approvals
     """
 
     def __init__(self, master, thread_manager: ThreadManager, main_app=None, **kwargs):
@@ -50,40 +61,140 @@ class ApprovalsTab(ctk.CTkFrame):
             main_app: Reference to main FelixApp
             **kwargs: Additional arguments passed to CTkFrame
         """
-        super().__init__(master, **kwargs)
+        super().__init__(master, thread_manager, main_app, **kwargs)
 
-        self.thread_manager = thread_manager
-        self.main_app = main_app
         self.theme_manager = get_theme_manager()
         self.polling_active = False
         self.poll_interval = 2000  # Poll every 2 seconds
 
+        # Layout state
+        self.history_split_ratio = 0.6  # Pending gets 60%, history gets 40%
+        self.use_card_grid = False  # Track if using card grid vs tree
+
         self._setup_ui()
 
     def _setup_ui(self):
-        """Set up the approvals tab UI."""
+        """Set up the approvals tab UI with responsive layout."""
         # Configure grid
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=1)  # Pending section
-        self.grid_rowconfigure(3, weight=1)  # History section
+        self.grid_rowconfigure(0, weight=1)
 
-        # Header section
+        # Create main container
+        self.main_container = ctk.CTkFrame(self, fg_color="transparent")
+        self.main_container.grid(row=0, column=0, sticky="nsew")
+
+        # Create sections
         self._create_header()
-
-        # Pending approvals section
         self._create_pending_section()
+        self._create_history_section()
+
+        # Separator for resizing
+        self.separator = None
+
+    def on_breakpoint_change(self, breakpoint: Breakpoint, config: BreakpointConfig):
+        """Handle breakpoint changes for responsive layout."""
+        # Determine if using card grid
+        self.use_card_grid = breakpoint in (Breakpoint.WIDE, Breakpoint.ULTRAWIDE)
+
+        # Clear existing layout
+        for widget in self.main_container.winfo_children():
+            widget.grid_forget()
+
+        if breakpoint == Breakpoint.COMPACT:
+            # COMPACT: Vertical stack, history below
+            self._layout_compact()
+        elif breakpoint == Breakpoint.STANDARD:
+            # STANDARD: Vertical stack with better spacing
+            self._layout_standard()
+        else:
+            # WIDE/ULTRAWIDE: Side-by-side with card grid and history sidebar
+            self._layout_wide()
+
+    def _layout_compact(self):
+        """Layout for compact screens: vertical stack."""
+        self.main_container.grid_columnconfigure(0, weight=1)
+        self.main_container.grid_rowconfigure(0, weight=0)  # Header
+        self.main_container.grid_rowconfigure(1, weight=1)  # Pending
+        self.main_container.grid_rowconfigure(2, weight=0)  # Separator
+        self.main_container.grid_rowconfigure(3, weight=1)  # History
+
+        # Header
+        if hasattr(self, 'header_frame'):
+            self.header_frame.grid(row=0, column=0, sticky="ew", padx=SPACE_LG, pady=(SPACE_LG, SPACE_SM))
+
+        # Pending approvals
+        if hasattr(self, 'pending_frame'):
+            self.pending_frame.grid(row=1, column=0, sticky="nsew", padx=SPACE_LG, pady=(0, SPACE_XS))
 
         # Separator
-        separator = ctk.CTkFrame(self, height=2, fg_color=self.theme_manager.get_color("border"))
-        separator.grid(row=2, column=0, sticky="ew", padx=20, pady=15)
+        separator = ctk.CTkFrame(self.main_container, height=2, fg_color=self.theme_manager.get_color("border"))
+        separator.grid(row=2, column=0, sticky="ew", padx=SPACE_LG, pady=SPACE_MD)
 
-        # History section
-        self._create_history_section()
+        # History
+        if hasattr(self, 'history_frame'):
+            self.history_frame.grid(row=3, column=0, sticky="nsew", padx=SPACE_LG, pady=(SPACE_XS, SPACE_LG))
+
+    def _layout_standard(self):
+        """Layout for standard screens: vertical stack with better spacing."""
+        self.main_container.grid_columnconfigure(0, weight=1)
+        self.main_container.grid_rowconfigure(0, weight=0)  # Header
+        self.main_container.grid_rowconfigure(1, weight=1)  # Pending
+        self.main_container.grid_rowconfigure(2, weight=0)  # Separator
+        self.main_container.grid_rowconfigure(3, weight=1)  # History
+
+        # Header
+        if hasattr(self, 'header_frame'):
+            self.header_frame.grid(row=0, column=0, sticky="ew", padx=SPACE_LG, pady=(SPACE_LG, SPACE_SM))
+
+        # Pending approvals
+        if hasattr(self, 'pending_frame'):
+            self.pending_frame.grid(row=1, column=0, sticky="nsew", padx=SPACE_LG, pady=(0, SPACE_SM))
+
+        # Separator
+        separator = ctk.CTkFrame(self.main_container, height=2, fg_color=self.theme_manager.get_color("border"))
+        separator.grid(row=2, column=0, sticky="ew", padx=SPACE_LG, pady=SPACE_MD)
+
+        # History
+        if hasattr(self, 'history_frame'):
+            self.history_frame.grid(row=3, column=0, sticky="nsew", padx=SPACE_LG, pady=(SPACE_SM, SPACE_LG))
+
+    def _layout_wide(self):
+        """Layout for wide/ultrawide screens: side-by-side with card grid."""
+        self.main_container.grid_columnconfigure(0, weight=1)
+        self.main_container.grid_columnconfigure(1, weight=0)
+        self.main_container.grid_columnconfigure(2, weight=0, minsize=350)
+        self.main_container.grid_rowconfigure(0, weight=0)  # Header
+        self.main_container.grid_rowconfigure(1, weight=1)  # Content
+
+        # Header spans all columns
+        if hasattr(self, 'header_frame'):
+            self.header_frame.grid(row=0, column=0, columnspan=3, sticky="ew", padx=SPACE_LG, pady=(SPACE_LG, SPACE_SM))
+
+        # Pending approvals on left (with card grid)
+        if hasattr(self, 'pending_frame'):
+            self.pending_frame.grid(row=1, column=0, sticky="nsew", padx=(SPACE_LG, SPACE_SM), pady=(0, SPACE_LG))
+
+        # Create separator if needed
+        if not self.separator:
+            self.separator = ResizableSeparator(
+                self.main_container,
+                orientation="vertical",
+                on_drag_complete=self._on_separator_drag
+            )
+        self.separator.grid(row=1, column=1, sticky="ns", pady=(0, SPACE_LG))
+
+        # History sidebar on right
+        if hasattr(self, 'history_frame'):
+            self.history_frame.grid(row=1, column=2, sticky="nsew", padx=(0, SPACE_LG), pady=(0, SPACE_LG))
+
+    def _on_separator_drag(self, ratio: float):
+        """Handle separator drag completion."""
+        self.history_split_ratio = ratio
 
     def _create_header(self):
         """Create the header section with title and controls."""
-        header_frame = ctk.CTkFrame(self, fg_color="transparent")
-        header_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=(20, 10))
+        self.header_frame = ctk.CTkFrame(self.main_container, fg_color="transparent")
+        header_frame = self.header_frame
         header_frame.grid_columnconfigure(1, weight=1)
 
         # Title
@@ -93,13 +204,13 @@ class ApprovalsTab(ctk.CTkFrame):
         ctk.CTkLabel(
             title_frame,
             text="System Command Approvals",
-            font=ctk.CTkFont(size=18, weight="bold")
+            font=ctk.CTkFont(size=FONT_TITLE, weight="bold")
         ).pack(anchor="w")
 
         ctk.CTkLabel(
             title_frame,
             text="Manage pending approvals and view approval history",
-            font=ctk.CTkFont(size=11),
+            font=ctk.CTkFont(size=FONT_CAPTION),
             text_color=self.theme_manager.get_color("fg_muted")
         ).pack(anchor="w")
 
@@ -111,14 +222,14 @@ class ApprovalsTab(ctk.CTkFrame):
             control_frame,
             text="Refresh",
             command=self._refresh_approvals,
-            width=90,
-            height=32,
+            width=BUTTON_SM[0],
+            height=BUTTON_SM[1],
             state="disabled",
             fg_color="transparent",
             border_width=1,
             text_color=("gray10", "gray90")
         )
-        self.refresh_button.pack(side="left", padx=5)
+        self.refresh_button.pack(side="left", padx=SPACE_XS)
 
         self.auto_refresh_var = ctk.BooleanVar(value=False)
         self.auto_refresh_check = ctk.CTkCheckBox(
@@ -128,41 +239,41 @@ class ApprovalsTab(ctk.CTkFrame):
             command=self._toggle_auto_refresh,
             state="disabled"
         )
-        self.auto_refresh_check.pack(side="left", padx=5)
+        self.auto_refresh_check.pack(side="left", padx=SPACE_XS)
 
         # Status label
         self.status_label = ctk.CTkLabel(
             control_frame,
             text="System not running",
-            font=ctk.CTkFont(size=11),
+            font=ctk.CTkFont(size=FONT_CAPTION),
             text_color=self.theme_manager.get_color("fg_muted")
         )
-        self.status_label.pack(side="left", padx=(15, 0))
+        self.status_label.pack(side="left", padx=(SPACE_MD, 0))
 
     def _create_pending_section(self):
         """Create the pending approvals section."""
-        pending_frame = ctk.CTkFrame(self)
-        pending_frame.grid(row=1, column=0, sticky="nsew", padx=20, pady=(0, 5))
+        self.pending_frame = ctk.CTkFrame(self.main_container)
+        pending_frame = self.pending_frame
         pending_frame.grid_columnconfigure(0, weight=1)
         pending_frame.grid_rowconfigure(1, weight=1)
 
         # Section header
         header = ctk.CTkFrame(pending_frame, fg_color="transparent")
-        header.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
+        header.grid(row=0, column=0, sticky="ew", padx=SPACE_SM, pady=(SPACE_SM, SPACE_XS))
 
         ctk.CTkLabel(
             header,
             text="Pending Approvals",
-            font=ctk.CTkFont(size=14, weight="bold")
+            font=ctk.CTkFont(size=FONT_SECTION, weight="bold")
         ).pack(side="left")
 
         self.pending_count_label = ctk.CTkLabel(
             header,
             text="(0)",
-            font=ctk.CTkFont(size=12),
+            font=ctk.CTkFont(size=FONT_BODY),
             text_color=self.theme_manager.get_color("fg_muted")
         )
-        self.pending_count_label.pack(side="left", padx=(5, 0))
+        self.pending_count_label.pack(side="left", padx=(SPACE_XS, 0))
 
         # TreeView for pending approvals
         self.pending_tree = ThemedTreeview(
@@ -172,85 +283,85 @@ class ApprovalsTab(ctk.CTkFrame):
             widths=[120, 300, 150, 100, 150, 150],
             height=8
         )
-        self.pending_tree.grid(row=1, column=0, sticky="nsew", padx=10, pady=(5, 10))
+        self.pending_tree.grid(row=1, column=0, sticky="nsew", padx=SPACE_SM, pady=(SPACE_XS, SPACE_SM))
 
         # Double-click to review
         self.pending_tree.bind_tree("<Double-1>", self._on_pending_double_click)
 
         # Action buttons
         action_frame = ctk.CTkFrame(pending_frame, fg_color="transparent")
-        action_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 10))
+        action_frame.grid(row=2, column=0, sticky="ew", padx=SPACE_SM, pady=(0, SPACE_SM))
 
         self.review_button = ctk.CTkButton(
             action_frame,
             text="Review Selected",
             command=self._review_selected,
-            width=130,
-            height=32,
+            width=BUTTON_MD[0],
+            height=BUTTON_MD[1],
             state="disabled"
         )
-        self.review_button.pack(side="left", padx=(0, 5))
+        self.review_button.pack(side="left", padx=(0, SPACE_XS))
 
         self.approve_all_button = ctk.CTkButton(
             action_frame,
             text="Approve All",
             command=self._approve_all,
-            width=110,
-            height=32,
+            width=BUTTON_MD[0],
+            height=BUTTON_MD[1],
             state="disabled",
             fg_color=self.theme_manager.get_color("success"),
             hover_color="#1e8449"
         )
-        self.approve_all_button.pack(side="left", padx=5)
+        self.approve_all_button.pack(side="left", padx=SPACE_XS)
 
         self.deny_all_button = ctk.CTkButton(
             action_frame,
             text="Deny All",
             command=self._deny_all,
-            width=110,
-            height=32,
+            width=BUTTON_MD[0],
+            height=BUTTON_MD[1],
             state="disabled",
             fg_color=self.theme_manager.get_color("error"),
             hover_color="#a93226"
         )
-        self.deny_all_button.pack(side="left", padx=5)
+        self.deny_all_button.pack(side="left", padx=SPACE_XS)
 
     def _create_history_section(self):
         """Create the approval history section."""
-        history_frame = ctk.CTkFrame(self)
-        history_frame.grid(row=3, column=0, sticky="nsew", padx=20, pady=(5, 20))
+        self.history_frame = ctk.CTkFrame(self.main_container)
+        history_frame = self.history_frame
         history_frame.grid_columnconfigure(0, weight=1)
         history_frame.grid_rowconfigure(2, weight=1)
 
         # Section header with search
         header = ctk.CTkFrame(history_frame, fg_color="transparent")
-        header.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
+        header.grid(row=0, column=0, sticky="ew", padx=SPACE_SM, pady=(SPACE_SM, SPACE_XS))
         header.grid_columnconfigure(1, weight=1)
 
         ctk.CTkLabel(
             header,
             text="Approval History",
-            font=ctk.CTkFont(size=14, weight="bold")
+            font=ctk.CTkFont(size=FONT_SECTION, weight="bold")
         ).grid(row=0, column=0, sticky="w")
 
         # Search entry
         self.search_entry = SearchEntry(
             header,
             placeholder="Search history...",
-            width=250
+            width=INPUT_LG
         )
-        self.search_entry.grid(row=0, column=2, sticky="e", padx=(10, 0))
+        self.search_entry.grid(row=0, column=2, sticky="e", padx=(SPACE_SM, 0))
         self.search_entry.bind("<Return>", lambda e: self._search_history())
 
         # Filter buttons
         filter_frame = ctk.CTkFrame(history_frame, fg_color="transparent")
-        filter_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 5))
+        filter_frame.grid(row=1, column=0, sticky="ew", padx=SPACE_SM, pady=(0, SPACE_XS))
 
         ctk.CTkLabel(
             filter_frame,
             text="Filter:",
-            font=ctk.CTkFont(size=11)
-        ).pack(side="left", padx=(0, 10))
+            font=ctk.CTkFont(size=FONT_CAPTION)
+        ).pack(side="left", padx=(0, SPACE_SM))
 
         self.filter_var = ctk.StringVar(value="all")
 
@@ -270,7 +381,7 @@ class ApprovalsTab(ctk.CTkFrame):
                 value=value,
                 command=self._refresh_history
             )
-            radio.pack(side="left", padx=5)
+            radio.pack(side="left", padx=SPACE_XS)
 
         # TreeView for history
         self.history_tree = ThemedTreeview(
@@ -280,31 +391,31 @@ class ApprovalsTab(ctk.CTkFrame):
             widths=[150, 300, 180, 100, 150],
             height=8
         )
-        self.history_tree.grid(row=2, column=0, sticky="nsew", padx=10, pady=(5, 10))
+        self.history_tree.grid(row=2, column=0, sticky="nsew", padx=SPACE_SM, pady=(SPACE_XS, SPACE_SM))
 
         # History action buttons
         history_action_frame = ctk.CTkFrame(history_frame, fg_color="transparent")
-        history_action_frame.grid(row=3, column=0, sticky="ew", padx=10, pady=(0, 10))
+        history_action_frame.grid(row=3, column=0, sticky="ew", padx=SPACE_SM, pady=(0, SPACE_SM))
 
         self.refresh_history_button = ctk.CTkButton(
             history_action_frame,
             text="Refresh History",
             command=self._refresh_history,
-            width=130,
-            height=32,
+            width=BUTTON_MD[0],
+            height=BUTTON_MD[1],
             state="disabled",
             fg_color="transparent",
             border_width=1,
             text_color=("gray10", "gray90")
         )
-        self.refresh_history_button.pack(side="left", padx=(0, 5))
+        self.refresh_history_button.pack(side="left", padx=(0, SPACE_XS))
 
         ctk.CTkLabel(
             history_action_frame,
             text="Showing last 50 approvals",
-            font=ctk.CTkFont(size=10),
+            font=ctk.CTkFont(size=FONT_SMALL),
             text_color=self.theme_manager.get_color("fg_muted")
-        ).pack(side="left", padx=(10, 0))
+        ).pack(side="left", padx=(SPACE_SM, 0))
 
         # Configure tag colors for different statuses
         self._configure_tree_tags()
@@ -377,13 +488,24 @@ class ApprovalsTab(ctk.CTkFrame):
         """Stop polling for pending approvals."""
         self.polling_active = False
 
+    def _is_visible(self) -> bool:
+        """Check if this tab is currently visible."""
+        try:
+            if self.main_app and hasattr(self.main_app, 'tabview'):
+                return self.main_app.tabview.get() == "Approvals"
+        except Exception:
+            pass
+        return False
+
     def _poll_approvals(self):
         """Poll for pending approvals and update UI."""
         if not self.polling_active:
             return
 
-        # Refresh approvals list
-        self._refresh_approvals()
+        # Only refresh if this tab is visible
+        if self._is_visible():
+            # Refresh approvals list
+            self._refresh_approvals()
 
         # Schedule next poll
         self.after(self.poll_interval, self._poll_approvals)

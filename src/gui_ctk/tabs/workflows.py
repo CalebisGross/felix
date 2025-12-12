@@ -20,13 +20,27 @@ from typing import Optional, Dict, Any
 from ..utils import ThreadManager, logger
 from ..theme_manager import get_theme_manager
 from ..dialogs import ApprovalDialog
+from ..responsive import Breakpoint, BreakpointConfig
+from .base_tab import ResponsiveTab
+from ..components.resizable_separator import ResizableSeparator
+from ..styles import (
+    BUTTON_SM, BUTTON_MD, BUTTON_LG,
+    FONT_SECTION, FONT_BODY, FONT_CAPTION, FONT_SMALL,
+    SPACE_XS, SPACE_SM, SPACE_MD, SPACE_LG,
+    INPUT_MD, INPUT_XL, TEXTBOX_MD, TEXTBOX_XL
+)
 
 logger = logging.getLogger(__name__)
 
 
-class WorkflowsTab(ctk.CTkFrame):
+class WorkflowsTab(ResponsiveTab):
     """
     Workflows tab for running Felix workflows with real-time feedback.
+
+    Responsive layout:
+    - COMPACT: Single column (input, output stacked vertically)
+    - STANDARD: 2 columns stacked or tabbed (input | output)
+    - WIDE/ULTRAWIDE: Side-by-side with resizable separator (input | separator | output)
 
     Features:
     - Multi-line task input
@@ -48,10 +62,8 @@ class WorkflowsTab(ctk.CTkFrame):
             main_app: Reference to main application for Felix system access
             **kwargs: Additional arguments passed to CTkFrame
         """
-        super().__init__(master, **kwargs)
+        super().__init__(master, thread_manager, main_app, **kwargs)
 
-        self.thread_manager = thread_manager
-        self.main_app = main_app
         self.theme_manager = get_theme_manager()
 
         # State variables
@@ -66,6 +78,13 @@ class WorkflowsTab(ctk.CTkFrame):
 
         # Workflow ID mapping for continuation
         self.workflow_id_map: Dict[str, str] = {}
+
+        # Layout containers
+        self._main_container = None
+        self._input_panel = None
+        self._output_panel = None
+        self._separator = None
+        self._current_layout = None
 
         # Setup UI
         self._setup_ui()
@@ -89,50 +108,154 @@ class WorkflowsTab(ctk.CTkFrame):
 
     def _setup_ui(self):
         """Setup the UI components."""
+        # Configure main grid
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
 
-        # Main container with scrolling
-        main_container = ctk.CTkScrollableFrame(self)
-        main_container.pack(fill="both", expand=True, padx=10, pady=10)
+        # Main container for responsive layout
+        self._main_container = ctk.CTkFrame(self, fg_color="transparent")
+        self._main_container.grid(row=0, column=0, sticky="nsew")
 
-        # Task input section
-        task_label = ctk.CTkLabel(
-            main_container,
-            text="Task:",
-            font=ctk.CTkFont(size=13, weight="bold")
+        # Create input and output panels
+        self._create_input_panel()
+        self._create_output_panel()
+
+        # Progress bar (stays at bottom)
+        self.progress = ctk.CTkProgressBar(self, mode="determinate")
+        self.progress.grid(row=1, column=0, sticky="ew", padx=SPACE_LG, pady=(0, SPACE_SM))
+        self.progress.set(0)
+
+        # Initially disable features
+        self._disable_features()
+
+    def on_breakpoint_change(self, breakpoint: Breakpoint, config: BreakpointConfig):
+        """Handle responsive layout changes based on breakpoint."""
+        if not self._main_container:
+            return
+
+        # Skip redundant updates
+        if self._current_layout == breakpoint:
+            return
+
+        self._current_layout = breakpoint
+
+        # Clear existing layout
+        for widget in self._main_container.winfo_children():
+            widget.grid_forget()
+
+        # Remove separator if it exists
+        if self._separator:
+            self._separator.destroy()
+            self._separator = None
+
+        # Apply breakpoint-specific layout
+        if breakpoint == Breakpoint.COMPACT:
+            self._layout_compact()
+        elif breakpoint == Breakpoint.STANDARD:
+            self._layout_standard()
+        else:  # WIDE or ULTRAWIDE
+            self._layout_wide()
+
+    def _layout_compact(self):
+        """Single column: input and output stacked vertically."""
+        self._main_container.grid_columnconfigure(0, weight=1)
+        self._main_container.grid_rowconfigure(0, weight=0)  # Input
+        self._main_container.grid_rowconfigure(1, weight=1)  # Output expands
+
+        if self._input_panel:
+            self._input_panel.grid(row=0, column=0, sticky="ew", padx=SPACE_LG, pady=(SPACE_SM, SPACE_MD))
+
+        if self._output_panel:
+            self._output_panel.grid(row=1, column=0, sticky="nsew", padx=SPACE_LG, pady=(0, SPACE_SM))
+
+    def _layout_standard(self):
+        """2 columns: input on left, output on right (no separator)."""
+        self._main_container.grid_columnconfigure(0, weight=1)  # Input
+        self._main_container.grid_columnconfigure(1, weight=1)  # Output
+        self._main_container.grid_rowconfigure(0, weight=1)
+
+        if self._input_panel:
+            self._input_panel.grid(row=0, column=0, sticky="nsew", padx=(SPACE_LG, SPACE_SM), pady=SPACE_SM)
+
+        if self._output_panel:
+            self._output_panel.grid(row=0, column=1, sticky="nsew", padx=(SPACE_SM, SPACE_LG), pady=SPACE_SM)
+
+    def _layout_wide(self):
+        """Side-by-side with resizable separator: input | separator | output."""
+        self._main_container.grid_columnconfigure(0, weight=1)  # Input
+        self._main_container.grid_columnconfigure(1, weight=0)  # Separator
+        self._main_container.grid_columnconfigure(2, weight=1)  # Output
+        self._main_container.grid_rowconfigure(0, weight=1)
+
+        if self._input_panel:
+            self._input_panel.grid(row=0, column=0, sticky="nsew", padx=(SPACE_LG, 0), pady=SPACE_SM)
+
+        # Create separator
+        self._separator = ResizableSeparator(
+            self._main_container,
+            orientation="vertical",
+            on_drag_complete=self._on_separator_drag
         )
-        task_label.pack(anchor="w", pady=(0, 5))
+        self._separator.grid(row=0, column=1, sticky="ns", pady=SPACE_SM)
 
-        self.task_entry = ctk.CTkTextbox(main_container, height=150, wrap="word")
-        self.task_entry.pack(fill="x", pady=(0, 15))
+        if self._output_panel:
+            self._output_panel.grid(row=0, column=2, sticky="nsew", padx=(0, SPACE_LG), pady=SPACE_SM)
+
+    def _on_separator_drag(self, ratio: float):
+        """Handle separator drag to resize panels."""
+        # Adjust column weights based on drag ratio
+        if self._main_container and self._current_layout in (Breakpoint.WIDE, Breakpoint.ULTRAWIDE):
+            left_weight = max(1, int(ratio * 10))
+            right_weight = max(1, int((1 - ratio) * 10))
+            self._main_container.grid_columnconfigure(0, weight=left_weight)
+            self._main_container.grid_columnconfigure(2, weight=right_weight)
+
+    def _create_input_panel(self):
+        """Create the input panel with task entry and controls."""
+        self._input_panel = ctk.CTkFrame(self._main_container)
+        self._input_panel.grid_columnconfigure(0, weight=1)
+        self._input_panel.grid_rowconfigure(1, weight=1)  # Task entry expands
+
+        # Task label
+        task_label = ctk.CTkLabel(
+            self._input_panel,
+            text="Task:",
+            font=ctk.CTkFont(size=FONT_SECTION, weight="bold")
+        )
+        task_label.grid(row=0, column=0, sticky="w", padx=SPACE_SM, pady=(SPACE_SM, SPACE_XS))
+
+        # Task entry
+        self.task_entry = ctk.CTkTextbox(self._input_panel, height=TEXTBOX_MD, wrap="word")
+        self.task_entry.grid(row=1, column=0, sticky="nsew", padx=SPACE_SM, pady=(0, SPACE_MD))
 
         # Options row (max steps and continue from)
-        options_frame = ctk.CTkFrame(main_container, fg_color="transparent")
-        options_frame.pack(fill="x", pady=(0, 15))
+        options_frame = ctk.CTkFrame(self._input_panel, fg_color="transparent")
+        options_frame.grid(row=2, column=0, sticky="ew", padx=SPACE_SM, pady=(0, SPACE_MD))
 
         # Max steps
         max_steps_container = ctk.CTkFrame(options_frame, fg_color="transparent")
-        max_steps_container.pack(side="left", padx=(0, 20))
+        max_steps_container.pack(side="left", padx=(0, SPACE_LG))
 
         ctk.CTkLabel(
             max_steps_container,
             text="Max Steps:",
-            font=ctk.CTkFont(size=12)
-        ).pack(side="left", padx=(0, 5))
+            font=ctk.CTkFont(size=FONT_BODY)
+        ).pack(side="left", padx=(0, SPACE_XS))
 
         self.max_steps_var = ctk.StringVar(value="Auto")
         self.max_steps_dropdown = ctk.CTkComboBox(
             max_steps_container,
             values=["Auto", "5", "10", "15", "20"],
             variable=self.max_steps_var,
-            width=100,
+            width=INPUT_MD,
             state="readonly"
         )
-        self.max_steps_dropdown.pack(side="left", padx=(0, 5))
+        self.max_steps_dropdown.pack(side="left", padx=(0, SPACE_XS))
 
         ctk.CTkLabel(
             max_steps_container,
             text="(Auto = adaptive)",
-            font=ctk.CTkFont(size=10),
+            font=ctk.CTkFont(size=FONT_SMALL),
             text_color="gray"
         ).pack(side="left")
 
@@ -143,79 +266,82 @@ class WorkflowsTab(ctk.CTkFrame):
         ctk.CTkLabel(
             continue_container,
             text="Continue from:",
-            font=ctk.CTkFont(size=12)
-        ).pack(side="left", padx=(0, 5))
+            font=ctk.CTkFont(size=FONT_BODY)
+        ).pack(side="left", padx=(0, SPACE_XS))
 
         self.parent_workflow_var = ctk.StringVar(value="New Workflow")
         self.parent_workflow_dropdown = ctk.CTkComboBox(
             continue_container,
             values=["New Workflow"],
             variable=self.parent_workflow_var,
-            width=400,
+            width=INPUT_XL,
             state="readonly",
             command=self._on_parent_workflow_selected
         )
-        self.parent_workflow_dropdown.pack(side="left", padx=(0, 5))
+        self.parent_workflow_dropdown.pack(side="left", padx=(0, SPACE_XS))
 
         self.refresh_workflows_button = ctk.CTkButton(
             continue_container,
             text="Refresh",
             command=self._refresh_workflow_list,
-            width=80
+            width=BUTTON_SM[0],
+            height=BUTTON_SM[1]
         )
         self.refresh_workflows_button.pack(side="left")
 
         # Button row
-        button_frame = ctk.CTkFrame(main_container, fg_color="transparent")
-        button_frame.pack(fill="x", pady=(0, 15))
+        button_frame = ctk.CTkFrame(self._input_panel, fg_color="transparent")
+        button_frame.grid(row=3, column=0, sticky="ew", padx=SPACE_SM, pady=(0, SPACE_SM))
 
         self.run_button = ctk.CTkButton(
             button_frame,
             text="Run Workflow",
             command=self.run_workflow,
-            width=130,
+            width=BUTTON_LG[0],
+            height=BUTTON_LG[1],
             fg_color="#2fa572",
             hover_color="#25835e",
             state="disabled"
         )
-        self.run_button.pack(side="left", padx=(0, 5))
+        self.run_button.pack(side="left", padx=(0, SPACE_XS))
 
         self.save_button = ctk.CTkButton(
             button_frame,
             text="Save Results",
             command=self.save_results,
-            width=130,
+            width=BUTTON_MD[0],
+            height=BUTTON_MD[1],
             state="disabled"
         )
-        self.save_button.pack(side="left", padx=(0, 5))
+        self.save_button.pack(side="left", padx=(0, SPACE_XS))
 
         self.rate_button = ctk.CTkButton(
             button_frame,
             text="⭐ Rate Workflow",
             command=self._show_feedback_dialog_from_button,
-            width=150,
+            width=BUTTON_LG[0],
+            height=BUTTON_LG[1],
             state="disabled"
         )
         self.rate_button.pack(side="left")
 
-        # Progress bar
-        self.progress = ctk.CTkProgressBar(main_container, mode="determinate")
-        self.progress.pack(fill="x", pady=(0, 15))
-        self.progress.set(0)
+    def _create_output_panel(self):
+        """Create the output panel with results display."""
+        self._output_panel = ctk.CTkFrame(self._main_container)
+        self._output_panel.grid_columnconfigure(0, weight=1)
+        self._output_panel.grid_rowconfigure(1, weight=1)  # Output text expands
 
-        # Output display
+        # Output label
         output_label = ctk.CTkLabel(
-            main_container,
+            self._output_panel,
             text="Workflow Output:",
-            font=ctk.CTkFont(size=13, weight="bold")
+            font=ctk.CTkFont(size=FONT_SECTION, weight="bold")
         )
-        output_label.pack(anchor="w", pady=(0, 5))
+        output_label.grid(row=0, column=0, sticky="w", padx=SPACE_SM, pady=(SPACE_SM, SPACE_XS))
 
-        self.output_text = ctk.CTkTextbox(main_container, height=400, wrap="word")
-        self.output_text.pack(fill="both", expand=True)
-
-        # Initially disable features
-        self._disable_features()
+        # Output textbox
+        self.output_text = ctk.CTkTextbox(self._output_panel, height=TEXTBOX_XL, wrap="word")
+        self.output_text.grid(row=1, column=0, sticky="nsew", padx=SPACE_SM, pady=(0, SPACE_SM))
 
     def _enable_features(self):
         """Enable workflow features when system is running."""
@@ -548,12 +674,29 @@ class WorkflowsTab(ctk.CTkFrame):
         self.approval_polling_active = False
         logger.info("Approval polling stopped")
 
+    def _is_visible(self) -> bool:
+        """Check if this tab is currently visible."""
+        try:
+            if self.main_app and hasattr(self.main_app, 'tabview'):
+                return self.main_app.tabview.get() == "Workflows"
+        except Exception:
+            pass
+        return False
+
     def _poll_for_approvals(self):
         """Poll for pending approvals and show dialog if found."""
         logger.debug(f"POLL CHECK: active={self.approval_polling_active}, workflow_running={self.workflow_running}, dialog_open={self.dialog_open}")
 
         if not self.approval_polling_active or not self.workflow_running:
             logger.debug("POLL SKIPPED: Conditions not met")
+            return
+
+        # Skip expensive operations if tab is not visible
+        if not self._is_visible():
+            logger.debug("POLL SKIPPED: Tab not visible")
+            # Schedule next poll
+            if self.approval_polling_active and self.workflow_running:
+                self.after(self.approval_poll_interval, self._poll_for_approvals)
             return
 
         try:
@@ -763,13 +906,13 @@ class WorkflowsTab(ctk.CTkFrame):
         ctk.CTkLabel(
             dialog,
             text="How would you rate this workflow?",
-            font=ctk.CTkFont(size=14, weight="bold")
-        ).pack(pady=(30, 10))
+            font=ctk.CTkFont(size=FONT_SECTION, weight="bold")
+        ).pack(pady=(30, SPACE_SM))
 
         ctk.CTkLabel(
             dialog,
             text="Your feedback helps Felix learn and improve!",
-            font=ctk.CTkFont(size=11)
+            font=ctk.CTkFont(size=FONT_CAPTION)
         ).pack(pady=(0, 30))
 
         # Button frame
@@ -808,26 +951,26 @@ class WorkflowsTab(ctk.CTkFrame):
             button_frame,
             text="👍 Helpful",
             command=lambda: submit_rating(True),
-            width=140,
-            height=50,
+            width=BUTTON_LG[0],
+            height=40,
             fg_color="#2fa572",
             hover_color="#25835e",
-            font=ctk.CTkFont(size=13, weight="bold")
+            font=ctk.CTkFont(size=FONT_BODY, weight="bold")
         )
-        thumbs_up_btn.pack(side="left", padx=10)
+        thumbs_up_btn.pack(side="left", padx=SPACE_SM)
 
         # Thumbs down button (red)
         thumbs_down_btn = ctk.CTkButton(
             button_frame,
             text="👎 Not Helpful",
             command=lambda: submit_rating(False),
-            width=140,
-            height=50,
+            width=BUTTON_LG[0],
+            height=40,
             fg_color="#dc2626",
             hover_color="#b91c1c",
-            font=ctk.CTkFont(size=13, weight="bold")
+            font=ctk.CTkFont(size=FONT_BODY, weight="bold")
         )
-        thumbs_down_btn.pack(side="left", padx=10)
+        thumbs_down_btn.pack(side="left", padx=SPACE_SM)
 
         # Skip button
         skip_btn = ctk.CTkButton(

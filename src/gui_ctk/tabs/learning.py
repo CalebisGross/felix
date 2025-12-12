@@ -61,6 +61,7 @@ class LearningTab(ctk.CTkFrame):
         self.thread_manager = thread_manager
         self.main_app = main_app
         self.theme_manager = get_theme_manager()
+        self._layout_manager = None
 
         # Refresh timer
         self.refresh_timer = None
@@ -70,6 +71,10 @@ class LearningTab(ctk.CTkFrame):
         self._features_enabled = False
 
         self._setup_ui()
+
+    def set_layout_manager(self, layout_manager):
+        """Set the layout manager (interface compliance)."""
+        self._layout_manager = layout_manager
 
     def _setup_ui(self):
         """Set up the learning tab UI."""

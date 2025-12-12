@@ -17,11 +17,21 @@ import logging
 from ..utils import ThreadManager, logger
 from ..theme_manager import get_theme_manager
 from ..components.themed_treeview import ThemedTreeview
+from ..components.resizable_separator import ResizableSeparator
+from ..responsive import Breakpoint, BreakpointConfig
+from .base_tab import ResponsiveTab
+from ..styles import (
+    BUTTON_SM, BUTTON_MD,
+    FONT_SECTION, FONT_BODY, FONT_CAPTION,
+    SPACE_XS, SPACE_SM, SPACE_LG,
+    INPUT_MD, INPUT_LG
+)
 
 
-class AgentsTab(ctk.CTkFrame):
+class AgentsTab(ResponsiveTab):
     """
     Agents tab with spawning controls, agent list, and monitoring.
+    Uses responsive master-detail layout.
     """
 
     def __init__(self, master, thread_manager, main_app=None, **kwargs):
@@ -34,10 +44,8 @@ class AgentsTab(ctk.CTkFrame):
             main_app: Reference to main FelixApp
             **kwargs: Additional arguments passed to CTkFrame
         """
-        super().__init__(master, **kwargs)
+        super().__init__(master, thread_manager, main_app, **kwargs)
 
-        self.thread_manager = thread_manager
-        self.main_app = main_app
         self.theme_manager = get_theme_manager()
         self.agents = []  # Reference to main system's agent list
         self.agent_counter = 0
@@ -45,70 +53,139 @@ class AgentsTab(ctk.CTkFrame):
         self._updating_tree = False  # Flag to track programmatic treeview updates
         self._last_selected_agent_id = None  # Track last agent shown in monitor
 
+        # Layout state
+        self.detail_visible = True
+        self.master_detail_ratio = 0.5  # 50-50 split
+
         self._setup_ui()
 
         # Start polling for agent updates
         self._start_polling()
 
     def _setup_ui(self):
-        """Set up the agents tab UI."""
+        """Set up the agents tab UI with responsive master-detail layout."""
         # Configure grid
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(2, weight=1)  # TreeView expands
-        self.grid_rowconfigure(4, weight=1)  # Monitor expands
+        self.grid_rowconfigure(0, weight=1)
 
-        # Spawn controls section
+        # Create main container
+        self.main_container = ctk.CTkFrame(self, fg_color="transparent")
+        self.main_container.grid(row=0, column=0, sticky="nsew")
+
+        # Create master frame (agent list + controls)
+        self.master_frame = ctk.CTkFrame(self.main_container)
+        self.master_frame.grid_columnconfigure(0, weight=1)
+        self.master_frame.grid_rowconfigure(2, weight=1)  # TreeView expands
+
+        # Create detail frame (agent monitor + message controls)
+        self.detail_frame = ctk.CTkFrame(self.main_container)
+        self.detail_frame.grid_columnconfigure(0, weight=1)
+        self.detail_frame.grid_rowconfigure(1, weight=1)  # Monitor expands
+
+        # Build sections
         self._create_spawn_controls()
-
-        # Agent TreeView section
         self._create_agent_treeview()
-
-        # Message input section
         self._create_message_controls()
-
-        # Monitor section
         self._create_monitor_section()
+
+        # Separator for resizing
+        self.separator = None
 
         # Initially disable features until system starts
         self._disable_features()
 
+    def on_breakpoint_change(self, breakpoint: Breakpoint, config: BreakpointConfig):
+        """Handle breakpoint changes for responsive master-detail layout."""
+        # Clear existing layout
+        for widget in self.main_container.winfo_children():
+            widget.grid_forget()
+
+        if breakpoint == Breakpoint.COMPACT:
+            # COMPACT: Show master only (list), detail as popup
+            self._layout_compact()
+        else:
+            # STANDARD/WIDE/ULTRAWIDE: Master-detail side-by-side
+            self._layout_master_detail()
+
+    def _layout_compact(self):
+        """Layout for compact screens: list only, details in selection callback."""
+        self.main_container.grid_columnconfigure(0, weight=1)
+        self.main_container.grid_rowconfigure(0, weight=1)
+
+        # Show only master frame (list + controls)
+        self.master_frame.grid(row=0, column=0, sticky="nsew", padx=SPACE_LG, pady=SPACE_LG)
+        self.detail_visible = False
+
+        # Hide separator
+        if self.separator:
+            self.separator.grid_forget()
+
+    def _layout_master_detail(self):
+        """Layout for standard/wide screens: master-detail side-by-side."""
+        self.main_container.grid_columnconfigure(0, weight=0, minsize=300)
+        self.main_container.grid_columnconfigure(1, weight=0)
+        self.main_container.grid_columnconfigure(2, weight=1)
+        self.main_container.grid_rowconfigure(0, weight=1)
+
+        # Master frame on left
+        self.master_frame.grid(row=0, column=0, sticky="nsew", padx=(SPACE_LG, SPACE_SM), pady=SPACE_LG)
+
+        # Create separator if needed
+        if not self.separator:
+            self.separator = ResizableSeparator(
+                self.main_container,
+                orientation="vertical",
+                on_drag_complete=self._on_separator_drag
+            )
+        self.separator.grid(row=0, column=1, sticky="ns", pady=SPACE_LG)
+
+        # Detail frame on right
+        self.detail_frame.grid(row=0, column=2, sticky="nsew", padx=(0, SPACE_LG), pady=SPACE_LG)
+        self.detail_visible = True
+
+    def _on_separator_drag(self, ratio: float):
+        """Handle separator drag completion."""
+        self.master_detail_ratio = ratio
+        # Update column weights based on ratio
+        # Simplified: keep fixed master, expanding detail
+
     def _create_spawn_controls(self):
         """Create agent spawning controls."""
-        controls_frame = ctk.CTkFrame(self, fg_color="transparent")
-        controls_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=(20, 10))
+        controls_frame = ctk.CTkFrame(self.master_frame, fg_color="transparent")
+        controls_frame.grid(row=0, column=0, sticky="ew", padx=SPACE_LG, pady=(SPACE_LG, SPACE_SM))
         controls_frame.grid_columnconfigure(1, weight=1)
 
         # Agent Type label and dropdown
         type_label = ctk.CTkLabel(
             controls_frame,
             text="Agent Type:",
-            font=ctk.CTkFont(size=13)
+            font=ctk.CTkFont(size=FONT_BODY)
         )
-        type_label.grid(row=0, column=0, sticky="w", padx=(0, 10), pady=5)
+        type_label.grid(row=0, column=0, sticky="w", padx=(0, SPACE_SM), pady=SPACE_XS)
 
         self.type_combo = ctk.CTkComboBox(
             controls_frame,
             values=["Research", "Analysis", "Critic", "System"],
             state="readonly",
-            width=150
+            width=INPUT_MD
         )
-        self.type_combo.grid(row=0, column=1, sticky="w", padx=(0, 10), pady=5)
+        self.type_combo.grid(row=0, column=1, sticky="w", padx=(0, SPACE_SM), pady=SPACE_XS)
         self.type_combo.set("Research")  # Default selection
 
         # Domain/Focus label and entry
         domain_label = ctk.CTkLabel(
             controls_frame,
             text="Domain/Focus:",
-            font=ctk.CTkFont(size=13)
+            font=ctk.CTkFont(size=FONT_BODY)
         )
-        domain_label.grid(row=1, column=0, sticky="w", padx=(0, 10), pady=5)
+        domain_label.grid(row=1, column=0, sticky="w", padx=(0, SPACE_SM), pady=SPACE_XS)
 
         self.domain_entry = ctk.CTkEntry(
             controls_frame,
             placeholder_text="general",
-            width=250
+            width=INPUT_LG
         )
-        self.domain_entry.grid(row=1, column=1, sticky="ew", padx=(0, 10), pady=5)
+        self.domain_entry.grid(row=1, column=1, sticky="ew", padx=(0, SPACE_SM), pady=SPACE_XS)
         self.domain_entry.insert(0, "general")
 
         # Spawn button
@@ -116,29 +193,29 @@ class AgentsTab(ctk.CTkFrame):
             controls_frame,
             text="Spawn Agent",
             command=self.spawn_agent,
-            width=120,
-            height=32,
+            width=BUTTON_MD[0],
+            height=BUTTON_MD[1],
             fg_color=self.theme_manager.get_color("accent"),
             hover_color=self.theme_manager.get_color("accent_hover"),
             state="disabled"
         )
-        self.spawn_button.grid(row=0, column=2, rowspan=2, padx=(10, 0), pady=5)
+        self.spawn_button.grid(row=0, column=2, rowspan=2, padx=(SPACE_SM, 0), pady=SPACE_XS)
 
     def _create_agent_treeview(self):
         """Create the agent TreeView."""
-        tree_frame = ctk.CTkFrame(self)
-        tree_frame.grid(row=2, column=0, sticky="nsew", padx=20, pady=10)
+        tree_frame = ctk.CTkFrame(self.master_frame)
+        tree_frame.grid(row=2, column=0, sticky="nsew", padx=SPACE_LG, pady=SPACE_SM)
         tree_frame.grid_columnconfigure(0, weight=1)
         tree_frame.grid_rowconfigure(1, weight=1)
 
         # TreeView header
         tree_header = ctk.CTkFrame(tree_frame, fg_color="transparent")
-        tree_header.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
+        tree_header.grid(row=0, column=0, sticky="ew", padx=SPACE_SM, pady=(SPACE_SM, SPACE_XS))
 
         ctk.CTkLabel(
             tree_header,
             text="Active Agents",
-            font=ctk.CTkFont(size=14, weight="bold")
+            font=ctk.CTkFont(size=FONT_SECTION, weight="bold")
         ).pack(side="left")
 
         # TreeView
@@ -149,39 +226,39 @@ class AgentsTab(ctk.CTkFrame):
             widths=[80, 100, 80, 80, 80, 80],
             height=10
         )
-        self.agent_tree.grid(row=1, column=0, sticky="nsew", padx=10, pady=(5, 10))
+        self.agent_tree.grid(row=1, column=0, sticky="nsew", padx=SPACE_SM, pady=(SPACE_XS, SPACE_SM))
 
         # Bind selection event
         self.agent_tree.bind_tree('<<TreeviewSelect>>', self.on_agent_select)
 
     def _create_message_controls(self):
         """Create message sending controls."""
-        message_frame = ctk.CTkFrame(self, fg_color="transparent")
-        message_frame.grid(row=3, column=0, sticky="ew", padx=20, pady=10)
+        message_frame = ctk.CTkFrame(self.detail_frame, fg_color="transparent")
+        message_frame.grid(row=0, column=0, sticky="ew", padx=SPACE_LG, pady=(SPACE_LG, SPACE_SM))
         message_frame.grid_columnconfigure(1, weight=1)
 
         # Message label
         message_label = ctk.CTkLabel(
             message_frame,
             text="Message:",
-            font=ctk.CTkFont(size=13)
+            font=ctk.CTkFont(size=FONT_BODY)
         )
-        message_label.grid(row=0, column=0, sticky="w", padx=(0, 10))
+        message_label.grid(row=0, column=0, sticky="w", padx=(0, SPACE_SM))
 
         # Message entry
         self.message_entry = ctk.CTkEntry(
             message_frame,
             placeholder_text="Enter task message for selected agent..."
         )
-        self.message_entry.grid(row=0, column=1, sticky="ew", padx=(0, 10))
+        self.message_entry.grid(row=0, column=1, sticky="ew", padx=(0, SPACE_SM))
 
         # Send button
         self.send_button = ctk.CTkButton(
             message_frame,
             text="Send",
             command=self.send_message,
-            width=80,
-            height=32,
+            width=BUTTON_SM[0],
+            height=BUTTON_SM[1],
             fg_color=self.theme_manager.get_color("accent"),
             hover_color=self.theme_manager.get_color("accent_hover"),
             state="disabled"
@@ -190,28 +267,28 @@ class AgentsTab(ctk.CTkFrame):
 
     def _create_monitor_section(self):
         """Create the monitor display section."""
-        monitor_frame = ctk.CTkFrame(self)
-        monitor_frame.grid(row=4, column=0, sticky="nsew", padx=20, pady=(10, 20))
+        monitor_frame = ctk.CTkFrame(self.detail_frame)
+        monitor_frame.grid(row=1, column=0, sticky="nsew", padx=SPACE_LG, pady=(SPACE_SM, SPACE_LG))
         monitor_frame.grid_columnconfigure(0, weight=1)
         monitor_frame.grid_rowconfigure(1, weight=1)
 
         # Monitor header
         monitor_header = ctk.CTkFrame(monitor_frame, fg_color="transparent")
-        monitor_header.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
+        monitor_header.grid(row=0, column=0, sticky="ew", padx=SPACE_SM, pady=(SPACE_SM, SPACE_XS))
 
         ctk.CTkLabel(
             monitor_header,
             text="Agent Monitor",
-            font=ctk.CTkFont(size=14, weight="bold")
+            font=ctk.CTkFont(size=FONT_SECTION, weight="bold")
         ).pack(side="left")
 
         # Monitor textbox
         self.monitor_text = ctk.CTkTextbox(
             monitor_frame,
-            font=ctk.CTkFont(family="Courier", size=11),
+            font=ctk.CTkFont(family="Courier", size=FONT_CAPTION),
             wrap="word"
         )
-        self.monitor_text.grid(row=1, column=0, sticky="nsew", padx=10, pady=(5, 10))
+        self.monitor_text.grid(row=1, column=0, sticky="nsew", padx=SPACE_SM, pady=(SPACE_XS, SPACE_SM))
 
         # Make monitor read-only by default
         self.monitor_text.configure(state="disabled")
@@ -246,16 +323,27 @@ class AgentsTab(ctk.CTkFrame):
         """Stop polling for updates."""
         self.polling_active = False
 
+    def _is_visible(self) -> bool:
+        """Check if this tab is currently visible."""
+        try:
+            if self.main_app and hasattr(self.main_app, 'tabview'):
+                return self.main_app.tabview.get() == "Agents"
+        except Exception:
+            pass
+        return False
+
     def _poll_updates(self):
-        """Poll for agent updates every 1.5 seconds."""
+        """Poll for agent updates every 1.5 seconds (only when visible)."""
         if not self.polling_active:
             return
 
-        try:
-            self._update_agents_from_main()
-            self._update_treeview()
-        except Exception as e:
-            logger.warning(f"Error during polling update: {e}")
+        # Only do expensive updates when tab is visible
+        if self._is_visible():
+            try:
+                self._update_agents_from_main()
+                self._update_treeview()
+            except Exception as e:
+                logger.warning(f"Error during polling update: {e}")
 
         # Schedule next poll in 1.5 seconds
         self.after(1500, self._poll_updates)
