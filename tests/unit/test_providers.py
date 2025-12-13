@@ -145,12 +145,14 @@ class TestProviderConfig:
 
         assert expanded == ""
 
-    @patch('src.llm.providers.lm_studio_provider.LMStudioProvider')
+    @patch('src.llm.provider_config.LMStudioProvider')
     def test_create_lm_studio_provider(self, mock_provider_class):
         """Test creating LM Studio provider from config."""
         from src.llm.provider_config import ProviderConfigLoader
+        from src.llm.circuit_breaker import CircuitBreakerProvider
 
         mock_provider = Mock()
+        mock_provider.get_provider_name.return_value = "lm_studio"
         mock_provider_class.return_value = mock_provider
 
         loader = ProviderConfigLoader()
@@ -164,6 +166,33 @@ class TestProviderConfig:
         provider = loader._create_provider(config)
 
         assert provider is not None
+        # Provider is now wrapped with CircuitBreakerProvider by default
+        assert isinstance(provider, CircuitBreakerProvider)
+        mock_provider_class.assert_called_once()
+
+    @patch('src.llm.provider_config.LMStudioProvider')
+    def test_create_lm_studio_provider_without_circuit_breaker(self, mock_provider_class):
+        """Test creating LM Studio provider with circuit breaker disabled."""
+        from src.llm.provider_config import ProviderConfigLoader
+        from src.llm.circuit_breaker import CircuitBreakerProvider
+
+        mock_provider = Mock()
+        mock_provider_class.return_value = mock_provider
+
+        loader = ProviderConfigLoader()
+        config = {
+            "type": "lm_studio",
+            "base_url": "http://localhost:1234/v1",
+            "model": "test-model",
+            "timeout": 120,
+            "circuit_breaker": {"enabled": False}
+        }
+
+        provider = loader._create_provider(config)
+
+        assert provider is not None
+        # With circuit breaker disabled, should return unwrapped provider
+        assert not isinstance(provider, CircuitBreakerProvider)
         mock_provider_class.assert_called_once()
 
 
@@ -462,3 +491,174 @@ class TestProviderErrorHandling:
             raise ProviderAuthenticationError("Test")
         except ProviderError:
             pass  # Should catch it
+
+
+@pytest.mark.unit
+@pytest.mark.providers
+class TestSimpleResponseProvider:
+    """Tests for SimpleResponseProvider (Issue #16 - LLM fallback)."""
+
+    def test_simple_response_provider_complete(self):
+        """Test SimpleResponseProvider always returns graceful response."""
+        from src.llm.providers.simple_response_provider import SimpleResponseProvider
+
+        provider = SimpleResponseProvider()
+
+        request = LLMRequest(
+            system_prompt="You are helpful",
+            user_prompt="Hello",
+            temperature=0.7,
+            agent_id="test-agent"
+        )
+
+        response = provider.complete(request)
+
+        # Should return a valid response
+        assert response.content is not None
+        assert len(response.content) > 0
+        assert "unavailable" in response.content.lower() or "unable" in response.content.lower()
+        assert response.provider == "simple_response"
+        assert response.model == "simple_response"
+        assert response.finish_reason == "fallback"
+        assert response.tokens_used == 0  # No actual LLM used
+        assert response.metadata.get("fallback") == True
+
+    def test_simple_response_provider_streaming(self):
+        """Test SimpleResponseProvider streaming returns chunks."""
+        from src.llm.providers.simple_response_provider import SimpleResponseProvider
+
+        provider = SimpleResponseProvider()
+
+        chunks = []
+        def callback(chunk):
+            chunks.append(chunk)
+
+        request = LLMRequest(
+            system_prompt="Test",
+            user_prompt="Hello",
+            temperature=0.7,
+            stream=True,
+            agent_id="test-agent"
+        )
+
+        response = provider.complete_streaming(request, callback)
+
+        # Should have called callback with chunks
+        assert len(chunks) > 0
+        # Chunks should form the full message
+        full_message = "".join(chunks)
+        assert full_message == response.content
+        assert response.metadata.get("streamed") == True
+
+    def test_simple_response_provider_connection_always_true(self):
+        """Test SimpleResponseProvider.test_connection() always returns True."""
+        from src.llm.providers.simple_response_provider import SimpleResponseProvider
+
+        provider = SimpleResponseProvider()
+
+        # Should always be available
+        assert provider.test_connection() == True
+
+    def test_simple_response_provider_custom_message(self):
+        """Test SimpleResponseProvider with custom unavailable message."""
+        from src.llm.providers.simple_response_provider import SimpleResponseProvider
+
+        custom_message = "Custom offline message for testing."
+        provider = SimpleResponseProvider(message=custom_message)
+
+        request = LLMRequest(
+            system_prompt="Test",
+            user_prompt="Hello"
+        )
+
+        response = provider.complete(request)
+
+        assert response.content == custom_message
+
+    def test_simple_response_provider_available_models(self):
+        """Test SimpleResponseProvider.get_available_models() returns simple_response."""
+        from src.llm.providers.simple_response_provider import SimpleResponseProvider
+
+        provider = SimpleResponseProvider()
+
+        models = provider.get_available_models()
+
+        assert "simple_response" in models
+
+    def test_simple_response_provider_cost_is_zero(self):
+        """Test SimpleResponseProvider reports zero cost."""
+        from src.llm.providers.simple_response_provider import SimpleResponseProvider
+
+        provider = SimpleResponseProvider()
+
+        cost = provider.estimate_cost(tokens_used=1000, model="any")
+
+        assert cost == 0.0
+
+    def test_simple_response_provider_never_raises(self):
+        """Test SimpleResponseProvider never raises exceptions."""
+        from src.llm.providers.simple_response_provider import SimpleResponseProvider
+
+        provider = SimpleResponseProvider()
+
+        # Even with unusual inputs, should not raise
+        weird_request = LLMRequest(
+            system_prompt="",  # Empty
+            user_prompt="",    # Empty
+            temperature=-1.0,  # Invalid
+            max_tokens=-100,   # Invalid
+            agent_id=None
+        )
+
+        # Should not raise
+        response = provider.complete(weird_request)
+        assert response is not None
+        assert response.content is not None
+
+
+@pytest.mark.unit
+@pytest.mark.providers
+class TestProviderConfigWithSimpleResponse:
+    """Tests for ProviderConfigLoader with simple_response provider."""
+
+    def test_config_loader_creates_simple_response_provider(self):
+        """Test ProviderConfigLoader can create SimpleResponseProvider."""
+        from src.llm.provider_config import ProviderConfigLoader
+
+        # Create loader with mock config
+        loader = ProviderConfigLoader.__new__(ProviderConfigLoader)
+        loader.config_path = "test"
+        loader.config = {
+            "primary": {
+                "type": "simple_response"
+            },
+            "fallbacks": [],
+            "router": {}
+        }
+
+        provider = loader._create_provider({"type": "simple_response"})
+
+        assert provider is not None
+        assert provider.test_connection() == True
+        assert provider.get_provider_name() == "simple_response"
+
+    def test_config_loader_creates_simple_response_with_custom_message(self):
+        """Test ProviderConfigLoader passes custom message to SimpleResponseProvider."""
+        from src.llm.provider_config import ProviderConfigLoader
+
+        loader = ProviderConfigLoader.__new__(ProviderConfigLoader)
+        loader.config_path = "test"
+        loader.config = {}
+
+        custom_msg = "Test offline message"
+        provider = loader._create_provider({
+            "type": "simple_response",
+            "message": custom_msg
+        })
+
+        assert provider is not None
+
+        request = LLMRequest(system_prompt="", user_prompt="")
+        response = provider.complete(request)
+
+        assert response.content == custom_msg

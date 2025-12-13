@@ -85,6 +85,11 @@ class ProviderConnectionError(ProviderError):
     pass
 
 
+class ProviderCircuitOpenError(ProviderConnectionError):
+    """Raised when circuit breaker is open for a provider."""
+    pass
+
+
 class ProviderAuthenticationError(ProviderError):
     """Raised when provider authentication fails."""
     pass

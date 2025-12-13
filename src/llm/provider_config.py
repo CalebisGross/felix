@@ -11,7 +11,7 @@ from typing import Dict, Any, List, Optional
 
 from src.llm.base_provider import BaseLLMProvider
 from src.llm.llm_router import LLMRouter
-from src.llm.providers import LMStudioProvider, AnthropicProvider, GeminiProvider
+from src.llm.providers import LMStudioProvider, AnthropicProvider, GeminiProvider, SimpleResponseProvider
 
 logger = logging.getLogger('felix_workflows')
 
@@ -82,9 +82,11 @@ class ProviderConfigLoader:
         if "api_key" in config:
             config["api_key"] = self._expand_env_vars(config["api_key"])
 
+        provider: Optional[BaseLLMProvider] = None
+
         try:
             if provider_type == "lm_studio":
-                return LMStudioProvider(
+                provider = LMStudioProvider(
                     base_url=config.get("base_url", "http://localhost:1234/v1"),
                     model=config.get("model", "local-model"),
                     timeout=config.get("timeout", 120),
@@ -97,7 +99,7 @@ class ProviderConfigLoader:
                     logger.error("Anthropic API key not provided")
                     return None
 
-                return AnthropicProvider(
+                provider = AnthropicProvider(
                     api_key=api_key,
                     model=config.get("model", "claude-3-5-sonnet-20241022"),
                     timeout=config.get("timeout", 120),
@@ -110,16 +112,39 @@ class ProviderConfigLoader:
                     logger.error("Gemini API key not provided")
                     return None
 
-                return GeminiProvider(
+                provider = GeminiProvider(
                     api_key=api_key,
                     model=config.get("model", "gemini-1.5-flash-latest"),
                     timeout=config.get("timeout", 120),
                     verbose_logging=config.get("verbose_logging", False)
                 )
 
+            elif provider_type == "simple_response":
+                # Last-resort fallback provider - always available
+                provider = SimpleResponseProvider(
+                    message=config.get("message"),  # Optional custom message
+                    verbose_logging=config.get("verbose_logging", False)
+                )
+
             else:
                 logger.error(f"Unknown provider type: {provider_type}")
                 return None
+
+            # Wrap with circuit breaker if configured (enabled by default)
+            if provider is not None:
+                circuit_config = config.get('circuit_breaker', {})
+                if circuit_config.get('enabled', True):
+                    from src.llm.circuit_breaker import CircuitBreakerProvider, CircuitBreakerConfig
+
+                    breaker_config = CircuitBreakerConfig(
+                        failure_threshold=circuit_config.get('failure_threshold', 3),
+                        recovery_timeout=circuit_config.get('recovery_timeout', 60.0),
+                        half_open_max_calls=circuit_config.get('half_open_max_calls', 1)
+                    )
+                    provider = CircuitBreakerProvider(provider, config=breaker_config)
+                    logger.debug(f"Circuit breaker enabled for {provider_type} provider")
+
+            return provider
 
         except Exception as e:
             logger.error(f"Failed to create {provider_type} provider: {e}")
