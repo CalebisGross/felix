@@ -33,6 +33,7 @@ try:
         KnowledgeRetriever,
         EmbeddingProvider
     )
+    from src.knowledge.embeddings import TierRecoveryConfig
     KNOWLEDGE_BRAIN_AVAILABLE = True
 except ImportError as e:
     logger.debug(f"Knowledge Brain not available: {e}")
@@ -41,6 +42,7 @@ except ImportError as e:
     DaemonConfig = None
     KnowledgeRetriever = None
     EmbeddingProvider = None
+    TierRecoveryConfig = None
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +137,12 @@ class FelixConfig:
     enable_meta_learning_boost: bool = True  # Apply historical usefulness ranking
     meta_learning_min_usages: int = 2  # Minimum usages before boost applies
     enable_adaptive_limits: bool = True  # Use task complexity for adaptive limits
+
+    # Embedding tier recovery configuration
+    embedding_tier_recovery_mode: str = "auto"  # "auto" or "manual"
+    embedding_recovery_check_interval: float = 60.0  # Seconds between checks
+    embedding_recovery_check_timeout: float = 5.0  # Timeout for availability checks
+    embedding_max_recovery_attempts: int = 3  # Max consecutive failures before pausing
 
 
 class AgentManager:
@@ -349,12 +357,19 @@ class FelixSystem:
                 try:
                     logger.info("Initializing Knowledge Brain...")
 
-                    # 1. Create embedding provider
+                    # 1. Create embedding provider with recovery config
+                    recovery_config = TierRecoveryConfig(
+                        mode=self.config.embedding_tier_recovery_mode,
+                        check_interval=self.config.embedding_recovery_check_interval,
+                        check_timeout=self.config.embedding_recovery_check_timeout,
+                        max_recovery_attempts=self.config.embedding_max_recovery_attempts
+                    )
                     self.embedding_provider = EmbeddingProvider(
                         lm_studio_client=self.lm_client,
-                        db_path=self.config.knowledge_db_path
+                        db_path=self.config.knowledge_db_path,
+                        recovery_config=recovery_config
                     )
-                    logger.info(f"  Embedding provider initialized (tier: {self.embedding_provider.active_tier.value})")
+                    logger.info(f"  Embedding provider initialized (tier: {self.embedding_provider.active_tier.value}, recovery: {self.config.embedding_tier_recovery_mode})")
 
                     # 2. Create knowledge retriever
                     self.knowledge_retriever = KnowledgeRetriever(
@@ -465,6 +480,14 @@ class FelixSystem:
         try:
             logger.info("Stopping Felix system...")
 
+            # Mark all agents as complete in live database and clear old entries
+            if self.central_post and hasattr(self.central_post, 'agent_registry'):
+                registry = self.central_post.agent_registry
+                for agent_id in list(registry._agent_metadata.keys()):
+                    registry.mark_agent_complete(agent_id)
+                cleared = registry.clear_old_agents(max_age_seconds=0)
+                logger.info(f"Cleared {cleared} agents from live database")
+
             # Deregister all agents
             agent_ids = list(self.agent_manager.agents.keys())
             for agent_id in agent_ids:
@@ -492,6 +515,14 @@ class FelixSystem:
                     logger.info("Knowledge daemon stopped")
                 except Exception as e:
                     logger.warning(f"Error stopping knowledge daemon: {e}")
+
+            # Stop embedding tier recovery
+            if self.embedding_provider:
+                try:
+                    self.embedding_provider.stop_recovery()
+                    logger.info("Embedding tier recovery stopped")
+                except Exception as e:
+                    logger.warning(f"Error stopping embedding recovery: {e}")
 
             # Close LM client if it has a close method
             if self.lm_client and hasattr(self.lm_client, 'close_async'):

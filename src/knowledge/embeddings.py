@@ -12,11 +12,12 @@ System automatically selects best available tier and provides unified interface.
 import logging
 import numpy as np
 import sqlite3
+import threading
 import time
 from enum import Enum
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple, Union
-from dataclasses import dataclass
+from typing import List, Dict, Any, Optional, Tuple, Union, Callable
+from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,15 @@ class EmbeddingResult:
     tier_used: EmbeddingTier
     processing_time: float
     error: Optional[str] = None
+
+
+@dataclass
+class TierRecoveryConfig:
+    """Configuration for embedding tier recovery."""
+    mode: str = "auto"  # "auto" or "manual"
+    check_interval: float = 60.0  # Seconds between automatic recovery checks
+    check_timeout: float = 5.0  # Timeout for availability checks
+    max_recovery_attempts: int = 3  # Max consecutive failures before pausing
 
 
 class LMStudioEmbedder:
@@ -342,6 +352,201 @@ class FTS5Searcher:
             return []
 
 
+class TierRecoveryManager:
+    """
+    Manages automatic and manual recovery to higher embedding tiers.
+
+    Follows the pattern from knowledge_daemon.py for background thread management
+    and circuit_breaker.py for thread-safe state transitions.
+    """
+
+    def __init__(self, config: Optional[TierRecoveryConfig] = None):
+        """
+        Initialize tier recovery manager.
+
+        Args:
+            config: Recovery configuration (uses defaults if None)
+        """
+        self.config = config or TierRecoveryConfig()
+
+        # State tracking
+        self._current_tier: EmbeddingTier = EmbeddingTier.FTS5
+        self._optimal_tier: EmbeddingTier = EmbeddingTier.LM_STUDIO
+        self._consecutive_failures: int = 0
+        self._last_check_time: Optional[float] = None
+        self._last_recovery_time: Optional[float] = None
+        self._recovery_paused: bool = False
+
+        # Thread safety (from circuit_breaker.py pattern)
+        self._lock = threading.Lock()
+
+        # Background thread management (from knowledge_daemon.py pattern)
+        self._stop_event = threading.Event()
+        self._recovery_thread: Optional[threading.Thread] = None
+        self._running = False
+
+        # Tier availability checker (set by EmbeddingProvider)
+        self._tier_checker: Optional[Callable[[EmbeddingTier], bool]] = None
+
+        # Recovery callback (notifies EmbeddingProvider to upgrade)
+        self._on_tier_available: Optional[Callable[[EmbeddingTier], None]] = None
+
+    def start(self) -> None:
+        """Start automatic recovery checking (only in auto mode)."""
+        if self.config.mode != "auto":
+            logger.info("Tier recovery in manual mode, background checking disabled")
+            return
+
+        if self._running:
+            logger.warning("Tier recovery manager already running")
+            return
+
+        self._running = True
+        self._stop_event.clear()
+        self._recovery_thread = threading.Thread(
+            target=self._recovery_loop,
+            name="EmbeddingTierRecovery",
+            daemon=True
+        )
+        self._recovery_thread.start()
+        logger.info(f"Tier recovery manager started (interval={self.config.check_interval}s)")
+
+    def stop(self) -> None:
+        """Stop automatic recovery checking."""
+        if not self._running:
+            return
+
+        self._running = False
+        self._stop_event.set()
+
+        if self._recovery_thread:
+            self._recovery_thread.join(timeout=10.0)
+            if self._recovery_thread.is_alive():
+                logger.warning("Tier recovery thread still alive after timeout")
+            self._recovery_thread = None
+
+        logger.info("Tier recovery manager stopped")
+
+    def _recovery_loop(self) -> None:
+        """Background loop for automatic tier recovery checks."""
+        while self._running and not self._stop_event.is_set():
+            # Wait for interval (interruptible)
+            if self._stop_event.wait(timeout=self.config.check_interval):
+                break
+
+            if not self._running:
+                break
+
+            # Only check if we're in a degraded state
+            with self._lock:
+                if self._current_tier == self._optimal_tier:
+                    continue  # Already at optimal tier
+                if self._recovery_paused:
+                    continue  # Paused after too many failures
+
+            # Try to upgrade
+            self._try_recovery()
+
+        logger.debug("Tier recovery loop exited")
+
+    def try_upgrade_tier(self) -> Optional[EmbeddingTier]:
+        """
+        Manually trigger tier upgrade check.
+
+        Returns:
+            The new tier if upgraded, None if no upgrade occurred
+        """
+        # Reset pause state on manual attempt
+        with self._lock:
+            self._recovery_paused = False
+            self._consecutive_failures = 0
+
+        return self._try_recovery()
+
+    def _try_recovery(self) -> Optional[EmbeddingTier]:
+        """
+        Attempt to recover to a higher tier.
+
+        Returns:
+            The new tier if upgraded, None otherwise
+        """
+        if self._tier_checker is None:
+            logger.warning("No tier checker configured")
+            return None
+
+        with self._lock:
+            self._last_check_time = time.time()
+            current = self._current_tier
+
+            # Define tier priority (highest to lowest)
+            tier_priority = [EmbeddingTier.LM_STUDIO, EmbeddingTier.TFIDF, EmbeddingTier.FTS5]
+            current_idx = tier_priority.index(current)
+
+            # Check each tier from highest to current (exclusive)
+            for tier in tier_priority[:current_idx]:
+                try:
+                    if self._tier_checker(tier):
+                        # Tier is available! Upgrade
+                        old_tier = self._current_tier
+                        self._current_tier = tier
+                        self._consecutive_failures = 0
+                        self._last_recovery_time = time.time()
+
+                        logger.info(f"Tier recovery successful: {old_tier.value} -> {tier.value}")
+
+                        # Notify EmbeddingProvider (outside lock to avoid deadlock)
+                        callback = self._on_tier_available
+                        if callback:
+                            # Release lock before callback
+                            self._lock.release()
+                            try:
+                                callback(tier)
+                            finally:
+                                self._lock.acquire()
+
+                        return tier
+                except Exception as e:
+                    logger.debug(f"Tier {tier.value} check failed: {e}")
+
+            # No tier recovered
+            self._consecutive_failures += 1
+
+            # Check if we should pause automatic recovery
+            if self._consecutive_failures >= self.config.max_recovery_attempts:
+                self._recovery_paused = True
+                logger.info(f"Pausing recovery after {self._consecutive_failures} consecutive failures")
+
+            return None
+
+    def set_current_tier(self, tier: EmbeddingTier) -> None:
+        """Update current tier (called by EmbeddingProvider on downgrade)."""
+        with self._lock:
+            old_tier = self._current_tier
+            self._current_tier = tier
+            if tier != old_tier:
+                logger.debug(f"Recovery manager notified of tier change: {old_tier.value} -> {tier.value}")
+                # Reset failure count when tier changes (fresh start for recovery)
+                if tier.value > old_tier.value:  # Degraded
+                    self._consecutive_failures = 0
+                    self._recovery_paused = False
+
+    def get_status(self) -> Dict[str, Any]:
+        """Get recovery manager status."""
+        with self._lock:
+            return {
+                "mode": self.config.mode,
+                "running": self._running,
+                "current_tier": self._current_tier.value,
+                "optimal_tier": self._optimal_tier.value,
+                "is_degraded": self._current_tier != self._optimal_tier,
+                "consecutive_failures": self._consecutive_failures,
+                "recovery_paused": self._recovery_paused,
+                "last_check_time": self._last_check_time,
+                "last_recovery_time": self._last_recovery_time,
+                "check_interval": self.config.check_interval
+            }
+
+
 class EmbeddingProvider:
     """
     Unified embedding provider with automatic tier selection.
@@ -352,7 +557,8 @@ class EmbeddingProvider:
     def __init__(self,
                  lm_studio_client=None,
                  db_path: str = "felix_knowledge.db",
-                 preferred_tier: Optional[EmbeddingTier] = None):
+                 preferred_tier: Optional[EmbeddingTier] = None,
+                 recovery_config: Optional[TierRecoveryConfig] = None):
         """
         Initialize embedding provider.
 
@@ -360,8 +566,12 @@ class EmbeddingProvider:
             lm_studio_client: Optional LMStudioClient instance
             db_path: Path to knowledge database
             preferred_tier: Force specific tier (for testing)
+            recovery_config: Configuration for tier recovery (auto/manual mode)
         """
         self.db_path = db_path
+
+        # Store client reference for recovery checks
+        self._lm_studio_client = lm_studio_client
 
         # Initialize all tiers
         self.lm_studio_embedder = LMStudioEmbedder(lm_studio_client) if lm_studio_client else None
@@ -376,6 +586,13 @@ class EmbeddingProvider:
 
         logger.info(f"Embedding provider initialized: Tier = {self.active_tier.value}")
 
+        # Initialize tier recovery manager
+        self._recovery_manager = TierRecoveryManager(recovery_config)
+        self._recovery_manager._tier_checker = self._check_tier_availability
+        self._recovery_manager._on_tier_available = self._handle_tier_recovery
+        self._recovery_manager.set_current_tier(self.active_tier)
+        self._recovery_manager.start()
+
     def _select_best_tier(self) -> EmbeddingTier:
         """Select best available tier."""
         # Try Tier 1: LM Studio
@@ -389,6 +606,47 @@ class EmbeddingProvider:
 
         # Tier 3: FTS5 (always available)
         return EmbeddingTier.FTS5
+
+    def _check_tier_availability(self, tier: EmbeddingTier) -> bool:
+        """
+        Check if a specific tier is currently available.
+
+        Args:
+            tier: The tier to check
+
+        Returns:
+            True if the tier is available, False otherwise
+        """
+        if tier == EmbeddingTier.LM_STUDIO:
+            if self._lm_studio_client is None:
+                return False
+            try:
+                return self._lm_studio_client.test_embedding_availability(
+                    timeout=self._recovery_manager.config.check_timeout
+                )
+            except Exception as e:
+                logger.debug(f"LM Studio availability check failed: {e}")
+                return False
+        elif tier == EmbeddingTier.TFIDF:
+            return self.tfidf_embedder.fitted
+        elif tier == EmbeddingTier.FTS5:
+            return True  # Always available
+        return False
+
+    def _handle_tier_recovery(self, new_tier: EmbeddingTier) -> None:
+        """
+        Handle successful tier recovery.
+
+        Args:
+            new_tier: The tier that became available
+        """
+        logger.info(f"Upgrading embedding tier: {self.active_tier.value} -> {new_tier.value}")
+
+        # For LM Studio recovery, refresh the embedder availability
+        if new_tier == EmbeddingTier.LM_STUDIO and self.lm_studio_embedder:
+            self.lm_studio_embedder.available = True
+
+        self.active_tier = new_tier
 
     def fit_tfidf(self, documents: List[str]):
         """
@@ -443,6 +701,7 @@ class EmbeddingProvider:
                 # Fallback to TF-IDF if LM Studio fails
                 logger.warning("LM Studio embedding failed, falling back to TF-IDF")
                 self.active_tier = EmbeddingTier.TFIDF
+                self._recovery_manager.set_current_tier(self.active_tier)
 
             if self.active_tier == EmbeddingTier.TFIDF:
                 embedding = self.tfidf_embedder.embed(text)
@@ -456,6 +715,7 @@ class EmbeddingProvider:
                 # Fallback to FTS5 if TF-IDF fails
                 logger.warning("TF-IDF embedding failed, falling back to FTS5")
                 self.active_tier = EmbeddingTier.FTS5
+                self._recovery_manager.set_current_tier(self.active_tier)
 
             # Tier 3: FTS5 doesn't need embeddings
             return EmbeddingResult(
@@ -551,6 +811,8 @@ class EmbeddingProvider:
 
     def get_tier_info(self) -> Dict[str, Any]:
         """Get information about current tier and availability."""
+        recovery_status = self._recovery_manager.get_status()
+
         return {
             'active_tier': self.active_tier.value,
             'tiers_available': {
@@ -562,8 +824,53 @@ class EmbeddingProvider:
                 'lm_studio': 768 if self.lm_studio_embedder else None,
                 'tfidf': len(self.tfidf_embedder.vocabulary) if self.tfidf_embedder.fitted else None,
                 'fts5': None  # No embeddings
+            },
+            'recovery': {
+                'mode': recovery_status['mode'],
+                'is_degraded': recovery_status['is_degraded'],
+                'recovery_paused': recovery_status['recovery_paused'],
+                'last_check_time': recovery_status['last_check_time'],
+                'last_recovery_time': recovery_status['last_recovery_time'],
+                'check_interval': recovery_status['check_interval']
             }
         }
+
+    def try_upgrade_tier(self) -> Optional[EmbeddingTier]:
+        """
+        Manually attempt to upgrade to a higher tier.
+
+        Returns:
+            The new tier if upgraded, None if no upgrade occurred
+        """
+        return self._recovery_manager.try_upgrade_tier()
+
+    def get_recovery_status(self) -> Dict[str, Any]:
+        """Get tier recovery status."""
+        return self._recovery_manager.get_status()
+
+    def stop_recovery(self) -> None:
+        """Stop the tier recovery manager (call on shutdown)."""
+        self._recovery_manager.stop()
+
+    def set_recovery_mode(self, mode: str) -> None:
+        """
+        Change embedding tier recovery mode at runtime.
+
+        Args:
+            mode: "auto" or "manual"
+        """
+        if mode not in ("auto", "manual"):
+            raise ValueError("Mode must be 'auto' or 'manual'")
+
+        # Stop current recovery if running
+        self._recovery_manager.stop()
+
+        # Update mode and restart if auto
+        self._recovery_manager.config.mode = mode
+        if mode == "auto":
+            self._recovery_manager.start()
+
+        logger.info(f"Tier recovery mode set to: {mode}")
 
 
 # Utility functions

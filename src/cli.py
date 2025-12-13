@@ -599,6 +599,104 @@ def cmd_sessions(args):
     return 0
 
 
+def cmd_embeddings(args):
+    """Manage embedding tiers."""
+    from src.gui.felix_system import FelixSystem, FelixConfig
+
+    # Create minimal config with knowledge brain enabled
+    config = FelixConfig(
+        enable_knowledge_brain=True,
+        knowledge_daemon_enabled=False,  # No background daemon
+        enable_streaming=False,
+        verbose_llm_logging=args.verbose if hasattr(args, 'verbose') else False
+    )
+
+    felix_system = FelixSystem(config)
+
+    try:
+        print("Initializing Felix system...")
+        if not felix_system.start():
+            print("❌ Failed to start Felix system")
+            return 1
+
+        if felix_system.embedding_provider is None:
+            print("❌ Embedding provider not available")
+            print("Make sure Knowledge Brain is properly configured.")
+            return 1
+
+        embedding_provider = felix_system.embedding_provider
+
+        if args.action == 'status':
+            # Show embedding tier status
+            info = embedding_provider.get_tier_info()
+            recovery = info.get('recovery', {})
+
+            print("\n📊 Embedding Tier Status")
+            print("=" * 50)
+            print(f"Active Tier: {info['active_tier']}")
+            print(f"\nTiers Available:")
+            for tier, available in info['tiers_available'].items():
+                icon = "✓" if available else "✗"
+                dim = info['embedding_dim'].get(tier)
+                dim_str = f" (dim: {dim})" if dim else ""
+                print(f"  {icon} {tier}{dim_str}")
+
+            print(f"\nRecovery Settings:")
+            print(f"  Mode: {recovery.get('mode', 'unknown')}")
+            print(f"  Is Degraded: {recovery.get('is_degraded', False)}")
+            print(f"  Recovery Paused: {recovery.get('recovery_paused', False)}")
+            print(f"  Check Interval: {recovery.get('check_interval', 60)}s")
+
+            if recovery.get('last_check_time'):
+                from datetime import datetime
+                last_check = datetime.fromtimestamp(recovery['last_check_time'])
+                print(f"  Last Check: {last_check.strftime('%Y-%m-%d %H:%M:%S')}")
+
+            if recovery.get('last_recovery_time'):
+                from datetime import datetime
+                last_recovery = datetime.fromtimestamp(recovery['last_recovery_time'])
+                print(f"  Last Recovery: {last_recovery.strftime('%Y-%m-%d %H:%M:%S')}")
+
+        elif args.action == 'upgrade':
+            # Try to upgrade tier
+            print("Attempting tier upgrade...")
+            new_tier = embedding_provider.try_upgrade_tier()
+
+            if new_tier:
+                print(f"✓ Successfully upgraded to: {new_tier.value}")
+            else:
+                info = embedding_provider.get_tier_info()
+                print(f"No upgrade available. Current tier: {info['active_tier']}")
+
+        elif args.action == 'mode':
+            # Set recovery mode
+            if not args.mode_value:
+                # Show current mode
+                info = embedding_provider.get_tier_info()
+                print(f"Current recovery mode: {info['recovery']['mode']}")
+            else:
+                if args.mode_value not in ('auto', 'manual'):
+                    print("❌ Mode must be 'auto' or 'manual'")
+                    return 1
+
+                embedding_provider.set_recovery_mode(args.mode_value)
+                print(f"✓ Recovery mode set to: {args.mode_value}")
+
+        print()
+        return 0
+
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        if hasattr(args, 'verbose') and args.verbose:
+            import traceback
+            traceback.print_exc()
+        return 1
+
+    finally:
+        if felix_system.running:
+            felix_system.stop()
+
+
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -637,6 +735,13 @@ Examples:
   felix status                                  # Check system status
   felix test-connection                         # Test LLM providers
   felix gui                                     # Launch GUI
+
+  # Embedding tier management
+  felix embeddings status                       # Show embedding tier status
+  felix embeddings upgrade                      # Try to upgrade to higher tier
+  felix embeddings mode                         # Show current recovery mode
+  felix embeddings mode auto                    # Set recovery mode to auto
+  felix embeddings mode manual                  # Set recovery mode to manual
         """
     )
 
@@ -716,6 +821,16 @@ Examples:
     sessions_parser.add_argument('--force', '-f', action='store_true',
                                 help='Force delete without confirmation')
     sessions_parser.set_defaults(func=cmd_sessions)
+
+    # Embeddings command
+    embeddings_parser = subparsers.add_parser('embeddings', help='Manage embedding tiers')
+    embeddings_parser.add_argument('action', choices=['status', 'upgrade', 'mode'],
+                                   help='Action: status (show tier info), upgrade (try higher tier), mode (get/set recovery mode)')
+    embeddings_parser.add_argument('mode_value', nargs='?', choices=['auto', 'manual'],
+                                   help='Recovery mode (for mode action)')
+    embeddings_parser.add_argument('--verbose', '-v', action='store_true',
+                                   help='Verbose output')
+    embeddings_parser.set_defaults(func=cmd_embeddings)
 
     # Parse arguments
     args = parser.parse_args()

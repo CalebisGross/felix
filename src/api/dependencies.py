@@ -462,6 +462,34 @@ def get_knowledge_daemon():
     return _knowledge_daemon
 
 
+def get_embedding_provider():
+    """
+    Get EmbeddingProvider instance from Felix system.
+
+    Returns:
+        EmbeddingProvider instance
+
+    Raises:
+        HTTPException: If knowledge brain is disabled or embedding provider unavailable
+    """
+    verify_knowledge_brain_enabled()
+
+    if not is_felix_running():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Felix system is not running. Start Felix first."
+        )
+
+    felix = get_felix()
+    if felix.embedding_provider is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Embedding provider not initialized. Knowledge Brain may not be properly configured."
+        )
+
+    return felix.embedding_provider
+
+
 def cleanup_knowledge_brain() -> None:
     """Clean up knowledge brain singletons (called on shutdown)."""
     global _knowledge_daemon, _document_reader, _knowledge_retriever, _graph_builder

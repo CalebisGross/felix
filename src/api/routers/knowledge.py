@@ -38,6 +38,7 @@ from src.api.dependencies import (
     get_knowledge_retriever,
     get_knowledge_daemon,
     get_graph_builder,
+    get_embedding_provider,
 )
 
 logger = logging.getLogger(__name__)
@@ -1012,6 +1013,138 @@ async def update_watch_directories(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error updating watch directories: {str(e)}"
+        )
+
+
+# ============================================================================
+# Embedding Tier Recovery Endpoints
+# ============================================================================
+
+@router.get("/embeddings/status")
+async def get_embedding_status(
+    api_key: str = Depends(verify_api_key),
+    embedding_provider=Depends(get_embedding_provider)
+) -> dict:
+    """
+    Get embedding tier status including recovery information.
+
+    Returns detailed status about:
+    - Active embedding tier (lm_studio, tfidf, fts5)
+    - Tier availability
+    - Recovery mode and status
+    - Last check/recovery times
+
+    Args:
+        api_key: Authentication token
+        embedding_provider: EmbeddingProvider instance
+
+    Returns:
+        Embedding tier status dictionary
+    """
+    try:
+        tier_info = embedding_provider.get_tier_info()
+        return {
+            "status": "success",
+            **tier_info
+        }
+    except Exception as e:
+        logger.exception("Error getting embedding status")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error getting embedding status: {str(e)}"
+        )
+
+
+@router.post("/embeddings/upgrade")
+async def try_embedding_upgrade(
+    api_key: str = Depends(verify_api_key),
+    embedding_provider=Depends(get_embedding_provider)
+) -> dict:
+    """
+    Manually trigger embedding tier upgrade attempt.
+
+    Checks if a higher tier (e.g., LM Studio) has become available
+    and upgrades if possible. Useful in manual recovery mode or
+    to force an immediate check.
+
+    Args:
+        api_key: Authentication token
+        embedding_provider: EmbeddingProvider instance
+
+    Returns:
+        Upgrade result with new tier if successful
+    """
+    try:
+        logger.info("Manual embedding tier upgrade requested")
+        new_tier = embedding_provider.try_upgrade_tier()
+
+        if new_tier:
+            return {
+                "status": "upgraded",
+                "new_tier": new_tier.value,
+                "message": f"Successfully upgraded to {new_tier.value}"
+            }
+        else:
+            tier_info = embedding_provider.get_tier_info()
+            return {
+                "status": "unchanged",
+                "current_tier": tier_info['active_tier'],
+                "message": "No higher tier available for upgrade"
+            }
+
+    except Exception as e:
+        logger.exception("Error attempting embedding upgrade")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error attempting upgrade: {str(e)}"
+        )
+
+
+@router.post("/embeddings/recovery/mode")
+async def set_embedding_recovery_mode(
+    mode: str = Query(..., description="Recovery mode: 'auto' or 'manual'"),
+    api_key: str = Depends(verify_api_key),
+    embedding_provider=Depends(get_embedding_provider)
+) -> dict:
+    """
+    Change embedding tier recovery mode at runtime.
+
+    Modes:
+    - auto: Background thread periodically checks for tier recovery
+    - manual: Recovery only happens when explicitly triggered via API
+
+    Args:
+        mode: "auto" or "manual"
+        api_key: Authentication token
+        embedding_provider: EmbeddingProvider instance
+
+    Returns:
+        Success message with new mode
+    """
+    try:
+        if mode not in ("auto", "manual"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Mode must be 'auto' or 'manual'"
+            )
+
+        embedding_provider.set_recovery_mode(mode)
+
+        logger.info(f"Embedding recovery mode changed to: {mode}")
+
+        return {
+            "status": "success",
+            "mode": mode,
+            "message": f"Recovery mode set to {mode}"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error setting recovery mode")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error setting recovery mode: {str(e)}"
         )
 
 
