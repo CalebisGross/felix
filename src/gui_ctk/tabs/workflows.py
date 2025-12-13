@@ -434,6 +434,49 @@ class WorkflowsTab(ResponsiveTab):
         self.output_text.see("end")
         self.output_text.configure(state="disabled")
 
+    def _display_degradation_warning(self, synthesis: dict):
+        """
+        Display warning for degraded synthesis results (Issue #18).
+
+        When agent failures or other factors make the synthesis unreliable,
+        this method displays a warning in the output text and optionally
+        shows a dialog for severe degradation.
+
+        Args:
+            synthesis: The synthesis result dictionary containing degradation info
+        """
+        degraded_reason = synthesis.get("degraded_reason", "Unknown reason")
+        successful = synthesis.get("successful_agents", [])
+        failed = synthesis.get("failed_agents", [])
+        confidence = synthesis.get("confidence", 0.0)
+
+        # Write warning block to output
+        self._write_output("")
+        self._write_output("=" * 60)
+        self._write_output("WARNING: DEGRADED SYNTHESIS RESULT")
+        self._write_output("=" * 60)
+        self._write_output(f"Reason: {degraded_reason}")
+        self._write_output(f"Confidence: {confidence:.2f}")
+        self._write_output(f"Successful agents: {len(successful)}")
+        if successful:
+            self._write_output(f"  - {', '.join(successful)}")
+        self._write_output(f"Failed agents: {len(failed)}")
+        if failed:
+            self._write_output(f"  - {', '.join(failed)}")
+        self._write_output("")
+        self._write_output("This result may be incomplete or unreliable.")
+        self._write_output("=" * 60)
+
+        # Show messagebox warning for low confidence
+        if confidence < 0.4:
+            messagebox.showwarning(
+                "Degraded Result",
+                f"Felix could not provide a reliable answer.\n\n"
+                f"Reason: {degraded_reason}\n\n"
+                f"The synthesis has low confidence ({confidence:.2f}) and "
+                f"should be treated with caution."
+            )
+
     def run_workflow(self):
         """Run a workflow with the given task input."""
         task_input = self.task_entry.get("1.0", "end").strip()
@@ -575,6 +618,10 @@ class WorkflowsTab(ResponsiveTab):
 
                     self.after(0, lambda: self._write_output(""))
                     self.after(0, lambda: self._write_output("=" * 60))
+
+                    # Issue #18: Display degradation warning if applicable
+                    if final_synthesis.get("degraded", False):
+                        self.after(0, lambda fs=final_synthesis: self._display_degradation_warning(fs))
 
                 self.after(0, lambda: self._write_output("\nWorkflow completed successfully!"))
 

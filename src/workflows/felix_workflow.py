@@ -434,7 +434,11 @@ def run_felix_workflow(felix_system, task_input: str,
             "knowledge_entries": [],
             "knowledge_entry_ids": [],  # Track actual knowledge IDs for meta-learning
             "status": "in_progress",
-            "centralpost_synthesis": None  # Will store CentralPost synthesis output
+            "centralpost_synthesis": None,  # Will store CentralPost synthesis output
+            # Agent success/failure tracking for degradation detection (Issue #18)
+            "successful_agents": [],      # Agent IDs that produced valid output
+            "failed_agents": [],          # Agent IDs that failed
+            "agent_failure_details": {},  # agent_id -> failure reason
         }
 
         # Track reasoning evaluations from CriticAgent for weighted synthesis (Phase 6)
@@ -723,12 +727,24 @@ def run_felix_workflow(felix_system, task_input: str,
                                         logger.info(f"  ✓ Recovery successful! Agent produced result with confidence {result.confidence:.2f}")
                                     except Exception as retry_error:
                                         logger.error(f"  ✗ Recovery failed: {retry_error}")
+                                        # Track agent failure (Issue #18)
+                                        if agent.agent_id not in results["failed_agents"]:
+                                            results["failed_agents"].append(agent.agent_id)
+                                            results["agent_failure_details"][agent.agent_id] = f"Recovery failed: {retry_error}"
                                         continue  # Skip this agent and move on
                                 else:
                                     logger.error(f"  ✗ Recovery not possible: {recovery_result['message']}")
+                                    # Track agent failure (Issue #18)
+                                    if agent.agent_id not in results["failed_agents"]:
+                                        results["failed_agents"].append(agent.agent_id)
+                                        results["agent_failure_details"][agent.agent_id] = f"Recovery not possible: {recovery_result['message']}"
                                     continue  # Skip this agent
                             else:
                                 logger.error(f"  ✗ Abandoning recovery for {agent.agent_id} (too many failures)")
+                                # Track agent failure (Issue #18)
+                                if agent.agent_id not in results["failed_agents"]:
+                                    results["failed_agents"].append(agent.agent_id)
+                                    results["agent_failure_details"][agent.agent_id] = "Abandoned: too many failures"
                                 continue  # Skip this agent
 
                         # Mark checkpoint as processed
@@ -741,6 +757,10 @@ def run_felix_workflow(felix_system, task_input: str,
                             agent_id=agent.agent_id,
                             result=result
                         )
+
+                        # Track agent success (Issue #18)
+                        if agent.agent_id not in results["successful_agents"]:
+                            results["successful_agents"].append(agent.agent_id)
 
                         # Share result via CentralPost
                         message = agent.share_result_to_central(result)
@@ -1412,12 +1432,15 @@ def run_felix_workflow(felix_system, task_input: str,
                         try:
                             # Phase 6: Pass reasoning evaluations for weighted synthesis
                             # Phase 7: Pass coverage report for meta-confidence
+                            # Issue #18: Pass agent tracking for degradation assessment
                             synthesis_result = central_post.synthesize_agent_outputs(
                                 task_description=task_input,
                                 max_messages=20,
                                 task_complexity=task_complexity,
                                 reasoning_evals=reasoning_evals if reasoning_evals else None,
-                                coverage_report=coverage_report
+                                coverage_report=coverage_report,
+                                successful_agents=results.get("successful_agents", []),
+                                failed_agents=results.get("failed_agents", [])
                             )
                             results["centralpost_synthesis"] = synthesis_result
                             logger.info(f"✓ CentralPost synthesis complete!")
@@ -1430,6 +1453,9 @@ def run_felix_workflow(felix_system, task_input: str,
                                 logger.info(f"  Reasoning evals applied: {len(reasoning_evals)} agents weighted")
                             if synthesis_result.get('epistemic_caveats'):
                                 logger.info(f"  Epistemic caveats: {len(synthesis_result['epistemic_caveats'])}")
+                            # Issue #18: Log degradation status
+                            if synthesis_result.get('degraded'):
+                                logger.warning(f"  ⚠️ DEGRADED: {synthesis_result.get('degraded_reason')}")
 
                             # NEW: Broadcast synthesis feedback to agents for learning
                             # Pass knowledge IDs and task type for meta-learning boost
@@ -1477,12 +1503,15 @@ def run_felix_workflow(felix_system, task_input: str,
             try:
                 # Phase 6: Pass reasoning evaluations for weighted synthesis
                 # Phase 7: Pass coverage report for meta-confidence
+                # Issue #18: Pass agent tracking for degradation assessment
                 synthesis_result = central_post.synthesize_agent_outputs(
                     task_description=task_input,
                     max_messages=20,
                     task_complexity=task_complexity,
                     reasoning_evals=reasoning_evals if reasoning_evals else None,
-                    coverage_report=coverage_report
+                    coverage_report=coverage_report,
+                    successful_agents=results.get("successful_agents", []),
+                    failed_agents=results.get("failed_agents", [])
                 )
                 results["centralpost_synthesis"] = synthesis_result
                 logger.info(f"✓ Final CentralPost synthesis complete")
@@ -1492,6 +1521,9 @@ def run_felix_workflow(felix_system, task_input: str,
                     logger.info(f"  Reasoning evals applied: {len(reasoning_evals)} agents weighted")
                 if synthesis_result.get('epistemic_caveats'):
                     logger.info(f"  Epistemic caveats: {len(synthesis_result['epistemic_caveats'])}")
+                # Issue #18: Log degradation status
+                if synthesis_result.get('degraded'):
+                    logger.warning(f"  ⚠️ DEGRADED: {synthesis_result.get('degraded_reason')}")
 
                 # NEW: Broadcast synthesis feedback to agents for learning
                 # Pass knowledge IDs and task type for meta-learning boost

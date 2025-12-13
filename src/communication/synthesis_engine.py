@@ -21,7 +21,7 @@ import re
 import os
 import logging
 import yaml
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 from pathlib import Path
 from collections import namedtuple
 
@@ -317,7 +317,9 @@ class SynthesisEngine:
     def synthesize_agent_outputs(self, task_description: str, max_messages: int = 20,
                                  task_complexity: str = "COMPLEX",
                                  reasoning_evals: Optional[Dict[str, Dict[str, Any]]] = None,
-                                 coverage_report: Optional[Any] = None) -> Dict[str, Any]:
+                                 coverage_report: Optional[Any] = None,
+                                 successful_agents: Optional[List[str]] = None,
+                                 failed_agents: Optional[List[str]] = None) -> Dict[str, Any]:
         """
         Synthesize final output from all agent communications.
 
@@ -335,6 +337,10 @@ class SynthesisEngine:
                 influence on synthesis confidence.
             coverage_report: Optional CoverageReport from KnowledgeCoverageAnalyzer.
                 Used to compute meta-confidence and generate epistemic caveats.
+            successful_agents: Optional list of agent IDs that produced valid output.
+                Used for degradation assessment (Issue #18).
+            failed_agents: Optional list of agent IDs that failed.
+                Used for degradation assessment (Issue #18).
 
         Returns:
             Dict containing:
@@ -345,6 +351,10 @@ class SynthesisEngine:
                 - max_tokens: Token budget allocated
                 - agents_synthesized: Number of agent outputs included
                 - timestamp: Synthesis timestamp
+                - degraded: Whether the result is degraded (Issue #18)
+                - degraded_reason: Human-readable reason for degradation
+                - successful_agents: List of successful agent IDs
+                - failed_agents: List of failed agent IDs
 
         Raises:
             RuntimeError: If no LLM client available for synthesis
@@ -547,10 +557,30 @@ Your output should reflect JUSTIFIED confidence, not reflexive confidence. If th
             logger.info(f"  Epistemic caveats: {len(meta_confidence_result['epistemic_caveats'])}")
         if synthesis_attempts >= max_attempts:
             logger.warning(f"  ⚠️  Used fallback synthesis (all LLM attempts failed)")
+
+        # Assess degradation (Issue #18)
+        used_fallback = synthesis_attempts >= max_attempts
+        is_degraded, degraded_reason, degraded_reasons = self.assess_degradation(
+            successful_agents=successful_agents or [],
+            failed_agents=failed_agents or [],
+            synthesis_confidence=synthesis_confidence,
+            coverage_report=coverage_report,
+            used_fallback=used_fallback
+        )
+
+        # Generate degraded response prefix if needed
+        final_content = llm_response.content
+        if is_degraded and synthesis_confidence < 0.5:
+            final_content = self._generate_degraded_response(
+                original_content=llm_response.content,
+                degraded_reason=degraded_reason,
+                confidence=synthesis_confidence
+            )
+
         logger.info("=" * 60)
 
         return {
-            "synthesis_content": llm_response.content,
+            "synthesis_content": final_content,
             "confidence": synthesis_confidence,  # Pure agent confidence (no validation weighting)
             "meta_confidence": meta_confidence_result['meta_confidence'],  # Phase 7: Coverage-adjusted
             "coverage_adjustment": meta_confidence_result['coverage_adjustment'],
@@ -563,9 +593,15 @@ Your output should reflect JUSTIFIED confidence, not reflexive confidence. If th
             "avg_agent_confidence": avg_agent_confidence,
             "critic_count": critic_count,
             "synthesis_time": synthesis_time,
-            "synthesis_attempts": synthesis_attempts,  # NEW: track retry attempts
-            "used_fallback": synthesis_attempts >= max_attempts,  # NEW: fallback indicator
-            "timestamp": time.time()
+            "synthesis_attempts": synthesis_attempts,  # Track retry attempts
+            "used_fallback": used_fallback,  # Fallback indicator
+            "timestamp": time.time(),
+            # Degradation tracking (Issue #18)
+            "degraded": is_degraded,
+            "degraded_reason": degraded_reason,
+            "degraded_reasons": degraded_reasons,
+            "successful_agents": successful_agents or [],
+            "failed_agents": failed_agents or [],
         }
 
     def _create_fallback_synthesis(self,
@@ -623,6 +659,117 @@ Your output should reflect JUSTIFIED confidence, not reflexive confidence. If th
             content=fallback_content,
             tokens_used=len(fallback_content) // 4  # Rough token estimate
         )
+
+    def assess_degradation(
+        self,
+        successful_agents: List[str],
+        failed_agents: List[str],
+        synthesis_confidence: float,
+        coverage_report: Optional[Any],
+        used_fallback: bool
+    ) -> Tuple[bool, Optional[str], List[str]]:
+        """
+        Assess if synthesis result should be marked as degraded.
+
+        A synthesis is degraded when agent failures or other factors make
+        the result unreliable and the user should be warned.
+
+        Args:
+            successful_agents: List of agent IDs that contributed successfully
+            failed_agents: List of agent IDs that failed
+            synthesis_confidence: Confidence score from synthesis (0.0-1.0)
+            coverage_report: Optional coverage analysis report
+            used_fallback: Whether fallback synthesis was used
+
+        Returns:
+            Tuple of (is_degraded, human_readable_reason, list_of_reason_codes)
+        """
+        reasons = []
+        explanations = []
+
+        total_agents = len(successful_agents) + len(failed_agents)
+
+        # Check agent failure rate (>= 50% failed)
+        if total_agents > 0:
+            failure_rate = len(failed_agents) / total_agents
+            if failure_rate >= 0.5:
+                reasons.append("agent_failures")
+                explanations.append(
+                    f"{len(failed_agents)} of {total_agents} agents failed"
+                )
+
+        # Check for critical agent types in failures (research, analysis)
+        critical_types = {'research', 'analysis'}
+        for agent_id in failed_agents:
+            # Agent IDs are typically like "research_agent_abc123"
+            agent_type = agent_id.split('_')[0] if '_' in agent_id else ''
+            if agent_type in critical_types:
+                if "agent_failures" not in reasons:
+                    reasons.append("agent_failures")
+                explanations.append(f"Critical {agent_type} agent failed")
+                break  # Only report once
+
+        # Check LLM availability (fallback used)
+        if used_fallback:
+            reasons.append("llm_unavailable")
+            explanations.append("LLM unavailable, used fallback synthesis")
+
+        # Check confidence threshold (< 0.4)
+        if synthesis_confidence < 0.4:
+            reasons.append("low_confidence")
+            explanations.append(f"Low synthesis confidence ({synthesis_confidence:.2f})")
+
+        # Check knowledge coverage (< 0.3)
+        if coverage_report:
+            coverage_score = getattr(coverage_report, 'overall_coverage_score', 1.0)
+            if coverage_score < 0.3:
+                reasons.append("insufficient_coverage")
+                explanations.append(f"Insufficient knowledge coverage ({coverage_score:.2f})")
+
+        is_degraded = len(reasons) > 0
+        human_reason = "; ".join(explanations) if explanations else None
+
+        if is_degraded:
+            logger.warning(f"⚠️ Synthesis degraded: {human_reason}")
+
+        return is_degraded, human_reason, reasons
+
+    def _generate_degraded_response(
+        self,
+        original_content: str,
+        degraded_reason: str,
+        confidence: float
+    ) -> str:
+        """
+        Prepend degradation notice to synthesis output when reliability is low.
+
+        For very low confidence, adds "I cannot provide a reliable answer" prefix.
+        For moderately low confidence, adds a caution note.
+
+        Args:
+            original_content: The original synthesis content
+            degraded_reason: Human-readable reason for degradation
+            confidence: Synthesis confidence score (0.0-1.0)
+
+        Returns:
+            Content with appropriate degradation prefix
+        """
+        if confidence < 0.3:
+            prefix = (
+                "**I cannot provide a reliable answer to this question.**\n\n"
+                f"Reason: {degraded_reason}\n\n"
+                "The following is based on limited information and should be "
+                "treated with caution:\n\n---\n\n"
+            )
+        elif confidence < 0.5:
+            prefix = (
+                "**Note: This response has reduced reliability.**\n\n"
+                f"Reason: {degraded_reason}\n\n---\n\n"
+            )
+        else:
+            prefix = ""
+
+        return prefix + original_content
 
     def calculate_synthesis_temperature(self, avg_confidence: float, confidence_std: float = 0.0) -> float:
         """

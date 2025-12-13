@@ -22,6 +22,7 @@ import uuid
 import random
 import logging
 import threading
+import sqlite3
 from typing import Dict, List, Optional, Any, Tuple, TYPE_CHECKING, Callable
 from collections import deque
 from queue import Queue, Empty
@@ -99,6 +100,92 @@ class AgentRegistry:
         # Confidence history: track confidence over time
         self._confidence_history: List[Tuple[float, str, float]] = []  # (time, agent_id, confidence)
 
+        # Live agents database for cross-process visibility
+        self._live_db_path = "felix_live_agents.db"
+        self._init_live_db()
+
+    def _init_live_db(self) -> None:
+        """Initialize SQLite database for live agent positions (cross-process visibility)."""
+        try:
+            with sqlite3.connect(self._live_db_path) as conn:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS live_agents (
+                        agent_id TEXT PRIMARY KEY,
+                        agent_type TEXT NOT NULL,
+                        phase TEXT NOT NULL,
+                        progress REAL DEFAULT 0.0,
+                        x_position REAL DEFAULT 0.0,
+                        y_position REAL DEFAULT 0.0,
+                        z_position REAL DEFAULT 0.0,
+                        confidence REAL DEFAULT 0.5,
+                        last_update REAL NOT NULL,
+                        status TEXT DEFAULT 'active',
+                        created_at REAL DEFAULT 0.0
+                    )
+                """)
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_live_agents_last_update ON live_agents(last_update DESC)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_live_agents_status ON live_agents(status)")
+                conn.commit()
+        except Exception as e:
+            logger.warning(f"Failed to initialize live agents database: {e}")
+
+    def _persist_agent_position(self, agent_id: str, position_info: Dict[str, Any]) -> None:
+        """Persist agent position to SQLite for cross-process visibility."""
+        try:
+            metadata = self._agent_metadata.get(agent_id, {})
+            metrics = self._performance_metrics.get(agent_id, {})
+            depth_ratio = position_info.get('depth_ratio', 0.0)
+
+            with sqlite3.connect(self._live_db_path) as conn:
+                conn.execute("""
+                    INSERT OR REPLACE INTO live_agents
+                    (agent_id, agent_type, phase, progress, x_position, y_position,
+                     z_position, confidence, last_update, status, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    agent_id,
+                    metadata.get('agent_type', 'unknown'),
+                    position_info.get('phase', self._get_phase_from_depth(depth_ratio)),
+                    depth_ratio,
+                    position_info.get('x', 0.0),
+                    position_info.get('y', 0.0),
+                    position_info.get('z', 0.0),
+                    metrics.get('avg_confidence', 0.5),
+                    time.time(),
+                    'active',
+                    metadata.get('registered_at', time.time())
+                ))
+                conn.commit()
+        except Exception as e:
+            logger.warning(f"Failed to persist agent position: {e}")
+
+    def mark_agent_complete(self, agent_id: str) -> None:
+        """Mark an agent as completed in the database."""
+        try:
+            with sqlite3.connect(self._live_db_path) as conn:
+                conn.execute(
+                    "UPDATE live_agents SET status = 'completed', last_update = ? WHERE agent_id = ?",
+                    (time.time(), agent_id)
+                )
+                conn.commit()
+        except Exception as e:
+            logger.warning(f"Failed to mark agent complete: {e}")
+
+    def clear_old_agents(self, max_age_seconds: float = 300.0) -> int:
+        """Remove agents not updated within max_age_seconds. Returns count removed."""
+        try:
+            cutoff = time.time() - max_age_seconds
+            with sqlite3.connect(self._live_db_path) as conn:
+                cursor = conn.execute(
+                    "DELETE FROM live_agents WHERE last_update < ? OR status = 'completed'",
+                    (cutoff,)
+                )
+                conn.commit()
+                return cursor.rowcount
+        except Exception as e:
+            logger.warning(f"Failed to clear old agents: {e}")
+            return 0
+
     def register_agent(self, agent_id: str, metadata: Dict[str, Any]) -> None:
         """
         Register an agent with its initial metadata.
@@ -154,6 +241,9 @@ class AgentRegistry:
 
         # Add to new phase
         self._agents_by_phase[new_phase][agent_id] = self._agent_metadata[agent_id]
+
+        # Persist to database for cross-process visibility
+        self._persist_agent_position(agent_id, position_info)
 
     def update_agent_performance(self, agent_id: str, metrics: Dict[str, Any]) -> None:
         """
@@ -1204,7 +1294,9 @@ class CentralPost:
     def synthesize_agent_outputs(self, task_description: str, max_messages: int = 20,
                                  task_complexity: str = "COMPLEX",
                                  reasoning_evals: Optional[Dict[str, Dict[str, Any]]] = None,
-                                 coverage_report: Optional[Any] = None) -> Dict[str, Any]:
+                                 coverage_report: Optional[Any] = None,
+                                 successful_agents: Optional[List[str]] = None,
+                                 failed_agents: Optional[List[str]] = None) -> Dict[str, Any]:
         """
         Synthesize final output from all agent communications.
 
@@ -1222,6 +1314,10 @@ class CentralPost:
                 influence on synthesis confidence.
             coverage_report: Optional CoverageReport from KnowledgeCoverageAnalyzer.
                 Used to compute meta-confidence and generate epistemic caveats.
+            successful_agents: Optional list of agent IDs that produced valid output.
+                Used for degradation assessment (Issue #18).
+            failed_agents: Optional list of agent IDs that failed.
+                Used for degradation assessment (Issue #18).
 
         Returns:
             Dict containing:
@@ -1233,12 +1329,17 @@ class CentralPost:
                 - max_tokens: Token budget allocated
                 - agents_synthesized: Number of agent outputs included
                 - timestamp: Synthesis timestamp
+                - degraded: Whether the result is degraded (Issue #18)
+                - degraded_reason: Human-readable reason for degradation
+                - successful_agents: List of successful agent IDs
+                - failed_agents: List of failed agent IDs
 
         Raises:
             RuntimeError: If no LLM client available for synthesis
         """
         return self.synthesis_engine.synthesize_agent_outputs(
-            task_description, max_messages, task_complexity, reasoning_evals, coverage_report
+            task_description, max_messages, task_complexity, reasoning_evals, coverage_report,
+            successful_agents, failed_agents
         )
 
     def broadcast_synthesis_feedback(self, synthesis_result: Dict[str, Any],
