@@ -230,8 +230,8 @@ class LLMRouter:
         return results
 
     def get_statistics(self) -> dict:
-        """Get router statistics."""
-        return {
+        """Get router statistics including circuit breaker status."""
+        stats = {
             "total_requests": self.request_count,
             "primary_successes": self.primary_success_count,
             "fallback_successes": self.fallback_success_count,
@@ -245,6 +245,18 @@ class LLMRouter:
                 if self.request_count > 0 else 0.0
             )
         }
+
+        # Add circuit breaker metrics if available
+        circuit_metrics = {}
+        for provider in [self.primary_provider] + self.fallback_providers:
+            if hasattr(provider, 'get_circuit_breaker_metrics'):
+                name = provider.get_provider_name()
+                circuit_metrics[name] = provider.get_circuit_breaker_metrics()
+
+        if circuit_metrics:
+            stats['circuit_breakers'] = circuit_metrics
+
+        return stats
 
     def get_primary_provider(self) -> BaseLLMProvider:
         """Get the primary provider."""
