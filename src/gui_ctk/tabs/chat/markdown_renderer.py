@@ -548,7 +548,8 @@ class MarkdownRenderer:
         if not segments:
             return
 
-        was_disabled = str(self._textbox.cget("state")) == "disabled"
+        # Use underlying tk.Text widget for state check (CTkTextbox doesn't support cget("state"))
+        was_disabled = str(self._text_widget.cget("state")) == "disabled"
         if was_disabled:
             self._textbox.configure(state="normal")
 
