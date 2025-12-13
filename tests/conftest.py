@@ -221,3 +221,6 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "plugins: Tests for agent plugin system"
     )
+    config.addinivalue_line(
+        "markers", "circuit_breaker: Tests for circuit breaker pattern"
+    )

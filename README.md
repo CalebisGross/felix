@@ -416,6 +416,7 @@ Configure via the Settings tab or `config/llm.yaml`:
 ## Documentation
 
 - **[Quick Start Guide](QUICKSTART.md)**: Get up and running quickly
+- **[Air-Gapped Deployment](docs/AIR_GAPPED_DEPLOYMENT.md)**: Deploy Felix in isolated environments
 - **[CLI Guide](docs/CLI_GUIDE.md)**: Complete command-line interface reference
 - **[Chat CLI Guide](docs/CHAT_CLI_GUIDE.md)**: Conversational CLI with sessions
 - **[Configuration Reference](docs/CONFIGURATION.md)**: Complete configuration and tuning guide

@@ -21,6 +21,7 @@ from ...styles import (
     SPACE_XS, SPACE_SM, SPACE_MD,
     RADIUS_MD, RADIUS_LG
 )
+from .markdown_renderer import MarkdownRenderer
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,7 @@ class MessageBubble(ctk.CTkFrame):
         self.knowledge_sources = knowledge_sources or []
         self.on_copy = on_copy
         self._thinking_expanded = False
+        self._renderer = None  # Will be set in _setup_ui
 
         # Get colors based on role - use hardcoded visible text colors
         colors = self.theme_manager.colors
@@ -146,21 +148,35 @@ class MessageBubble(ctk.CTkFrame):
             self._thinking_frame.grid(row=current_row, column=0, sticky="ew", padx=SPACE_SM, pady=(0, SPACE_XS))
             current_row += 1
 
-        # Main content
-        initial_text = self._format_content(self.content) if self.content else ""
-        logger.info(f"MessageBubble: role={self.role}, content='{initial_text[:100]}...'")
+        # Main content - use CTkTextbox for markdown rendering
+        logger.info(f"MessageBubble: role={self.role}, content='{self.content[:100] if self.content else ''}...'")
 
-        self._content_label = ctk.CTkLabel(
+        # Calculate initial height based on content
+        content_lines = max(1, self.content.count('\n') + 1) if self.content else 1
+        initial_height = min(400, max(40, content_lines * 20))
+
+        self._content_textbox = ctk.CTkTextbox(
             self,
-            text=initial_text,
             font=ctk.CTkFont(size=FONT_BODY),
-            text_color=self._fg_color,
             fg_color=self._bg_color,
-            anchor="w",
-            justify="left",
-            wraplength=400  # Default wraplength, updated dynamically
+            text_color=self._fg_color,
+            wrap="word",
+            height=initial_height,
+            border_width=0,
+            activate_scrollbars=False,  # No scrollbars - bubble grows instead
+            state="disabled"
         )
-        self._content_label.grid(row=current_row, column=0, sticky="w", padx=SPACE_SM, pady=(0, SPACE_SM))
+        self._content_textbox.grid(row=current_row, column=0, sticky="ew", padx=SPACE_SM, pady=(0, SPACE_SM))
+
+        # Create markdown renderer and render initial content
+        self._renderer = MarkdownRenderer(self._content_textbox, self.theme_manager)
+        if self.content:
+            self._renderer.set_content(self.content)
+            self._auto_resize()
+
+        # Alias for compatibility with subclass references
+        self._content_label = self._content_textbox
+
         current_row += 1
 
         # Knowledge sources (if any)
@@ -316,42 +332,62 @@ class MessageBubble(ctk.CTkFrame):
         self._fg_color = fg_color
 
         self.configure(fg_color=bg_color)
-        self._content_label.configure(text_color=fg_color)
+        self._content_textbox.configure(text_color=fg_color, fg_color=bg_color)
 
     def update_content(self, content: str):
-        """Update the message content (for streaming)."""
+        """Update the message content with markdown rendering."""
         try:
             self.content = content
-            formatted = self._format_content(content)
-            # Ensure we have valid content to display
-            if formatted:
-                self._content_label.configure(text=formatted)
+            if self._renderer:
+                self._renderer.reset()
+                self._renderer.set_content(content)
+                self._auto_resize()
+            else:
+                # Fallback without renderer
+                self._content_textbox.configure(state="normal")
+                self._content_textbox.delete("1.0", "end")
+                if content:
+                    self._content_textbox.insert("1.0", content)
+                self._content_textbox.configure(state="disabled")
         except Exception as e:
             logger.debug(f"Error updating content: {e}")
 
     def append_content(self, chunk: str):
-        """Append content to the message (for streaming)."""
+        """Append content to the message with markdown rendering."""
         try:
             self.content += chunk
             logger.debug(f"MessageBubble append: total={len(self.content)} chars")
-            self._content_label.configure(text=self.content)
+            if self._renderer:
+                self._content_textbox.configure(state="normal")
+                self._renderer.append_markdown(chunk)
+                self._content_textbox.configure(state="disabled")
+                self._auto_resize()
+            else:
+                # Fallback without renderer
+                self._content_textbox.configure(state="normal")
+                self._content_textbox.insert("end", chunk)
+                self._content_textbox.configure(state="disabled")
         except Exception as e:
             logger.debug(f"Error appending content: {e}")
 
     def set_wraplength(self, width: int):
-        """Update the wrap length for responsive layout."""
+        """
+        Handle wrap length updates.
+
+        CTkTextbox handles wrapping automatically based on widget width,
+        so this is a no-op (unlike CTkLabel which needs explicit wraplength).
+        """
+        pass  # Textbox auto-wraps based on width
+
+    def _auto_resize(self):
+        """Resize textbox height to fit content."""
         try:
-            # Account for padding, ensure minimum of 200 to prevent X11 crash
-            wrap_width = max(200, width - SPACE_SM * 4)
-
-            # Cache to avoid redundant X11 operations
-            if hasattr(self, '_last_wraplength') and self._last_wraplength == wrap_width:
-                return
-
-            self._last_wraplength = wrap_width
-            self._content_label.configure(wraplength=wrap_width)
+            # Get number of display lines (accounts for wrapping)
+            num_lines = int(self._content_textbox.index("end-1c").split(".")[0])
+            new_height = min(400, max(40, num_lines * 20))
+            self._content_textbox.configure(height=new_height)
         except Exception as e:
-            logger.debug(f"Error setting wraplength: {e}")
+            logger.debug(f"Auto-resize error: {e}")
 
     def add_thinking_step(self, agent: str, content: str):
         """Add a thinking step (for streaming agent activity)."""
@@ -382,6 +418,10 @@ class MessageBubble(ctk.CTkFrame):
 
     def destroy(self):
         """Cleanup when destroyed."""
+        # Cleanup renderer (unregisters theme callback)
+        if self._renderer:
+            self._renderer.cleanup()
+            self._renderer = None
         try:
             self.theme_manager.unregister_callback(self._on_theme_change)
         except Exception:
@@ -414,8 +454,12 @@ class StreamingMessageBubble(MessageBubble):
         self._is_streaming = True
         self._typing_indicator = None
         self._content_textbox = None  # Will be set in _setup_ui
+        self._renderer = None  # Will be set after super().__init__
 
         super().__init__(master, **kwargs)
+
+        # Create markdown renderer for this bubble
+        self._renderer = MarkdownRenderer(self._content_textbox, self.theme_manager)
 
         self._show_typing_indicator()
 
@@ -521,20 +565,20 @@ class StreamingMessageBubble(MessageBubble):
 
     def append_content(self, chunk: str):
         """
-        Append streaming content incrementally.
+        Append streaming content with incremental markdown parsing.
 
-        Uses textbox insert() which is O(1) for the new text,
-        unlike CTkLabel.configure(text=...) which re-renders everything.
+        Uses the markdown renderer for incremental parsing and
+        syntax-highlighted rendering.
         """
         if self._is_streaming and not self.content:
             self._hide_typing_indicator()
 
-        # Track content for persistence/copy
+        # Track raw content for persistence/copy
         self.content += chunk
 
-        # Incremental insert - doesn't re-render existing text
+        # Use markdown renderer for incremental parsing
         self._content_textbox.configure(state="normal")
-        self._content_textbox.insert("end", chunk)
+        self._renderer.append_markdown(chunk)
         self._content_textbox.configure(state="disabled")
 
         # Auto-resize height to fit content
@@ -551,17 +595,23 @@ class StreamingMessageBubble(MessageBubble):
 
     def set_content(self, content: str):
         """
-        Set the entire textbox content, replacing existing text.
+        Set the entire textbox content with markdown rendering.
 
         Use sparingly - prefer append_content for streaming.
         """
         self.content = content
 
-        self._content_textbox.configure(state="normal")
-        self._content_textbox.delete("1.0", "end")
-        if content:
-            self._content_textbox.insert("1.0", content)
-        self._content_textbox.configure(state="disabled")
+        # Reset renderer and re-render full content
+        if self._renderer:
+            self._renderer.reset()
+            self._renderer.set_content(content)
+        else:
+            # Fallback if renderer not available
+            self._content_textbox.configure(state="normal")
+            self._content_textbox.delete("1.0", "end")
+            if content:
+                self._content_textbox.insert("1.0", content)
+            self._content_textbox.configure(state="disabled")
 
         self._auto_resize()
 
@@ -585,6 +635,21 @@ class StreamingMessageBubble(MessageBubble):
         pass  # Textbox auto-wraps based on width
 
     def finish_streaming(self):
-        """Mark streaming as complete."""
+        """Mark streaming as complete and finalize markdown rendering."""
         self._is_streaming = False
         self._hide_typing_indicator()
+
+        # Finalize any pending markdown (e.g., unclosed code blocks)
+        if self._renderer:
+            self._content_textbox.configure(state="normal")
+            self._renderer.finalize()
+            self._content_textbox.configure(state="disabled")
+            self._auto_resize()
+
+    def destroy(self):
+        """Cleanup when destroyed."""
+        # Cleanup renderer (unregisters theme callback)
+        if self._renderer:
+            self._renderer.cleanup()
+            self._renderer = None
+        super().destroy()

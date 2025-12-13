@@ -23,6 +23,7 @@ lxml>=5.0.0  # Upgraded for free-threading support
 # GUI Dependencies
 # tkinter is included with standard Python installation
 customtkinter>=5.2.0  # Modern GUI framework
+pygments>=2.17.0  # Syntax highlighting for markdown code blocks
 
 # Knowledge Brain Dependencies (optional)
 # PyPDF2>=3.0.0  # For PDF document reading
