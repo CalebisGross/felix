@@ -14,7 +14,8 @@ import numpy as np
 import sqlite3
 import time
 from enum import Enum
-from typing import List, Dict, Any, Optional, Tuple
+from pathlib import Path
+from typing import List, Dict, Any, Optional, Tuple, Union
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -101,20 +102,55 @@ class TFIDFEmbedder:
     Tier 2: TF-IDF embeddings provider.
 
     Pure Python implementation using numpy for keyword-based semantic matching.
+    Automatically fits with default corpus on initialization for immediate availability.
     """
 
-    def __init__(self, max_features: int = 768):
+    # Default corpus path relative to this file
+    DEFAULT_CORPUS_PATH = Path(__file__).parent.parent.parent / "data" / "default_tfidf_corpus.txt"
+
+    def __init__(self, max_features: int = 768, default_corpus_path: Optional[Union[str, Path]] = None):
         """
         Initialize TF-IDF embedder.
 
         Args:
             max_features: Maximum number of features (dimensions)
+            default_corpus_path: Path to default corpus file. If None, uses built-in default.
+                                 Set to False to skip default corpus fitting.
         """
         self.max_features = max_features
-        self.vocabulary = {}
-        self.idf_values = {}
+        self.vocabulary: Dict[str, int] = {}
+        self.idf_values: Dict[str, float] = {}
         self.document_count = 0
         self.fitted = False
+        # Track document frequencies for incremental updates
+        self._doc_frequency: Dict[str, int] = {}
+
+        # Auto-fit with default corpus if available
+        if default_corpus_path is not False:
+            corpus_path = Path(default_corpus_path) if default_corpus_path else self.DEFAULT_CORPUS_PATH
+            if corpus_path.exists():
+                self._fit_default_corpus(corpus_path)
+
+    def _fit_default_corpus(self, corpus_path: Path):
+        """
+        Fit TF-IDF with default corpus for immediate availability.
+
+        Args:
+            corpus_path: Path to default corpus file (one document per line)
+        """
+        try:
+            with open(corpus_path, 'r', encoding='utf-8') as f:
+                # Filter out empty lines and comments
+                documents = [
+                    line.strip() for line in f
+                    if line.strip() and not line.strip().startswith('#')
+                ]
+            if documents:
+                self.fit(documents)
+                logger.info(f"TF-IDF initialized with default corpus ({len(documents)} documents, "
+                           f"{len(self.vocabulary)} features)")
+        except Exception as e:
+            logger.warning(f"Failed to load default TF-IDF corpus: {e}")
 
     def fit(self, documents: List[str]):
         """
@@ -128,12 +164,15 @@ class TFIDFEmbedder:
             return
 
         # Build vocabulary and document frequency
-        doc_frequency = {}
+        doc_frequency: Dict[str, int] = {}
 
         for doc in documents:
             words = set(self._tokenize(doc))
             for word in words:
                 doc_frequency[word] = doc_frequency.get(word, 0) + 1
+
+        # Store doc_frequency for incremental updates
+        self._doc_frequency = doc_frequency
 
         # Select most common words up to max_features
         sorted_words = sorted(doc_frequency.items(), key=lambda x: x[1], reverse=True)
@@ -155,6 +194,45 @@ class TFIDFEmbedder:
         text = text.lower()
         words = re.findall(r'\b\w+\b', text)
         return [w for w in words if len(w) > 2]  # Filter short words
+
+    def update_vocabulary(self, documents: List[str]):
+        """
+        Incrementally update vocabulary with new documents.
+
+        This method merges new document frequencies with existing ones,
+        allowing the TF-IDF model to grow as documents are ingested.
+
+        Args:
+            documents: List of new text documents to incorporate
+        """
+        if not documents:
+            return
+
+        if not self.fitted:
+            # Not fitted yet, do a full fit instead
+            self.fit(documents)
+            return
+
+        # Merge new document frequencies with existing
+        for doc in documents:
+            words = set(self._tokenize(doc))
+            for word in words:
+                self._doc_frequency[word] = self._doc_frequency.get(word, 0) + 1
+
+        # Update document count
+        self.document_count += len(documents)
+
+        # Re-sort vocabulary by frequency and trim to max_features
+        sorted_words = sorted(self._doc_frequency.items(), key=lambda x: x[1], reverse=True)
+        self.vocabulary = {word: idx for idx, (word, _) in enumerate(sorted_words[:self.max_features])}
+
+        # Recompute IDF values for all words in vocabulary
+        self.idf_values = {}
+        for word, df in self._doc_frequency.items():
+            if word in self.vocabulary:
+                self.idf_values[word] = np.log((self.document_count + 1) / (df + 1)) + 1
+
+        logger.info(f"TF-IDF vocabulary updated: {len(self.vocabulary)} features, {self.document_count} documents")
 
     def embed(self, text: str) -> Optional[List[float]]:
         """
@@ -314,9 +392,10 @@ class EmbeddingProvider:
 
     def fit_tfidf(self, documents: List[str]):
         """
-        Fit TF-IDF model on document collection.
+        Update TF-IDF model with new documents.
 
-        Should be called during initial ingestion to enable Tier 2.
+        Uses incremental update if already fitted (e.g., with default corpus),
+        otherwise performs initial fit.
 
         Args:
             documents: List of document contents
@@ -325,8 +404,14 @@ class EmbeddingProvider:
             logger.warning("No documents provided for TF-IDF fitting")
             return
 
-        logger.info(f"Fitting TF-IDF on {len(documents)} documents...")
-        self.tfidf_embedder.fit(documents)
+        if self.tfidf_embedder.fitted:
+            # Incremental update - merge new documents with existing vocabulary
+            logger.info(f"Incrementally updating TF-IDF with {len(documents)} documents...")
+            self.tfidf_embedder.update_vocabulary(documents)
+        else:
+            # Initial fit
+            logger.info(f"Fitting TF-IDF on {len(documents)} documents...")
+            self.tfidf_embedder.fit(documents)
 
         # Re-select tier (TF-IDF might now be available)
         if self.active_tier == EmbeddingTier.FTS5 and self.tfidf_embedder.fitted:

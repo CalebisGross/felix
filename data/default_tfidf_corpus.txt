@@ -1,0 +1,126 @@
+# Default TF-IDF Corpus for Felix Knowledge Brain
+# This corpus provides initial vocabulary for TF-IDF embeddings on fresh installs.
+# Format: One sentence/phrase per line to capture natural word co-occurrence patterns.
+
+# Common English Patterns
+The system processes information and returns results to the user.
+Users can search for documents and retrieve relevant content quickly.
+This feature enables automatic processing of incoming data streams.
+The application handles multiple requests simultaneously without issues.
+Error handling ensures the system remains stable under all conditions.
+Configuration settings allow users to customize behavior and preferences.
+The output displays formatted results in a readable manner.
+Input validation prevents invalid data from entering the system.
+Memory management optimizes resource usage during operations.
+File operations include reading writing and modifying stored data.
+
+# Programming and Technical Terms
+The function returns a value after processing the input parameters.
+Class methods define behavior and attributes for object instances.
+Variable assignment stores data in named memory locations.
+The API endpoint accepts HTTP requests and returns JSON responses.
+Database queries retrieve records matching specified conditions.
+The algorithm iterates through the collection applying transformations.
+Exception handling catches errors and provides graceful recovery.
+Module imports bring external functionality into the current scope.
+Type annotations specify expected data types for parameters.
+Asynchronous operations execute concurrently without blocking.
+The interface defines a contract for implementing classes.
+Dependency injection provides loose coupling between components.
+Unit tests verify individual components function correctly.
+Integration tests ensure modules work together properly.
+Code refactoring improves structure without changing behavior.
+Version control tracks changes and enables collaboration.
+Debugging tools help identify and fix software issues.
+Performance profiling reveals optimization opportunities.
+Cache mechanisms reduce redundant computation and queries.
+Logging records events for monitoring and troubleshooting.
+
+# AI and Machine Learning Terminology
+The neural network learns patterns from training data.
+Model inference generates predictions from input features.
+Embedding vectors represent semantic meaning in dense format.
+The transformer architecture processes sequences with attention.
+Token embeddings map discrete symbols to continuous vectors.
+Similarity search finds nearest neighbors in vector space.
+The language model generates text based on context.
+Fine tuning adapts pretrained models to specific tasks.
+Prompt engineering optimizes input for better model output.
+The agent executes actions to achieve specified goals.
+Reinforcement learning trains through reward signals.
+Classification assigns inputs to predefined categories.
+Clustering groups similar items without labeled data.
+The encoder compresses input into latent representation.
+The decoder reconstructs output from encoded features.
+Attention mechanisms weight relevant parts of input.
+Gradient descent optimizes model parameters iteratively.
+Loss functions measure prediction error during training.
+Batch processing handles multiple samples simultaneously.
+Inference latency affects real time application performance.
+
+# Felix Framework Specific Terms
+The helix geometry guides agent behavior through phases.
+Agents progress from exploration to synthesis along the spiral.
+The central post routes messages between all agents.
+Hub spoke communication reduces complexity compared to mesh.
+Knowledge brain stores and retrieves semantic information.
+Document ingestion processes files into searchable chunks.
+Workflow orchestration coordinates multi step task execution.
+The synthesis engine combines outputs from multiple agents.
+Trust rules determine which commands can execute automatically.
+Task complexity patterns classify incoming requests.
+Memory compression reduces context for efficient retrieval.
+The research agent gathers information from various sources.
+Analysis agents examine data and extract insights.
+Critic agents evaluate quality and suggest improvements.
+System agents manage infrastructure and coordination.
+Temperature settings control randomness in generation.
+The exploration phase has high temperature for broad search.
+The synthesis phase uses low temperature for focused output.
+Tiered embeddings provide fallback for offline operation.
+LM Studio provides local language model inference.
+TF-IDF computes term frequency inverse document frequency.
+FTS5 enables full text search with BM25 ranking.
+Cosine similarity measures vector alignment.
+The knowledge daemon monitors directories for new files.
+Session management tracks conversation context over time.
+
+# Data Processing and Search
+Full text search matches keywords across document content.
+Semantic search understands meaning beyond literal keywords.
+Query expansion adds related terms to improve recall.
+Result ranking orders matches by relevance score.
+Pagination divides results into manageable pages.
+Filtering narrows results based on metadata criteria.
+Faceted search enables multi dimensional navigation.
+Index optimization improves search performance.
+Tokenization splits text into individual terms.
+Stemming reduces words to their root forms.
+Stop word removal eliminates common uninformative terms.
+Term weighting assigns importance scores to words.
+Document chunking divides content for embedding.
+Overlap ensures context preservation across chunks.
+Vector normalization enables consistent similarity comparison.
+Distance metrics quantify embedding relationships.
+
+# System Architecture
+Microservices decompose applications into small components.
+Event driven architecture enables loose coupling.
+Message queues buffer communication between services.
+Load balancing distributes requests across instances.
+Circuit breakers prevent cascade failures.
+Health checks monitor service availability.
+Graceful degradation maintains partial functionality.
+Retry logic handles transient failures automatically.
+Rate limiting protects services from overload.
+Authentication verifies user identity.
+Authorization controls access to resources.
+Encryption protects data in transit and at rest.
+Audit logging records security relevant events.
+Configuration management maintains environment settings.
+Infrastructure as code enables reproducible deployments.
+Container orchestration manages distributed applications.
+Service discovery locates available instances dynamically.
+API gateway provides unified entry point.
+Reverse proxy forwards requests to backend services.
+Connection pooling reuses database connections efficiently.
