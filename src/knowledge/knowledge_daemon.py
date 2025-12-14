@@ -38,6 +38,7 @@ from .comprehension import KnowledgeComprehensionEngine
 from .graph_builder import KnowledgeGraphBuilder
 from .embeddings import EmbeddingProvider
 from src.memory.knowledge_store import KnowledgeStore
+from src.core.felixignore import should_ignore, load_felixignore
 
 # Strategic comprehension (efficiency improvements)
 try:
@@ -267,6 +268,10 @@ class KnowledgeDaemon:
         """
         self.config = config
         self.knowledge_store = knowledge_store
+
+        # Initialize centralized .felixignore patterns
+        root_path = config.watch_directories[0] if config.watch_directories else '.'
+        load_felixignore(root_path)
         self.llm_client = llm_client
         self.embedding_provider = embedding_provider
         self.progress_callback = progress_callback
@@ -328,7 +333,7 @@ class KnowledgeDaemon:
 
     def _should_exclude_path(self, file_path: Path) -> bool:
         """
-        Check if a file path matches any exclusion patterns.
+        Check if a file path should be excluded using centralized .felixignore.
 
         Args:
             file_path: Path to check
@@ -336,16 +341,7 @@ class KnowledgeDaemon:
         Returns:
             True if path should be excluded, False otherwise
         """
-        import fnmatch
-
-        file_path_str = str(file_path)
-
-        for pattern in self.config.exclusion_patterns:
-            if fnmatch.fnmatch(file_path_str, pattern):
-                logger.debug(f"Excluding {file_path_str} (matches {pattern})")
-                return True
-
-        return False
+        return should_ignore(file_path)
 
     def start(self):
         """Start all daemon modes."""

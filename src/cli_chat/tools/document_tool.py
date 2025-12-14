@@ -5,6 +5,7 @@ Document Tool for managing knowledge base documents in conversational CLI.
 from typing import Dict, Any, List, Optional
 from pathlib import Path
 from .base_tool import BaseTool, ToolResult
+from src.core.felixignore import should_ignore
 
 
 class DocumentTool(BaseTool):
@@ -63,6 +64,12 @@ class DocumentTool(BaseTool):
 
         if not path.is_file():
             return self.format_error(f"Not a file: {file_path}")
+
+        # Check if file matches .felixignore patterns
+        if should_ignore(path):
+            return self.format_error(
+                f"File matches .felixignore pattern - skipping: {file_path}"
+            )
 
         try:
             # Check if knowledge brain is enabled

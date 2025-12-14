@@ -1,0 +1,45 @@
+# Felix System-Wide Exclusions
+# Similar to .gitignore syntax
+# These patterns are ADDED to the built-in defaults
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+*.egg-info/
+site-packages/
+
+# Node.js
+node_modules/
+
+# Version control
+.git/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Build artifacts
+dist/
+build/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Add your custom patterns below this line
+# -------------------------------------------

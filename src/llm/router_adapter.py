@@ -39,7 +39,6 @@ class RouterAdapter:
         self._connection_verified = False
 
         # Background processing control (for priority between background tasks and user interactions)
-        import threading
         self._background_processing = threading.Event()
         self._background_processing.set()  # Initially not paused
         self._sync_semaphore = threading.Semaphore(2)  # Max 2 concurrent sync requests

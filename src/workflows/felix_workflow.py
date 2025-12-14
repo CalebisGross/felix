@@ -12,6 +12,8 @@ This is the proper integration, as opposed to linear_pipeline.py which
 is a comparison baseline for benchmarking purposes.
 """
 
+import os
+import re
 import time
 import logging
 import threading
@@ -37,6 +39,9 @@ from src.memory.context_compression import (
 
 # Import TaskComplexity for task classification
 from src.memory.task_memory import TaskComplexity
+
+# Import centralized .felixignore support
+from src.core.felixignore import should_ignore
 
 # Use module-specific logger that propagates to GUI
 # IMPORTANT: Use 'felix_workflows' to match GUI logger configuration
@@ -86,8 +91,6 @@ def _store_file_discoveries(result_content: str, knowledge_store, agent_id: str 
     Returns:
         Number of file discoveries stored
     """
-    import re
-    import os
     from src.memory.knowledge_store import KnowledgeType, ConfidenceLevel
 
     if not knowledge_store:
@@ -99,6 +102,9 @@ def _store_file_discoveries(result_content: str, knowledge_store, agent_id: str 
 
     # Deduplicate paths in case regex matches same file multiple times
     unique_paths = list(set(p.strip() for p in find_results if p.strip() and len(p.strip()) >= 3))
+
+    # Filter out paths matching .felixignore patterns
+    unique_paths = [p for p in unique_paths if not should_ignore(p)]
 
     stored_count = 0
     for path in unique_paths:
@@ -401,7 +407,6 @@ def run_felix_workflow(felix_system, task_input: str,
                     logger.warning("  Enable in Settings → Web Search Configuration")
 
         # Fast path for greetings - respond immediately without agents
-        import re
         if re.match(r'^\s*(hello|hi|hey|greetings?|howdy|yo)\s*[!.?]*\s*$', task_input.lower().strip()):
             logger.info("=" * 60)
             logger.info("GREETING DETECTED - Fast path (zero agents)")
@@ -783,7 +788,6 @@ def run_felix_workflow(felix_system, task_input: str,
                         # MULTI-STEP REASONING LOOP (Intelligent Agent Discovery)
                         # Agents can now perform multi-step reasoning: find → read → analyze
                         # This enables handling incomplete paths like "read central_post.py"
-                        import re
                         reasoning_iteration = 0
                         reasoning_history = []  # Track outputs for stall detection
                         max_iterations = felix_system.config.agent_reasoning_max_iterations
@@ -965,8 +969,6 @@ def run_felix_workflow(felix_system, task_input: str,
                         # NEW: Extract and register concepts from agent response (Phase 1.4)
                         if concept_registry:
                             try:
-                                import re
-
                                 # Pattern 1: **Term**: Definition or **Term** - Definition
                                 # Matches bold markdown terms followed by definition
                                 pattern1 = r'\*\*([^*]+)\*\*[:\-]\s*([^\n]+(?:\n(?!\*\*)[^\n]+)*)'

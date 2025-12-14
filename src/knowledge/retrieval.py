@@ -10,6 +10,7 @@ Semantic search and context building for workflow augmentation:
 Agents can query the brain to retrieve relevant domain knowledge.
 """
 
+import json
 import logging
 import sqlite3
 import time
@@ -208,7 +209,6 @@ class KnowledgeRetriever:
             # Compute similarities
             results = []
             from .embeddings import deserialize_embedding
-            import json
 
             for row in cursor:
                 try:
@@ -285,7 +285,6 @@ class KnowledgeRetriever:
             cursor = conn.execute(sql, params)
 
             results = []
-            import json
 
             for row in cursor:
                 try:
@@ -496,7 +495,6 @@ class KnowledgeRetriever:
                 LIMIT 10
             """, (cutoff_time, task_type) if task_type else (cutoff_time,))
 
-            import json
             most_useful = []
             for row in cursor:
                 content = json.loads(row[1])
@@ -601,8 +599,6 @@ class KnowledgeRetriever:
 
                 row = cursor.fetchone()
                 if row:
-                    import json
-
                     if depth > 0:  # Don't include the starting node
                         try:
                             content = json.loads(row['content_json']) if row['content_json'] else {}

@@ -19,6 +19,8 @@ from enum import Enum
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 
+from src.core.felixignore import should_ignore
+
 logger = logging.getLogger(__name__)
 
 
@@ -587,6 +589,9 @@ class BatchDocumentProcessor:
                 files.extend(path.rglob(pattern))
             else:
                 files.extend(path.glob(pattern))
+
+        # Filter out files matching .felixignore patterns
+        files = [f for f in files if not should_ignore(f)]
 
         self.total_documents = len(files)
         self.processed_documents = 0

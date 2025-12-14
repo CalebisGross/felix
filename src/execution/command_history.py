@@ -567,6 +567,83 @@ class CommandHistory:
 
             return [dict(row) for row in cursor.fetchall()]
 
+    def cleanup_orphaned_commands(self, max_age_seconds: float = 3600.0) -> int:
+        """
+        Mark orphaned running commands as failed.
+
+        Called on startup to clean up commands from previous sessions
+        where the process is no longer running but status is still 'running'.
+
+        Args:
+            max_age_seconds: Commands older than this are considered orphaned (default 1 hour)
+
+        Returns:
+            Number of commands cleaned up
+        """
+        cutoff_time = time.time() - max_age_seconds
+
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute("""
+                UPDATE command_executions
+                SET status = 'failed',
+                    duration = ? - execution_timestamp,
+                    stderr_preview = COALESCE(stderr_preview, '') || ' [Orphaned - process terminated on app restart]'
+                WHERE status = 'running'
+                  AND execution_timestamp < ?
+            """, (time.time(), cutoff_time))
+
+            conn.commit()
+            count = cursor.rowcount
+
+            if count > 0:
+                logger.info(f"Cleaned up {count} orphaned running commands")
+
+            return count
+
+    def cancel_command(self, execution_id: int) -> bool:
+        """
+        Cancel a command by marking it as failed in the database.
+
+        Used when the actual process cannot be killed (e.g., orphaned from restart)
+        or when the user wants to dismiss a zombie command entry.
+
+        Args:
+            execution_id: ID of the command execution to cancel
+
+        Returns:
+            True if command was cancelled, False if not found or already completed
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            # First check if command exists and is running
+            cursor = conn.execute("""
+                SELECT execution_timestamp FROM command_executions
+                WHERE execution_id = ? AND status = 'running'
+            """, (execution_id,))
+
+            row = cursor.fetchone()
+            if not row:
+                logger.warning(f"Cannot cancel execution {execution_id}: not found or not running")
+                return False
+
+            start_time = row[0]
+            duration = time.time() - start_time if start_time else 0
+
+            cursor = conn.execute("""
+                UPDATE command_executions
+                SET status = 'failed',
+                    duration = ?,
+                    stderr_preview = COALESCE(stderr_preview, '') || ' [Cancelled by user]'
+                WHERE execution_id = ? AND status = 'running'
+            """, (duration, execution_id))
+
+            conn.commit()
+
+            if cursor.rowcount > 0:
+                logger.info(f"Cancelled command execution {execution_id}")
+                return True
+
+            return False
+
     def get_filtered_history(self,
                             search_query: Optional[str] = None,
                             status: Optional[str] = None,  # 'success', 'failed', 'all'

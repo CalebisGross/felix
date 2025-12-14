@@ -52,7 +52,13 @@ class AsyncRequest:
 
 @dataclass
 class LLMResponse:
-    """Response from LLM completion."""
+    """
+    Internal response from LM Studio client.
+
+    NOTE: This is the low-level client response format used internally by LMStudioClient.
+    For provider-agnostic code, use src.llm.base_provider.LLMResponse instead.
+    The LMStudioProvider converts this internal format to the standard LLMResponse.
+    """
     content: str
     tokens_used: int
     response_time: float

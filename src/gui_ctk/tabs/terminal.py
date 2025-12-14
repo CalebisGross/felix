@@ -257,6 +257,7 @@ class TerminalTab(ResponsiveTab):
         # Polling state
         self.polling_active = False
         self.polling_job = None
+        self._orphan_cleanup_done = False  # One-time cleanup flag
 
         # Layout state
         self.history_split_ratio = 0.7  # Output gets 70%, history gets 30%
@@ -577,6 +578,20 @@ class TerminalTab(ResponsiveTab):
         """Start polling for active commands."""
         if not self.polling_active:
             self.polling_active = True
+
+            # One-time cleanup of orphaned commands from previous sessions
+            if not self._orphan_cleanup_done:
+                self._orphan_cleanup_done = True
+                try:
+                    if self.main_app and self.main_app.felix_system:
+                        central_post = self.main_app.felix_system.central_post
+                        if central_post and central_post.command_history:
+                            count = central_post.command_history.cleanup_orphaned_commands()
+                            if count > 0:
+                                logger.info(f"Cleaned up {count} orphaned commands from previous session")
+                except Exception as e:
+                    logger.error(f"Error cleaning up orphaned commands: {e}")
+
             self._poll_active_commands()
             logger.info("Terminal polling started")
 
@@ -769,24 +784,27 @@ class TerminalTab(ResponsiveTab):
         if not result:
             return
 
-        # Kill command via CentralPost
+        # Cancel command via CommandHistory (marks as failed in database)
         try:
             if self.main_app and self.main_app.felix_system:
                 central_post = self.main_app.felix_system.central_post
-                if central_post and hasattr(central_post, 'kill_command'):
-                    success = central_post.kill_command(exec_id)
+                if central_post and central_post.command_history:
+                    success = central_post.command_history.cancel_command(exec_id)
                     if success:
-                        logger.info(f"Successfully killed command #{exec_id}")
-                        messagebox.showinfo("Success", f"Command #{exec_id} killed", parent=self)
+                        logger.info(f"Successfully cancelled command #{exec_id}")
+                        messagebox.showinfo("Success", f"Command #{exec_id} cancelled", parent=self)
+                        # Remove from active commands display
+                        if exec_id in self.active_commands:
+                            del self.active_commands[exec_id]
                         self._refresh_history()
                     else:
-                        logger.warning(f"Failed to kill command #{exec_id}")
-                        messagebox.showerror("Error", f"Failed to kill command #{exec_id}", parent=self)
+                        logger.warning(f"Failed to cancel command #{exec_id}")
+                        messagebox.showerror("Error", f"Command #{exec_id} not found or already completed", parent=self)
                 else:
-                    messagebox.showerror("Error", "Kill functionality not available", parent=self)
+                    messagebox.showerror("Error", "Command history not available", parent=self)
         except Exception as e:
-            logger.error(f"Error killing command: {e}")
-            messagebox.showerror("Error", f"Failed to kill command: {e}", parent=self)
+            logger.error(f"Error cancelling command: {e}")
+            messagebox.showerror("Error", f"Failed to cancel command: {e}", parent=self)
 
     def _refresh_history(self):
         """Refresh command history with current filters."""

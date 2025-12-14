@@ -138,65 +138,44 @@ research:
     description: "Special mode for simple file reading and display operations"
     complexity: "SIMPLE_FACTUAL"
     template: |
-      ⚠️ SIMPLE FILE READING TASK DETECTED
+      🚨 SIMPLE FILE TASK - EXECUTE COMMAND, BRIEF RESPONSE
 
-      This is a straightforward file content display or reading operation.
+      STEP 1: Execute immediately
+      SYSTEM_ACTION_NEEDED: cat [filepath]
 
-      Your research should:
-      - State the file contents or key information directly
-      - Provide 2-4 paragraphs maximum (100-200 words total)
-      - Summarize: file purpose, key components, notable patterns
-      - NO architectural analysis or philosophical implications
-      - NO speculation about "what this means for the system"
-      - NO exploration of "structural signals" or "deeper meanings"
-      - Just report what you found in the file
+      STEP 2: Report (50-100 words max)
+      - File purpose (1 sentence)
+      - Key components (1-2 sentences)
+      - Done.
 
-      Structure your response:
-      1. What the file is/does (1 sentence)
-      2. Key components or sections (2-3 sentences)
-      3. Notable patterns or structure (1-2 sentences, optional)
+      FORBIDDEN:
+      - Asking user to provide file contents
+      - "Deeper implications" or "architectural significance"
+      - Speculation about what the code "reveals" or "signals"
+      - Responses over 100 words for simple file reads
 
-      Example good response:
-      "The file central_post.py implements the central coordination hub for Felix's
-      multi-agent system. It uses a hub-and-spoke model with FIFO message queuing
-      and supports up to 133 agents. Key components include AgentRegistry,
-      MessageQueue, and PerformanceMonitor for tracking throughput metrics."
-
-      Example bad response (TOO PHILOSOPHICAL):
-      "The absence of this file represents a structurally meaningful signal about
-      the system's architectural decisions. This reveals deeper insights about how
-      agent coordination frameworks conceptualize truth-seeking behaviors..."
+      GOOD: "The file implements X. Key components are A, B, C."
+      BAD: "This reveals deeper insights about the system's architectural..."
 
   research_simple_file_reading:
-    description: "Research agent override for simple file reading - lets agent choose command intelligently"
+    description: "Research agent override for simple file reading - MUST execute command"
     complexity: "SIMPLE_FACTUAL"
     template: |
-      You are a research agent with system command access.
+      🚨 CRITICAL: EXECUTE A COMMAND IMMEDIATELY - DO NOT ASK USER FOR FILE CONTENTS
 
-      TASK: Read a file and report its contents.
+      Your FIRST action MUST be:
+      SYSTEM_ACTION_NEEDED: cat [filepath]
 
-      📋 CHOOSE THE APPROPRIATE COMMAND:
-      Based on the task, intelligently select:
-      - cat [filepath]  → for reading entire/full/complete file
-      - head -n [N] [filepath] → for first N lines
-      - tail -n [N] [filepath] → for last N lines
+      FORBIDDEN: Asking "please provide the file contents" or similar - YOU read it.
 
-      If the file path is incomplete, try common locations:
-      - Direct path first
-      - src/communication/
-      - src/agents/
-      - src/workflows/
-      - config/
+      If path unclear, try: find . -name "filename" -type f
 
-      Use: SYSTEM_ACTION_NEEDED: [your chosen command]
+      AFTER command executes, report in 2-3 sentences:
+      - What the file does
+      - Key components
+      - NO speculation, NO philosophy
 
-      📝 AFTER COMMAND EXECUTES, REPORT:
-      - 2-3 sentences (50-100 words max)
-      - File purpose and key components
-      - NO philosophy, NO speculation
-      - Direct factual summary only
-
-      Example: "The file implements [purpose]. It contains [components]. Notable patterns include [observation]."
+      Example output: "The file implements [purpose]. Contains [components]."
 
   analysis_simple_file_reading:
     description: "Analysis agent override for simple file reading"

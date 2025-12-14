@@ -47,6 +47,9 @@ from src.communication.memory_facade import MemoryFacade
 from src.communication.streaming_coordinator import StreamingCoordinator
 from src.communication.performance_monitor import PerformanceMonitor
 
+# Centralized .felixignore support for filtering command output
+from src.core.felixignore import filter_command_output
+
 # Dynamic spawning imports - moved to avoid circular imports
 
 if TYPE_CHECKING:
@@ -1228,15 +1231,20 @@ class CentralPost:
                         # This allows agents to retrieve the result via context builder
                         if result.stdout:
                             try:
-                                output_content = f"Command: {command}\n\nOutput:\n{result.stdout}"
-                                knowledge_id = self.store_agent_result_as_knowledge(
-                                    agent_id=agent_id,
-                                    content=output_content,
-                                    confidence=1.0,
-                                    domain="system_action"
-                                )
-                                logger.info(f"  ✓ Stored command output as knowledge entry #{knowledge_id}")
-                                logger.info(f"    Agents can now retrieve this result via context builder")
+                                # Filter out .felixignore paths to prevent data poisoning
+                                filtered_output = filter_command_output(result.stdout)
+                                if filtered_output.strip():
+                                    output_content = f"Command: {command}\n\nOutput:\n{filtered_output}"
+                                    knowledge_id = self.store_agent_result_as_knowledge(
+                                        agent_id=agent_id,
+                                        content=output_content,
+                                        confidence=1.0,
+                                        domain="system_action"
+                                    )
+                                    logger.info(f"  ✓ Stored command output as knowledge entry #{knowledge_id}")
+                                    logger.info(f"    Agents can now retrieve this result via context builder")
+                                else:
+                                    logger.debug(f"  ℹ️ Command output filtered entirely by .felixignore")
                             except Exception as store_error:
                                 logger.error(f"  ⚠️ Failed to store command output as knowledge: {store_error}")
                     else:
@@ -1586,14 +1594,17 @@ class CentralPost:
             # Store successful command outputs as retrievable knowledge
             if success and stdout:
                 try:
-                    output_content = f"Command: {command}\n\nOutput:\n{stdout}"
-                    knowledge_id = self.store_agent_result_as_knowledge(
-                        agent_id=agent_id,
-                        content=output_content,
-                        confidence=1.0,
-                        domain="system_action"
-                    )
-                    logger.debug(f"  ✓ Stored system action result as knowledge entry #{knowledge_id}")
+                    # Filter out .felixignore paths to prevent data poisoning
+                    filtered_stdout = filter_command_output(stdout)
+                    if filtered_stdout.strip():
+                        output_content = f"Command: {command}\n\nOutput:\n{filtered_stdout}"
+                        knowledge_id = self.store_agent_result_as_knowledge(
+                            agent_id=agent_id,
+                            content=output_content,
+                            confidence=1.0,
+                            domain="system_action"
+                        )
+                        logger.debug(f"  ✓ Stored system action result as knowledge entry #{knowledge_id}")
                 except Exception as store_error:
                     logger.warning(f"  ⚠️ Failed to store system action result as knowledge: {store_error}")
 
