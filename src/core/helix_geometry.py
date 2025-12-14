@@ -4,12 +4,12 @@ Helix geometry calculations for the Felix Framework.
 This module implements the core mathematical model for the helical agent path.
 
 Mathematical Foundation:
-- Parametric helix with exponential radius tapering
-- Position vector r(t) = (R(t)cos(θ(t)), R(t)sin(θ(t)), Ht)
-- Parameter t ∈ [0,1] where t=0 is bottom, t=1 is top
-- Tapering function R(t) = R_bottom * (R_top/R_bottom)^t
-- Angular function θ(t) = 2πnt where n is number of turns
-
+- Parametric helix with exponential radius tapering (wider at top, narrower at bottom)
+- Position vector r(t) = (R(t) cos(θ(t)), R(t) sin(θ(t)), z(t))
+- Parameter t ∈ [0,1] where t=0 is top (wide), t=1 is bottom (narrow)
+- Radius R(z) = R_bottom * (R_top / R_bottom)^(z / height)  → exponential tapering
+- Angular function θ(t) = 2π × turns × t
+- Height z(t) = height × (1 - t)  → descends from top to bottom
 """
 
 import math
@@ -19,7 +19,6 @@ from typing import Tuple
 class HelixGeometry:
     """
     Core helix mathematical model for agent positioning.
-    
     """
     
     def __init__(self, top_radius: float, bottom_radius: float, height: float, turns: int):
@@ -27,10 +26,10 @@ class HelixGeometry:
         Initialize helix with geometric parameters.
         
         Args:
-            top_radius: Radius at the top of the helix (t=0)
-            bottom_radius: Radius at the bottom of the helix (t=1)  
+            top_radius: Radius at the top of the helix (t=0, z=height)
+            bottom_radius: Radius at the bottom of the helix (t=1, z=0)  
             height: Total vertical height of the helix
-            turns: Number of complete rotations
+            turns: Number of complete rotations from top to bottom
             
         Raises:
             ValueError: If parameters are invalid
@@ -43,10 +42,10 @@ class HelixGeometry:
         self.turns = turns
     
     def _validate_parameters(self, top_radius: float, bottom_radius: float, 
-                           height: float, turns: int) -> None:
+                             height: float, turns: int) -> None:
         """Validate helix parameters for mathematical consistency."""
         if top_radius <= bottom_radius:
-            raise ValueError("top_radius must be greater than bottom_radius")
+            raise ValueError("top_radius must be greater than bottom_radius for tapering")
         
         if height <= 0:
             raise ValueError("height must be positive")
@@ -58,14 +57,12 @@ class HelixGeometry:
         """
         Calculate 3D position along helix path.
 
-        Implements the parametric helix equation:
-        r(t) = (R(t)cos(θ(t)), R(t)sin(θ(t)), H(1-t))
-
-        Where:
-        - R(t) = R_bottom * (R_top/R_bottom)^(1-t) (exponential tapering)
-        - θ(t) = 2πnt (angular progression)
-        - z(t) = H(1-t) (inverted height: agents descend from top to bottom)
-
+        Parametric equations:
+        - z(t) = height * (1 - t)                          → top at t=0, bottom at t=1
+        - R(z) = bottom_radius * (top_radius / bottom_radius)^(z / height)
+        - θ(t) = 2π * turns * t
+        - x(t) = R(z) * cos(θ(t))
+        - y(t) = R(z) * sin(θ(t))
 
         Args:
             t: Parameter value between 0 (top/wide) and 1 (bottom/narrow)
@@ -79,18 +76,15 @@ class HelixGeometry:
         if not (0.0 <= t <= 1.0):
             raise ValueError("t must be between 0 and 1")
 
-        # Calculate height (inverted: t=0 is top/wide, t=1 is bottom/narrow)
-        # Agents start at the top (wide exploration) and descend to bottom (narrow synthesis)
+        # Height position (top at t=0, bottom at t=1)
         z = self.height * (1.0 - t)
         
-        # Calculate radius at this height (exponential tapering)
+        # Radius at current height (exponential tapering, wider at top)
         radius = self.get_radius(z)
         
-        # Calculate angle (linear progression through turns)
-        # Total rotation: turns * 360 degrees = turns * 2π radians
+        # Angular position
         angle_radians = t * self.turns * 2.0 * math.pi
         
-        # Calculate Cartesian coordinates
         x = radius * math.cos(angle_radians)
         y = radius * math.sin(angle_radians)
         
@@ -100,11 +94,10 @@ class HelixGeometry:
         """
         Calculate radius at given height using exponential tapering.
         
-        Implements the tapering function:
-        R(z) = R_bottom * (R_top/R_bottom)^(z/height)
+        R(z) = bottom_radius * (top_radius / bottom_radius)^(z / height)
         
-        This creates exponential tapering that naturally focuses agent density
-        toward the narrow end, supporting Hypothesis H3 (attention focusing).
+        At z = height → R = top_radius (wide)
+        At z = 0       → R = bottom_radius (narrow)
         
         Args:
             z: Height value (0 = bottom, height = top)
@@ -112,10 +105,8 @@ class HelixGeometry:
         Returns:
             Radius at the specified height
         """
-        # Ensure z is within valid range
         z = max(0.0, min(z, self.height))
         
-        # Exponential tapering formula from OpenSCAD
         radius_ratio = self.top_radius / self.bottom_radius
         height_fraction = z / self.height
         radius = self.bottom_radius * pow(radius_ratio, height_fraction)
@@ -139,20 +130,13 @@ class HelixGeometry:
     
     def get_tangent_vector(self, t: float) -> Tuple[float, float, float]:
         """
-        Calculate tangent vector to helix at parameter t.
+        Calculate approximate normalized tangent vector at parameter t.
         
         Useful for agent orientation and movement direction.
-        
-        Args:
-            t: Parameter value between 0 and 1
-            
-        Returns:
-            Normalized tangent vector (dx/dt, dy/dt, dz/dt)
         """
         if not (0.0 <= t <= 1.0):
             raise ValueError("t must be between 0 and 1")
         
-        # Small epsilon for numerical differentiation
         eps = 1e-8
         t1 = max(0.0, t - eps)
         t2 = min(1.0, t + eps)
@@ -160,32 +144,19 @@ class HelixGeometry:
         x1, y1, z1 = self.get_position(t1)
         x2, y2, z2 = self.get_position(t2)
         
-        # Calculate direction vector
         dx = x2 - x1
         dy = y2 - y1
         dz = z2 - z1
         
-        # Normalize
         length = math.sqrt(dx*dx + dy*dy + dz*dz)
         if length > 0:
-            dx /= length
-            dy /= length
-            dz /= length
-        
-        return (dx, dy, dz)
+            return (dx / length, dy / length, dz / length)
+        return (0.0, 0.0, 0.0)
     
     def approximate_arc_length(self, t_start: float = 0.0, t_end: float = 1.0, 
                               segments: int = 1000) -> float:
         """
         Approximate arc length of helix segment using linear interpolation.
-        
-        Args:
-            t_start: Starting parameter value
-            t_end: Ending parameter value
-            segments: Number of segments for approximation
-            
-        Returns:
-            Approximate arc length
         """
         if not (0.0 <= t_start <= t_end <= 1.0):
             raise ValueError("Invalid t_start or t_end values")
@@ -202,7 +173,6 @@ class HelixGeometry:
             t = t_start + i * dt
             x, y, z = self.get_position(t)
             
-            # Calculate distance from previous point
             distance = math.sqrt((x - prev_x)**2 + (y - prev_y)**2 + (z - prev_z)**2)
             total_length += distance
             
@@ -211,7 +181,6 @@ class HelixGeometry:
         return total_length
     
     def __repr__(self) -> str:
-        """String representation for debugging."""
         return (f"HelixGeometry(top_radius={self.top_radius}, "
                 f"bottom_radius={self.bottom_radius}, "
                 f"height={self.height}, turns={self.turns})")
