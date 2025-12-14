@@ -79,8 +79,40 @@ class ThresholdLearner:
         self._cache_timestamp = {}
         self._cache_ttl = 300  # 5 minutes
 
+        # Ensure database table exists
+        self._ensure_database()
+
         logger.info(f"ThresholdLearner initialized (min_samples={min_samples}, "
                    f"learning_rate={learning_rate})")
+
+    def _ensure_database(self):
+        """Ensure database table exists."""
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS learned_thresholds (
+                    threshold_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_type TEXT NOT NULL,
+                    threshold_name TEXT NOT NULL,
+                    learned_value REAL NOT NULL,
+                    confidence REAL NOT NULL,
+                    sample_size INTEGER NOT NULL,
+                    success_rate REAL NOT NULL,
+                    last_updated REAL NOT NULL,
+                    UNIQUE(task_type, threshold_name)
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_learned_thresholds_task
+                ON learned_thresholds(task_type, threshold_name)
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_learned_thresholds_confidence
+                ON learned_thresholds(confidence DESC, sample_size DESC)
+            """)
+            conn.commit()
+        finally:
+            conn.close()
 
     def _get_connection(self) -> sqlite3.Connection:
         """Get database connection with WAL mode enabled."""

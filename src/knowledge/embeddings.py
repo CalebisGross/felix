@@ -328,6 +328,11 @@ class FTS5Searcher:
             conn = sqlite3.connect(self.db_path)
             conn.row_factory = sqlite3.Row
 
+            # Escape FTS5 special characters to prevent syntax errors
+            # FTS5 treats ?, *, ", (, ), etc. as operators
+            escaped_query = query.replace('"', '""')
+            escaped_query = f'"{escaped_query}"'  # Wrap in quotes for literal search
+
             # FTS5 search with BM25 ranking
             cursor = conn.execute("""
                 SELECT knowledge_id, rank
@@ -335,7 +340,7 @@ class FTS5Searcher:
                 WHERE knowledge_fts MATCH ?
                 ORDER BY rank
                 LIMIT ?
-            """, (query, top_k))
+            """, (escaped_query, top_k))
 
             results = []
             for row in cursor:

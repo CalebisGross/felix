@@ -81,9 +81,46 @@ class PatternLearner:
         self.auto_apply_threshold = auto_apply_threshold
         self.auto_apply_min_samples = auto_apply_min_samples
 
+        # Ensure database table exists
+        self._ensure_database()
+
         logger.info(f"PatternLearner initialized (min_samples={min_samples}, "
                    f"confidence_threshold={confidence_threshold}, "
                    f"auto_apply_threshold={auto_apply_threshold})")
+
+    def _ensure_database(self):
+        """Ensure database table exists."""
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS pattern_recommendations (
+                    recommendation_id TEXT PRIMARY KEY,
+                    workflow_id TEXT,
+                    pattern_id TEXT,
+                    recommended_strategies TEXT,
+                    recommended_agents TEXT,
+                    applied INTEGER DEFAULT 0,
+                    workflow_success INTEGER DEFAULT 0,
+                    actual_duration REAL,
+                    user_notes TEXT,
+                    recorded_at REAL
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_recommendations_pattern
+                ON pattern_recommendations(pattern_id, applied)
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_recommendations_success
+                ON pattern_recommendations(applied, workflow_success)
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_recommendations_workflow
+                ON pattern_recommendations(workflow_id)
+            """)
+            conn.commit()
+        finally:
+            conn.close()
 
     def _get_connection(self) -> sqlite3.Connection:
         """Get database connection with WAL mode enabled."""

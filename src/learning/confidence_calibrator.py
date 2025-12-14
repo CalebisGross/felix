@@ -75,7 +75,40 @@ class ConfidenceCalibrator:
         self._cache_timestamp = {}
         self._cache_ttl = 300  # 5 minutes
 
+        # Ensure database table exists
+        self._ensure_database()
+
         logger.info(f"ConfidenceCalibrator initialized (min_samples={min_samples})")
+
+    def _ensure_database(self):
+        """Ensure database table exists."""
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS confidence_calibration (
+                    calibration_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    agent_type TEXT NOT NULL,
+                    task_complexity TEXT NOT NULL,
+                    avg_predicted_confidence REAL NOT NULL,
+                    avg_actual_success REAL NOT NULL,
+                    calibration_factor REAL NOT NULL,
+                    calibration_error REAL NOT NULL,
+                    sample_size INTEGER NOT NULL,
+                    last_updated REAL NOT NULL,
+                    UNIQUE(agent_type, task_complexity)
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_calibration_agent
+                ON confidence_calibration(agent_type, task_complexity)
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_calibration_error
+                ON confidence_calibration(calibration_error ASC)
+            """)
+            conn.commit()
+        finally:
+            conn.close()
 
     def _get_connection(self) -> sqlite3.Connection:
         """Get database connection with WAL mode enabled."""

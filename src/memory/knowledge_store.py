@@ -2067,12 +2067,15 @@ class KnowledgeStore:
                     WHERE type='table' AND name='knowledge_fts'
                 """)
                 if fts_cursor.fetchone():
-                    # Use FTS5
+                    # Use FTS5 - escape special characters to prevent syntax errors
+                    # FTS5 treats ?, *, ", (, ), etc. as operators
+                    escaped_content = content.replace('"', '""')
+                    escaped_content = f'"{escaped_content}"'  # Wrap in quotes for literal search
                     fts_cursor.execute("""
                         SELECT knowledge_id FROM knowledge_fts
                         WHERE knowledge_fts MATCH ?
                         LIMIT ?
-                    """, (content, limit * 2))  # Get more from FTS, filter later
+                    """, (escaped_content, limit * 2))  # Get more from FTS, filter later
                     fts_ids = [row[0] for row in fts_cursor.fetchall()]
                     if fts_ids:
                         placeholders = ','.join('?' * len(fts_ids))
@@ -2149,7 +2152,7 @@ class KnowledgeStore:
             # Convert rows to KnowledgeEntry objects
             entries = []
             for row in cursor.fetchall():
-                entry = self._row_to_knowledge_entry(row)
+                entry = self._row_to_entry(row)
                 if entry:
                     entries.append(entry)
 

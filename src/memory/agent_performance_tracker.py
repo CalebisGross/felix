@@ -61,10 +61,42 @@ class AgentPerformanceTracker:
         self._ensure_database()
 
     def _ensure_database(self):
-        """Ensure database exists."""
-        if not self.db_path.exists():
-            logger.warning(f"{self.db_path} does not exist - will be created")
-            self.db_path.touch()
+        """Ensure database and schema exists."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS agent_performance (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    agent_id TEXT NOT NULL,
+                    workflow_id INTEGER,
+                    agent_type TEXT NOT NULL,
+                    spawn_time REAL NOT NULL,
+                    checkpoint REAL NOT NULL,
+                    confidence REAL NOT NULL,
+                    tokens_used INTEGER NOT NULL,
+                    processing_time REAL NOT NULL,
+                    depth_ratio REAL NOT NULL,
+                    phase TEXT NOT NULL,
+                    position_x REAL,
+                    position_y REAL,
+                    position_z REAL,
+                    content_preview TEXT,
+                    timestamp REAL NOT NULL
+                )
+            """)
+            # Create indexes for common queries
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_agent_type_confidence
+                ON agent_performance(agent_type, confidence)
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_workflow_id
+                ON agent_performance(workflow_id)
+            """)
+            conn.commit()
+            logger.info("AgentPerformanceTracker database initialized")
+        finally:
+            conn.close()
 
     def _get_connection(self) -> sqlite3.Connection:
         """Get database connection."""
