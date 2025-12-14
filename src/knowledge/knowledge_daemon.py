@@ -1,12 +1,13 @@
 """
 Knowledge Daemon for Felix Knowledge Brain
 
-Autonomous background processing system with five concurrent modes:
+Autonomous background processing system with six concurrent modes:
 - Mode A: Initial Batch Processing - Process existing documents in directories
 - Mode B: Continuous Refinement - Periodically re-analyze knowledge for new connections
 - Mode C: File System Watching - Monitor directories for new documents
 - Mode D: Scheduled Backups - Automatic database and JSON backups
 - Mode E: Gap-Directed Learning - Proactive knowledge acquisition to fill gaps (OPT-IN)
+- Mode F: Knowledge Pruning - Archive low-value knowledge to close feedback loops (Issue #22)
 
 Runs indefinitely in background threads with graceful shutdown support.
 """
@@ -66,10 +67,18 @@ class DaemonConfig:
     enable_file_watching: bool = True
     enable_scheduled_backup: bool = False  # Enable automatic backups
     enable_gap_learning: bool = False  # Mode E: Gap-directed learning (OPT-IN)
+    enable_pruning: bool = True  # Mode F: Knowledge pruning (Issue #22)
+    enable_task_memory_cleanup: bool = True  # Issue #24: Auto-cleanup TaskMemory patterns
     use_strategic_comprehension: bool = True  # Use optimized comprehension (50-70% fewer LLM calls)
     refinement_interval: int = 3600  # seconds (1 hour)
     backup_interval: int = 86400  # seconds (24 hours)
     gap_learning_interval: int = 1800  # seconds (30 minutes) for gap acquisition
+    pruning_interval: int = 604800  # seconds (7 days) - weekly pruning cycle
+    pruning_usefulness_threshold: float = 0.3  # Archive if avg usefulness below this
+    pruning_min_usage_count: int = 10  # Minimum usage samples before archiving
+    pruning_stale_days: int = 90  # Archive if not accessed in this many days
+    task_memory_max_age_days: int = 60  # Issue #24: Max age for task patterns
+    task_memory_min_usage: int = 2  # Issue #24: Min usage count to keep patterns
     gap_min_severity: float = 0.6  # Minimum gap severity for acquisition
     gap_min_occurrences: int = 3  # Minimum gap occurrences for acquisition
     backup_compress: bool = True  # Use compression for JSON backups
@@ -120,13 +129,18 @@ class DaemonStatus:
     refiner_active: bool
     file_watcher_active: bool
     backup_active: bool  # Phase 5
+    pruner_active: bool  # Issue #22
     documents_pending: int
     documents_processed: int
     documents_failed: int
     last_refinement: Optional[float]
     last_backup: Optional[float]  # Phase 5
+    last_pruning: Optional[float]  # Issue #22
     last_activity: Optional[float]
     uptime_seconds: float
+    last_task_memory_cleanup: Optional[float] = None  # Issue #24
+    entries_archived: int = 0  # Issue #22 - total entries archived by pruner
+    task_patterns_cleaned: int = 0  # Issue #24 - total task patterns cleaned
 
 
 class DocumentQueue:
@@ -393,6 +407,17 @@ class KnowledgeDaemon:
             self.threads.append(gap_thread)
             logger.info("✓ Mode E: Gap-directed learning started (opt-in)")
 
+        # Mode F: Knowledge Pruning (Issue #22)
+        if self.config.enable_pruning:
+            prune_thread = threading.Thread(
+                target=self._pruning_loop,
+                name="KnowledgeDaemon-Pruning",
+                daemon=True
+            )
+            prune_thread.start()
+            self.threads.append(prune_thread)
+            logger.info("✓ Mode F: Knowledge pruning started (weekly cycle)")
+
         # Load any pending documents from database into queue
         # This ensures documents that were pending before a restart get processed
         self._load_pending_from_database()
@@ -476,13 +501,18 @@ class KnowledgeDaemon:
             refiner_active=self.config.enable_refinement,
             file_watcher_active=self.config.enable_file_watching and self.observer is not None,
             backup_active=self.config.enable_scheduled_backup and self.backup_manager is not None,
+            pruner_active=self.config.enable_pruning,
             documents_pending=total_pending,  # Max of queue and database
             documents_processed=queue_stats['completed'],
             documents_failed=queue_stats['failed'],
             last_refinement=self.last_refinement,
             last_backup=self.last_backup,
+            last_pruning=getattr(self, '_last_pruning_time', None),
+            last_task_memory_cleanup=getattr(self, '_last_pruning_time', None),  # Issue #24: Same as pruning
             last_activity=self.last_activity,
-            uptime_seconds=uptime
+            uptime_seconds=uptime,
+            entries_archived=getattr(self, '_total_entries_archived', 0),
+            task_patterns_cleaned=getattr(self, '_total_task_patterns_cleaned', 0)  # Issue #24
         )
 
     def _get_completed_documents(self) -> set:
@@ -875,6 +905,117 @@ class KnowledgeDaemon:
                 logger.error(f"Gap learning cycle failed: {e}")
 
         logger.info("Gap learning loop exited")
+
+    def _pruning_loop(self):
+        """
+        Mode F: Knowledge Pruning (Issue #22).
+
+        Periodically prunes low-value knowledge entries to prevent the
+        knowledge base from becoming cluttered with noise. This closes
+        the learning feedback loop by actually removing knowledge that
+        has proven unhelpful.
+
+        Runs weekly by default (configurable via pruning_interval).
+        """
+        logger.info("Pruning: Starting knowledge pruning loop")
+
+        # Track total archived across all cycles
+        self._total_entries_archived = 0
+        self._last_pruning_time = None
+
+        while self.running and not self._stop_event.is_set():
+            # Wait for pruning interval - interruptible via _stop_event
+            if self._stop_event.wait(timeout=self.config.pruning_interval):
+                break  # Stop was signaled
+
+            if not self.running:
+                break
+
+            try:
+                logger.info("Pruning: Starting pruning cycle...")
+                start_time = time.time()
+
+                # Step 1: Prune low-value knowledge
+                prune_result = self.knowledge_store.prune_low_value_knowledge(
+                    min_usefulness_threshold=self.config.pruning_usefulness_threshold,
+                    min_usage_count=self.config.pruning_min_usage_count,
+                    stale_days=self.config.pruning_stale_days,
+                    dry_run=False
+                )
+
+                # Step 2: Apply confidence decay to remaining entries
+                decay_result = self.knowledge_store.apply_confidence_decay(
+                    stale_days=self.config.pruning_stale_days
+                )
+
+                # Step 3 (Issue #24): Clean up old TaskMemory patterns
+                task_patterns_cleaned = 0
+                if self.config.enable_task_memory_cleanup:
+                    task_patterns_cleaned = self._cleanup_task_memory_patterns()
+
+                duration = time.time() - start_time
+                self._last_pruning_time = time.time()
+                self._total_entries_archived += prune_result.get('total_archived', 0)
+                self._total_task_patterns_cleaned = getattr(self, '_total_task_patterns_cleaned', 0) + task_patterns_cleaned
+
+                logger.info(f"Pruning cycle complete: "
+                           f"{prune_result.get('total_archived', 0)} entries archived "
+                           f"({prune_result.get('archived_low_usefulness', 0)} low-usefulness, "
+                           f"{prune_result.get('archived_stale', 0)} stale), "
+                           f"{decay_result.get('entries_decayed', 0)} entries decayed, "
+                           f"{task_patterns_cleaned} task patterns cleaned, "
+                           f"{duration:.1f}s")
+
+                # Report progress
+                if self.progress_callback:
+                    self.progress_callback('pruning_complete', {
+                        'duration': duration,
+                        'archived_low_usefulness': prune_result.get('archived_low_usefulness', 0),
+                        'archived_stale': prune_result.get('archived_stale', 0),
+                        'total_archived': prune_result.get('total_archived', 0),
+                        'entries_decayed': decay_result.get('entries_decayed', 0),
+                        'task_patterns_cleaned': task_patterns_cleaned,
+                        'total_archived_all_time': self._total_entries_archived
+                    })
+
+            except Exception as e:
+                logger.error(f"Pruning cycle failed: {e}")
+
+        logger.info("Pruning loop exited")
+
+    def _cleanup_task_memory_patterns(self) -> int:
+        """
+        Clean up old/unused TaskMemory patterns (Issue #24).
+
+        Calls TaskMemory.cleanup_old_patterns() to remove patterns that are:
+        - Older than config.task_memory_max_age_days
+        - Used fewer than config.task_memory_min_usage times
+
+        Returns:
+            Number of patterns deleted
+        """
+        try:
+            from src.memory.task_memory import TaskMemory
+
+            # Use default path if not specified
+            task_memory = TaskMemory()
+
+            deleted = task_memory.cleanup_old_patterns(
+                max_age_days=self.config.task_memory_max_age_days,
+                min_usage_count=self.config.task_memory_min_usage
+            )
+
+            if deleted > 0:
+                logger.info(f"TaskMemory cleanup: removed {deleted} old/unused patterns")
+
+            return deleted
+
+        except ImportError:
+            logger.debug("TaskMemory not available for cleanup")
+            return 0
+        except Exception as e:
+            logger.warning(f"TaskMemory cleanup failed: {e}")
+            return 0
 
     def _start_file_watching(self):
         """

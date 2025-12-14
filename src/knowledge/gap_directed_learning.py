@@ -10,14 +10,24 @@ Key Features:
 - Generate search queries to fill gaps
 - Track acquisition attempts and success rates
 - Integrate with Knowledge Daemon for autonomous filling
+- GapAcquisitionTrigger for monitoring and triggering acquisition (Issue #25)
 """
 
 import logging
 import time
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Callable
 from dataclasses import dataclass, field
+from enum import Enum
 
 logger = logging.getLogger(__name__)
+
+
+class GapNotificationType(Enum):
+    """Types of gap notifications for the UI."""
+    NEW_GAP = "new_gap"           # New high-priority gap detected
+    GAP_RESOLVED = "gap_resolved"  # Gap was successfully resolved
+    ACQUISITION_STARTED = "acquisition_started"  # Acquisition attempt started
+    ACQUISITION_FAILED = "acquisition_failed"    # Acquisition attempt failed
 
 
 @dataclass
@@ -32,6 +42,242 @@ class AcquisitionTarget:
     attempts: int = 0
     last_attempt: Optional[float] = None
     status: str = "pending"  # pending, in_progress, resolved, failed
+
+
+@dataclass
+class GapNotification:
+    """Notification about a gap for the UI (Issue #25)."""
+    notification_type: GapNotificationType
+    gap_id: str
+    domain: str
+    concept: Optional[str]
+    severity: float
+    occurrence_count: int
+    message: str
+    timestamp: float = field(default_factory=time.time)
+
+
+class GapAcquisitionTrigger:
+    """
+    Monitors high-priority gaps and triggers acquisition attempts (Issue #25).
+
+    Implements the trigger conditions:
+    - severity > min_severity (default 0.6)
+    - occurrence_count >= min_occurrences (default 3)
+
+    Actions when triggered:
+    1. Queue targeted document search in watched directories
+    2. Flag for user attention in chat UI
+    3. If web search enabled (opt-in), queue web search
+    """
+
+    def __init__(self,
+                 gap_tracker: Any,
+                 min_severity: float = 0.6,
+                 min_occurrences: int = 3,
+                 notification_callback: Optional[Callable[[GapNotification], None]] = None):
+        """
+        Initialize Gap Acquisition Trigger.
+
+        Args:
+            gap_tracker: GapTracker instance for monitoring gaps
+            min_severity: Minimum severity threshold for triggering (0.0-1.0)
+            min_occurrences: Minimum occurrence count for triggering
+            notification_callback: Optional callback for UI notifications
+        """
+        self.gap_tracker = gap_tracker
+        self.min_severity = min_severity
+        self.min_occurrences = min_occurrences
+        self.notification_callback = notification_callback
+
+        # Track notified gaps to avoid duplicate notifications
+        self._notified_gaps: Dict[str, float] = {}  # gap_id -> last_notification_time
+        self._notification_cooldown = 3600  # 1 hour cooldown between notifications for same gap
+
+        # Track pending notifications for UI polling
+        self._pending_notifications: List[GapNotification] = []
+
+        logger.info(f"GapAcquisitionTrigger initialized (severity >= {min_severity}, "
+                   f"occurrences >= {min_occurrences})")
+
+    def check_triggers(self) -> List[AcquisitionTarget]:
+        """
+        Check for gaps that meet trigger conditions.
+
+        Returns:
+            List of AcquisitionTarget objects for gaps that should be acquired
+        """
+        triggered_targets = []
+
+        try:
+            # Get gaps that meet threshold criteria
+            priority_gaps = self.gap_tracker.get_priority_gaps(
+                min_severity=self.min_severity,
+                min_occurrences=self.min_occurrences,
+                limit=10
+            )
+
+            current_time = time.time()
+
+            for gap in priority_gaps:
+                # Check notification cooldown
+                last_notified = self._notified_gaps.get(gap.gap_id, 0)
+                if current_time - last_notified < self._notification_cooldown:
+                    continue  # Skip - recently notified
+
+                # Calculate priority score
+                priority_score = gap.impact_severity_avg * min(1.0, gap.occurrence_count / 10)
+
+                target = AcquisitionTarget(
+                    gap_id=gap.gap_id,
+                    domain=gap.domain,
+                    concept=gap.concept,
+                    priority_score=priority_score,
+                    acquisition_method="web_search",
+                    status="pending"
+                )
+
+                triggered_targets.append(target)
+
+                # Create notification for UI
+                self._create_notification(
+                    GapNotificationType.NEW_GAP,
+                    gap,
+                    f"Knowledge gap detected: {gap.domain}/{gap.concept or 'general'} "
+                    f"(severity: {gap.impact_severity_avg:.1%}, occurrences: {gap.occurrence_count})"
+                )
+
+                # Update notification timestamp
+                self._notified_gaps[gap.gap_id] = current_time
+
+            if triggered_targets:
+                logger.info(f"GapAcquisitionTrigger: {len(triggered_targets)} gaps meet trigger conditions")
+
+        except Exception as e:
+            logger.error(f"Error checking gap triggers: {e}")
+
+        return triggered_targets
+
+    def _create_notification(self, notification_type: GapNotificationType,
+                            gap: Any, message: str):
+        """
+        Create a notification for the UI.
+
+        Args:
+            notification_type: Type of notification
+            gap: Gap object from tracker
+            message: Human-readable message
+        """
+        notification = GapNotification(
+            notification_type=notification_type,
+            gap_id=gap.gap_id,
+            domain=gap.domain,
+            concept=gap.concept,
+            severity=gap.impact_severity_avg,
+            occurrence_count=gap.occurrence_count,
+            message=message
+        )
+
+        # Add to pending notifications
+        self._pending_notifications.append(notification)
+
+        # Invoke callback if registered
+        if self.notification_callback:
+            try:
+                self.notification_callback(notification)
+            except Exception as e:
+                logger.warning(f"Notification callback failed: {e}")
+
+    def get_pending_notifications(self, clear: bool = True) -> List[GapNotification]:
+        """
+        Get pending notifications for the UI.
+
+        Args:
+            clear: If True, clear notifications after returning
+
+        Returns:
+            List of pending GapNotification objects
+        """
+        notifications = list(self._pending_notifications)
+        if clear:
+            self._pending_notifications.clear()
+        return notifications
+
+    def notify_resolution(self, gap_id: str, method: str):
+        """
+        Notify that a gap was resolved.
+
+        Args:
+            gap_id: ID of the resolved gap
+            method: Resolution method (web_search, manual, document_ingestion)
+        """
+        # Get gap info for notification (may fail if already removed)
+        try:
+            # Create a simple notification without full gap info
+            notification = GapNotification(
+                notification_type=GapNotificationType.GAP_RESOLVED,
+                gap_id=gap_id,
+                domain="",  # Unknown at this point
+                concept=None,
+                severity=0.0,
+                occurrence_count=0,
+                message=f"Gap {gap_id} resolved via {method}"
+            )
+            self._pending_notifications.append(notification)
+
+            if self.notification_callback:
+                self.notification_callback(notification)
+
+            # Remove from notified gaps tracking
+            self._notified_gaps.pop(gap_id, None)
+
+        except Exception as e:
+            logger.debug(f"Could not create resolution notification: {e}")
+
+    def get_gap_summary(self) -> Dict[str, Any]:
+        """
+        Get a summary of current gap status for UI display.
+
+        Returns:
+            Dict with gap counts and top gaps
+        """
+        try:
+            # Get all high-priority gaps
+            priority_gaps = self.gap_tracker.get_priority_gaps(
+                min_severity=self.min_severity,
+                min_occurrences=self.min_occurrences,
+                limit=5
+            )
+
+            # Get total unresolved gaps
+            all_gaps = self.gap_tracker.get_gaps_for_display(limit=100, include_resolved=False)
+            total_active = len(all_gaps)
+            high_priority_count = len(priority_gaps)
+
+            return {
+                "total_active_gaps": total_active,
+                "high_priority_gaps": high_priority_count,
+                "top_gaps": [
+                    {
+                        "gap_id": g.gap_id,
+                        "domain": g.domain,
+                        "concept": g.concept or "(general)",
+                        "severity": g.impact_severity_avg,
+                        "occurrences": g.occurrence_count
+                    }
+                    for g in priority_gaps[:3]
+                ],
+                "needs_attention": high_priority_count > 0
+            }
+
+        except Exception as e:
+            logger.error(f"Error getting gap summary: {e}")
+            return {
+                "total_active_gaps": 0,
+                "high_priority_gaps": 0,
+                "top_gaps": [],
+                "needs_attention": False
+            }
 
 
 class GapDirectedLearner:

@@ -364,3 +364,118 @@ class GapTracker:
             logger.error(f"Failed to get gap workflow history: {e}")
 
         return history
+
+    def check_auto_resolution(self, domain: str, concept: Optional[str],
+                              content: str) -> List[str]:
+        """
+        Check if newly ingested knowledge resolves any gaps (Issue #25).
+
+        Called when new knowledge is stored to automatically resolve
+        matching gaps. Uses domain/concept matching and keyword overlap.
+
+        Args:
+            domain: Domain of the new knowledge
+            concept: Concept of the new knowledge (optional)
+            content: Text content of the new knowledge
+
+        Returns:
+            List of gap_ids that were auto-resolved
+        """
+        resolved_gaps = []
+
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                # Find unresolved gaps in the same domain
+                cursor = conn.execute("""
+                    SELECT gap_id, domain, concept
+                    FROM knowledge_gaps
+                    WHERE resolved = FALSE
+                    AND domain = ?
+                """, (domain,))
+
+                potential_gaps = cursor.fetchall()
+
+                for gap_id, gap_domain, gap_concept in potential_gaps:
+                    # Check if this gap is resolved by the new content
+                    if self._content_resolves_gap(gap_concept, content):
+                        # Auto-resolve the gap
+                        success = self.mark_gap_resolved(gap_id, method="auto_ingestion")
+                        if success:
+                            resolved_gaps.append(gap_id)
+                            logger.info(f"Auto-resolved gap {gap_id}: "
+                                       f"{gap_domain}/{gap_concept or 'general'}")
+
+        except sqlite3.Error as e:
+            logger.error(f"Failed to check auto-resolution: {e}")
+
+        return resolved_gaps
+
+    def _content_resolves_gap(self, gap_concept: Optional[str], content: str) -> bool:
+        """
+        Check if content resolves a gap based on keyword matching.
+
+        Args:
+            gap_concept: The specific concept the gap is about (may be None)
+            content: The content to check
+
+        Returns:
+            True if content likely resolves the gap
+        """
+        if not content:
+            return False
+
+        content_lower = content.lower()
+
+        # If no specific concept, gap is general - harder to auto-resolve
+        if not gap_concept:
+            # Require substantial content (at least 100 chars) for general gaps
+            return len(content) >= 100
+
+        # For specific concept gaps, check if concept appears in content
+        concept_lower = gap_concept.lower()
+        concept_words = concept_lower.replace("_", " ").replace("-", " ").split()
+
+        # Check if all concept words appear in content
+        matches = sum(1 for word in concept_words if word in content_lower)
+        match_ratio = matches / len(concept_words) if concept_words else 0
+
+        # Require at least 60% of concept words to match
+        return match_ratio >= 0.6
+
+    def get_unresolved_gaps_for_domain(self, domain: str) -> List[Dict[str, Any]]:
+        """
+        Get unresolved gaps for a specific domain.
+
+        Useful for checking if new knowledge in a domain might resolve gaps.
+
+        Args:
+            domain: Domain to check
+
+        Returns:
+            List of gap dictionaries
+        """
+        gaps = []
+
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute("""
+                    SELECT gap_id, domain, concept, impact_severity_avg, occurrence_count
+                    FROM knowledge_gaps
+                    WHERE resolved = FALSE
+                    AND domain = ?
+                    ORDER BY impact_severity_avg DESC
+                """, (domain,))
+
+                for row in cursor.fetchall():
+                    gaps.append({
+                        'gap_id': row[0],
+                        'domain': row[1],
+                        'concept': row[2],
+                        'severity': row[3],
+                        'occurrence_count': row[4]
+                    })
+
+        except sqlite3.Error as e:
+            logger.error(f"Failed to get unresolved gaps: {e}")
+
+        return gaps

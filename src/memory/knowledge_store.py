@@ -250,6 +250,34 @@ class KnowledgeStore:
                     UNIQUE(source_id, target_id, relationship_type)
                 )
             """)
+
+            # Knowledge archived table for recoverable pruning (Issue #22)
+            # Low-value knowledge is moved here instead of deleted
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS knowledge_archived (
+                    knowledge_id TEXT PRIMARY KEY,
+                    knowledge_type TEXT NOT NULL,
+                    content_json TEXT NOT NULL,
+                    confidence_level TEXT NOT NULL,
+                    source_agent TEXT NOT NULL,
+                    domain TEXT NOT NULL,
+                    tags_json TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    archived_at REAL NOT NULL,
+                    archive_reason TEXT NOT NULL,
+                    avg_usefulness REAL,
+                    usage_count INTEGER,
+                    last_accessed REAL
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_archived_domain
+                ON knowledge_archived(domain)
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_archived_reason
+                ON knowledge_archived(archive_reason)
+            """)
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_kr_source
                 ON knowledge_relationships(source_id)
@@ -560,7 +588,47 @@ class KnowledgeStore:
             count = conn.execute("SELECT COUNT(*) FROM knowledge_entries WHERE knowledge_id = ?", (knowledge_id,)).fetchone()[0]
             logger.info(f"   ✓ Verification: {count} entry with knowledge_id={knowledge_id} in database")
 
+        # Issue #25: Check if this knowledge resolves any gaps
+        self._check_gap_auto_resolution(domain, content)
+
         return knowledge_id
+
+    def _check_gap_auto_resolution(self, domain: str, content: Dict[str, Any]):
+        """
+        Check if newly stored knowledge resolves any gaps (Issue #25).
+
+        Args:
+            domain: Domain of the stored knowledge
+            content: Content dict of the stored knowledge
+        """
+        try:
+            from src.knowledge.gap_tracker import GapTracker
+
+            # Get the gap tracker (use default path)
+            gap_tracker = GapTracker()
+
+            # Extract text content for matching
+            text_content = ""
+            if isinstance(content, dict):
+                text_content = content.get('text', content.get('content', str(content)))
+            elif isinstance(content, str):
+                text_content = content
+
+            # Extract concept from content if available
+            concept = None
+            if isinstance(content, dict):
+                concept = content.get('concept', content.get('topic'))
+
+            # Check for auto-resolution
+            resolved = gap_tracker.check_auto_resolution(domain, concept, text_content)
+
+            if resolved:
+                logger.info(f"Auto-resolved {len(resolved)} knowledge gaps via ingestion")
+
+        except ImportError:
+            logger.debug("GapTracker not available for auto-resolution")
+        except Exception as e:
+            logger.debug(f"Gap auto-resolution check failed: {e}")
     
     def retrieve_knowledge(self, query: KnowledgeQuery) -> List[KnowledgeEntry]:
         """
@@ -2433,3 +2501,360 @@ class KnowledgeStore:
             if 'conn' in locals():
                 conn.close()
             return {'summary': {'total_issues': 0}, 'error': str(e)}
+
+    # ===== Issue #22: Knowledge Pruning and Decay System =====
+
+    @audit_logged("PRUNE", "KnowledgeStore")
+    def prune_low_value_knowledge(self,
+                                   min_usefulness_threshold: float = 0.3,
+                                   min_usage_count: int = 10,
+                                   stale_days: int = 90,
+                                   dry_run: bool = False) -> Dict[str, Any]:
+        """
+        Archive low-value knowledge entries based on usefulness feedback.
+
+        This closes the learning feedback loop by actually removing knowledge
+        that has proven unhelpful, rather than just tracking scores.
+
+        Criteria for archival:
+        1. avg_usefulness < threshold AND usage_count >= min_usage_count
+        2. Not accessed in stale_days (time-based decay)
+
+        Args:
+            min_usefulness_threshold: Archive if avg usefulness below this (0.0-1.0)
+            min_usage_count: Minimum usage samples before considering for archive
+            stale_days: Archive if not accessed in this many days
+            dry_run: If True, only report what would be archived
+
+        Returns:
+            Dict with pruning results:
+                - archived_low_usefulness: count archived due to low scores
+                - archived_stale: count archived due to no recent access
+                - total_archived: total count
+                - entries_archived: list of knowledge_ids (if not dry_run)
+        """
+        logger.info("=" * 60)
+        logger.info("KNOWLEDGE PRUNING CYCLE")
+        logger.info(f"  Usefulness threshold: < {min_usefulness_threshold}")
+        logger.info(f"  Min usage count: {min_usage_count}")
+        logger.info(f"  Stale threshold: {stale_days} days")
+        logger.info(f"  Mode: {'DRY RUN' if dry_run else 'ACTIVE'}")
+        logger.info("=" * 60)
+
+        stale_cutoff = time.time() - (stale_days * 24 * 3600)
+        archived_low_usefulness = 0
+        archived_stale = 0
+        entries_archived = []
+
+        try:
+            with sqlite3.connect(self.storage_path) as conn:
+                # 1. Find low-usefulness entries
+                # Join with knowledge_usage to get avg usefulness
+                cursor = conn.execute("""
+                    SELECT
+                        ke.knowledge_id,
+                        ke.knowledge_type,
+                        ke.content_json,
+                        ke.confidence_level,
+                        ke.source_agent,
+                        ke.domain,
+                        ke.tags_json,
+                        ke.created_at,
+                        ke.updated_at,
+                        AVG(ku.useful_score) as avg_usefulness,
+                        COUNT(ku.id) as usage_count
+                    FROM knowledge_entries ke
+                    LEFT JOIN knowledge_usage ku ON ke.knowledge_id = ku.knowledge_id
+                    GROUP BY ke.knowledge_id
+                    HAVING usage_count >= ? AND avg_usefulness < ?
+                """, (min_usage_count, min_usefulness_threshold))
+
+                low_usefulness_entries = cursor.fetchall()
+                logger.info(f"  Found {len(low_usefulness_entries)} low-usefulness entries")
+
+                # 2. Find stale entries (not accessed recently)
+                cursor = conn.execute("""
+                    SELECT
+                        ke.knowledge_id,
+                        ke.knowledge_type,
+                        ke.content_json,
+                        ke.confidence_level,
+                        ke.source_agent,
+                        ke.domain,
+                        ke.tags_json,
+                        ke.created_at,
+                        ke.updated_at,
+                        ke.access_count
+                    FROM knowledge_entries ke
+                    WHERE ke.updated_at < ?
+                    AND ke.access_count = 0
+                    AND ke.knowledge_id NOT IN (
+                        SELECT DISTINCT knowledge_id FROM knowledge_usage
+                        WHERE recorded_at > ?
+                    )
+                """, (stale_cutoff, stale_cutoff))
+
+                stale_entries = cursor.fetchall()
+                logger.info(f"  Found {len(stale_entries)} stale entries (no access in {stale_days} days)")
+
+                if dry_run:
+                    return {
+                        "archived_low_usefulness": len(low_usefulness_entries),
+                        "archived_stale": len(stale_entries),
+                        "total_archived": len(low_usefulness_entries) + len(stale_entries),
+                        "dry_run": True
+                    }
+
+                # 3. Archive low-usefulness entries
+                for row in low_usefulness_entries:
+                    (knowledge_id, knowledge_type, content_json, confidence_level,
+                     source_agent, domain, tags_json, created_at, updated_at,
+                     avg_usefulness, usage_count) = row
+
+                    # Move to archive
+                    conn.execute("""
+                        INSERT OR REPLACE INTO knowledge_archived
+                        (knowledge_id, knowledge_type, content_json, confidence_level,
+                         source_agent, domain, tags_json, created_at, archived_at,
+                         archive_reason, avg_usefulness, usage_count, last_accessed)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (knowledge_id, knowledge_type, content_json, confidence_level,
+                          source_agent, domain, tags_json, created_at, time.time(),
+                          "low_usefulness", avg_usefulness, usage_count, updated_at))
+
+                    # Delete from main table
+                    conn.execute("DELETE FROM knowledge_entries WHERE knowledge_id = ?",
+                               (knowledge_id,))
+                    conn.execute("DELETE FROM knowledge_tags WHERE knowledge_id = ?",
+                               (knowledge_id,))
+
+                    entries_archived.append(knowledge_id)
+                    archived_low_usefulness += 1
+                    logger.debug(f"    Archived {knowledge_id}: usefulness={avg_usefulness:.2f}, uses={usage_count}")
+
+                # 4. Archive stale entries
+                for row in stale_entries:
+                    (knowledge_id, knowledge_type, content_json, confidence_level,
+                     source_agent, domain, tags_json, created_at, updated_at,
+                     access_count) = row
+
+                    # Move to archive
+                    conn.execute("""
+                        INSERT OR REPLACE INTO knowledge_archived
+                        (knowledge_id, knowledge_type, content_json, confidence_level,
+                         source_agent, domain, tags_json, created_at, archived_at,
+                         archive_reason, avg_usefulness, usage_count, last_accessed)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (knowledge_id, knowledge_type, content_json, confidence_level,
+                          source_agent, domain, tags_json, created_at, time.time(),
+                          "stale", None, access_count, updated_at))
+
+                    # Delete from main table
+                    conn.execute("DELETE FROM knowledge_entries WHERE knowledge_id = ?",
+                               (knowledge_id,))
+                    conn.execute("DELETE FROM knowledge_tags WHERE knowledge_id = ?",
+                               (knowledge_id,))
+
+                    entries_archived.append(knowledge_id)
+                    archived_stale += 1
+                    logger.debug(f"    Archived {knowledge_id}: stale (last access: {time.ctime(updated_at)})")
+
+                conn.commit()
+
+            total = archived_low_usefulness + archived_stale
+            logger.info("=" * 60)
+            logger.info(f"PRUNING COMPLETE: {total} entries archived")
+            logger.info(f"  Low usefulness: {archived_low_usefulness}")
+            logger.info(f"  Stale: {archived_stale}")
+            logger.info("=" * 60)
+
+            return {
+                "archived_low_usefulness": archived_low_usefulness,
+                "archived_stale": archived_stale,
+                "total_archived": total,
+                "entries_archived": entries_archived
+            }
+
+        except Exception as e:
+            logger.error(f"Knowledge pruning failed: {e}")
+            return {
+                "archived_low_usefulness": 0,
+                "archived_stale": 0,
+                "total_archived": 0,
+                "error": str(e)
+            }
+
+    def apply_confidence_decay(self, stale_days: int = 90) -> Dict[str, Any]:
+        """
+        Apply time-based decay to knowledge confidence levels.
+
+        Knowledge not accessed in stale_days has its confidence reduced
+        by one level (e.g., HIGH -> MEDIUM). This doesn't archive entries,
+        just reduces their ranking in search results.
+
+        Args:
+            stale_days: Days without access before decay applies
+
+        Returns:
+            Dict with decay results
+        """
+        stale_cutoff = time.time() - (stale_days * 24 * 3600)
+        decayed_count = 0
+
+        confidence_downgrade = {
+            "verified": "high",
+            "high": "medium",
+            "medium": "low",
+            "low": "low"  # Can't go lower
+        }
+
+        try:
+            with sqlite3.connect(self.storage_path) as conn:
+                # Find entries to decay (not accessed recently, not already low)
+                cursor = conn.execute("""
+                    SELECT knowledge_id, confidence_level
+                    FROM knowledge_entries
+                    WHERE updated_at < ?
+                    AND confidence_level != 'low'
+                """, (stale_cutoff,))
+
+                entries_to_decay = cursor.fetchall()
+
+                for knowledge_id, current_level in entries_to_decay:
+                    new_level = confidence_downgrade.get(current_level, current_level)
+                    if new_level != current_level:
+                        conn.execute("""
+                            UPDATE knowledge_entries
+                            SET confidence_level = ?, updated_at = ?
+                            WHERE knowledge_id = ?
+                        """, (new_level, time.time(), knowledge_id))
+                        decayed_count += 1
+
+                conn.commit()
+
+            logger.info(f"Confidence decay applied to {decayed_count} entries")
+            return {
+                "entries_decayed": decayed_count,
+                "stale_threshold_days": stale_days
+            }
+
+        except Exception as e:
+            logger.error(f"Confidence decay failed: {e}")
+            return {"entries_decayed": 0, "error": str(e)}
+
+    def restore_from_archive(self, knowledge_id: str) -> bool:
+        """
+        Restore an archived knowledge entry back to active.
+
+        Args:
+            knowledge_id: ID of archived entry to restore
+
+        Returns:
+            True if restored successfully
+        """
+        try:
+            with sqlite3.connect(self.storage_path) as conn:
+                # Get archived entry
+                cursor = conn.execute("""
+                    SELECT knowledge_id, knowledge_type, content_json, confidence_level,
+                           source_agent, domain, tags_json, created_at
+                    FROM knowledge_archived
+                    WHERE knowledge_id = ?
+                """, (knowledge_id,))
+
+                row = cursor.fetchone()
+                if not row:
+                    logger.warning(f"Archived entry not found: {knowledge_id}")
+                    return False
+
+                (knowledge_id, knowledge_type, content_json, confidence_level,
+                 source_agent, domain, tags_json, created_at) = row
+
+                # Restore to main table (with LOW confidence as penalty)
+                conn.execute("""
+                    INSERT INTO knowledge_entries
+                    (knowledge_id, knowledge_type, content_json, content_compressed,
+                     confidence_level, source_agent, domain, tags_json,
+                     created_at, updated_at, access_count, success_rate, related_entries_json)
+                    VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 0, 0.5, '[]')
+                """, (knowledge_id, knowledge_type, content_json, "low",
+                      source_agent, domain, tags_json, created_at, time.time()))
+
+                # Restore tags
+                tags = json.loads(tags_json)
+                for tag in tags:
+                    conn.execute("""
+                        INSERT OR IGNORE INTO knowledge_tags (knowledge_id, tag)
+                        VALUES (?, ?)
+                    """, (knowledge_id, tag))
+
+                # Remove from archive
+                conn.execute("DELETE FROM knowledge_archived WHERE knowledge_id = ?",
+                           (knowledge_id,))
+
+                conn.commit()
+                logger.info(f"Restored archived entry: {knowledge_id}")
+                return True
+
+        except Exception as e:
+            logger.error(f"Failed to restore archived entry: {e}")
+            return False
+
+    def get_archive_summary(self) -> Dict[str, Any]:
+        """
+        Get summary of archived knowledge.
+
+        Returns:
+            Dict with archive statistics
+        """
+        try:
+            with sqlite3.connect(self.storage_path) as conn:
+                # Total archived
+                cursor = conn.execute("SELECT COUNT(*) FROM knowledge_archived")
+                total = cursor.fetchone()[0]
+
+                # By reason
+                cursor = conn.execute("""
+                    SELECT archive_reason, COUNT(*)
+                    FROM knowledge_archived
+                    GROUP BY archive_reason
+                """)
+                by_reason = dict(cursor.fetchall())
+
+                # By domain
+                cursor = conn.execute("""
+                    SELECT domain, COUNT(*)
+                    FROM knowledge_archived
+                    GROUP BY domain
+                    ORDER BY COUNT(*) DESC
+                    LIMIT 10
+                """)
+                by_domain = dict(cursor.fetchall())
+
+                # Recent archives
+                cursor = conn.execute("""
+                    SELECT knowledge_id, domain, archive_reason, archived_at
+                    FROM knowledge_archived
+                    ORDER BY archived_at DESC
+                    LIMIT 10
+                """)
+                recent = [
+                    {
+                        "knowledge_id": row[0],
+                        "domain": row[1],
+                        "reason": row[2],
+                        "archived_at": row[3]
+                    }
+                    for row in cursor.fetchall()
+                ]
+
+                return {
+                    "total_archived": total,
+                    "by_reason": by_reason,
+                    "by_domain": by_domain,
+                    "recent_archives": recent
+                }
+
+        except Exception as e:
+            logger.error(f"Failed to get archive summary: {e}")
+            return {"total_archived": 0, "error": str(e)}

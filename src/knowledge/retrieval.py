@@ -323,32 +323,67 @@ class KnowledgeRetriever:
                                    task_type: str,
                                    task_complexity: Optional[str] = None) -> List[SearchResult]:
         """
-        Apply meta-learning boost to results.
+        Apply meta-learning boost/penalty to results (Issue #23).
 
-        Boosts relevance of knowledge that was historically useful for this task type.
+        Adjusts relevance based on historical usefulness:
+        - High usefulness (>0.5): Boost relevance
+        - Low usefulness (<0.5): Penalize relevance
+        - Uses exponential moving average (EMA) for recent feedback weighting
+        - Activates after just 1 use (confidence-weighted)
+
+        This closes the feedback loop by actually demoting knowledge that
+        has proven unhelpful, not just tracking scores.
         """
         try:
             conn = sqlite3.connect(self.knowledge_store.storage_path)
 
-            # Get usage statistics for each knowledge entry
             for result in results:
+                # Get usage history with timestamps for EMA calculation
                 cursor = conn.execute("""
-                    SELECT AVG(useful_score) as avg_usefulness, COUNT(*) as usage_count
+                    SELECT useful_score, recorded_at
                     FROM knowledge_usage
                     WHERE knowledge_id = ?
                     AND task_type = ?
+                    ORDER BY recorded_at DESC
+                    LIMIT 20
                 """, (result.knowledge_id, task_type))
 
-                row = cursor.fetchone()
-                if row and row[0] is not None:
-                    avg_usefulness = row[0]
-                    usage_count = row[1]
+                rows = cursor.fetchall()
 
-                    # Boost relevance based on historical usefulness
-                    if usage_count >= 3:  # Minimum samples for reliable boost
-                        boost_factor = 0.5 + (avg_usefulness * 0.5)  # 0.5 to 1.0
-                        result.relevance_score = result.relevance_score * boost_factor
-                        result.reasoning += f"+meta_boost({avg_usefulness:.2f})"
+                if rows:
+                    # Calculate exponential moving average (EMA)
+                    # Recent feedback weighted more heavily
+                    ema_alpha = 0.3  # Weight for most recent observation
+                    ema_usefulness = self._calculate_ema(
+                        [row[0] for row in rows],
+                        alpha=ema_alpha
+                    )
+                    usage_count = len(rows)
+
+                    # Confidence weight based on sample size (0.5 to 1.0)
+                    # Even 1 sample has some weight, but more samples = more confidence
+                    confidence_weight = min(1.0, 0.5 + (usage_count * 0.1))
+
+                    # Calculate adjustment factor centered at 0.5
+                    # usefulness=1.0 -> factor=1.25 (25% boost)
+                    # usefulness=0.5 -> factor=1.0 (no change)
+                    # usefulness=0.0 -> factor=0.75 (25% penalty)
+                    raw_adjustment = 0.75 + (ema_usefulness * 0.5)  # 0.75 to 1.25
+
+                    # Apply confidence weighting (blend toward 1.0 for low confidence)
+                    adjustment_factor = 1.0 + (raw_adjustment - 1.0) * confidence_weight
+
+                    # Apply adjustment
+                    result.relevance_score = result.relevance_score * adjustment_factor
+
+                    # Clamp to valid range
+                    result.relevance_score = max(0.0, min(1.0, result.relevance_score))
+
+                    # Update reasoning
+                    if adjustment_factor > 1.0:
+                        result.reasoning += f"+meta_boost({ema_usefulness:.2f},n={usage_count})"
+                    elif adjustment_factor < 1.0:
+                        result.reasoning += f"-meta_penalty({ema_usefulness:.2f},n={usage_count})"
 
             conn.close()
 
@@ -356,6 +391,26 @@ class KnowledgeRetriever:
             logger.error(f"Meta-learning boost failed: {e}")
 
         return results
+
+    def _calculate_ema(self, values: List[float], alpha: float = 0.3) -> float:
+        """
+        Calculate exponential moving average (Issue #23).
+
+        Args:
+            values: List of values, most recent first
+            alpha: Smoothing factor (higher = more weight to recent)
+
+        Returns:
+            EMA value
+        """
+        if not values:
+            return 0.5  # Neutral default
+
+        ema = values[0]
+        for value in values[1:]:
+            ema = alpha * ema + (1 - alpha) * value
+
+        return ema
 
     def record_usage(self,
                      workflow_id: str,
