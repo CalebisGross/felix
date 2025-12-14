@@ -21,7 +21,7 @@ import re
 import os
 import logging
 import yaml
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional, Tuple, Callable
 from pathlib import Path
 from collections import namedtuple
 
@@ -319,7 +319,8 @@ class SynthesisEngine:
                                  reasoning_evals: Optional[Dict[str, Dict[str, Any]]] = None,
                                  coverage_report: Optional[Any] = None,
                                  successful_agents: Optional[List[str]] = None,
-                                 failed_agents: Optional[List[str]] = None) -> Dict[str, Any]:
+                                 failed_agents: Optional[List[str]] = None,
+                                 streaming_callback: Optional[Callable] = None) -> Dict[str, Any]:
         """
         Synthesize final output from all agent communications.
 
@@ -341,6 +342,9 @@ class SynthesisEngine:
                 Used for degradation assessment (Issue #18).
             failed_agents: Optional list of agent IDs that failed.
                 Used for degradation assessment (Issue #18).
+            streaming_callback: Optional callback for streaming synthesis output.
+                If provided, synthesis will stream chunks via complete_streaming().
+                Callback signature: callback(chunk) where chunk has .content attribute.
 
         Returns:
             Dict containing:
@@ -508,13 +512,32 @@ Your output should reflect JUSTIFIED confidence, not reflexive confidence. If th
         while synthesis_attempts < max_attempts:
             synthesis_attempts += 1
             try:
-                llm_response = self.llm_client.complete(
-                    agent_id="synthesis_engine",
-                    system_prompt=system_prompt,
-                    user_prompt=user_prompt,
-                    temperature=temperature,
-                    max_tokens=max_tokens
-                )
+                # Use streaming if callback provided, otherwise standard completion
+                if streaming_callback and hasattr(self.llm_client, 'complete_streaming'):
+                    logger.info("Synthesis using streaming mode")
+
+                    # Wrap callback to convert StreamingChunk to plain text
+                    def text_callback(chunk):
+                        chunk_text = chunk.content if hasattr(chunk, 'content') else str(chunk)
+                        streaming_callback(chunk_text)
+
+                    llm_response = self.llm_client.complete_streaming(
+                        agent_id="synthesis_engine",
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        callback=text_callback,
+                        batch_interval=0.1
+                    )
+                else:
+                    llm_response = self.llm_client.complete(
+                        agent_id="synthesis_engine",
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt,
+                        temperature=temperature,
+                        max_tokens=max_tokens
+                    )
 
                 # Success! Break out of retry loop
                 break

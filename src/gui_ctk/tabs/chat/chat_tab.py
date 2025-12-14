@@ -104,6 +104,7 @@ class ChatTab(ResponsiveTab):
         self._is_continuation = False   # Skip pattern detection on continuations
         self._cancel_event: Optional[threading.Event] = None  # For stopping generation
         self._processed_commands: Set[str] = set()  # Track commands already processed this response
+        self._thinking_indicator_shown = False  # Track if thinking indicator needs clearing
 
         # Cached gap tracking instances (Issue #25 fix - avoid repeated initialization)
         self._gap_tracker = None
@@ -591,6 +592,7 @@ class ChatTab(ResponsiveTab):
         self._content_buffer = ""
         self._is_continuation = False
         self._processed_commands.clear()
+        self._thinking_indicator_shown = False
 
         # Update status to sending
         self._update_connection_status("sending")
@@ -598,10 +600,14 @@ class ChatTab(ResponsiveTab):
         # Start streaming message
         streaming_msg = self.current_session.start_assistant_message()
 
-        # Add streaming bubble to UI
+        # Add streaming bubble to UI with brief "thinking" indicator
+        # Clears immediately on first streaming chunk
         streaming_bubble = None
         if self._message_area:
             streaming_bubble = self._message_area.add_streaming_message()
+            # Brief thinking indicator - cleared on first chunk
+            streaming_bubble.append_content("*Felix is thinking...*\n\n")
+            self._thinking_indicator_shown = True  # Track for clearing on first chunk
 
         # Get Felix system from main app
         felix_system = self._get_felix_system()
@@ -631,7 +637,7 @@ class ChatTab(ResponsiveTab):
             try:
                 from src.workflows.felix_inference import run_felix
 
-                # Streaming callback for direct mode
+                # Streaming callback for direct mode (receives synthesis output)
                 def on_chunk(chunk_text):
                     # Check cancellation before queuing
                     if cancel_event.is_set():
@@ -801,6 +807,12 @@ class ChatTab(ResponsiveTab):
                 if msg_type == 'chunk':
                     # Update status to streaming on first chunk
                     self._update_connection_status("streaming")
+
+                    # Clear thinking indicator on first chunk
+                    if self._thinking_indicator_shown:
+                        if self._message_area and self._message_area._streaming_bubble:
+                            self._message_area._streaming_bubble.update_content("")
+                        self._thinking_indicator_shown = False
 
                     # Just accumulate and display - NO pattern detection during streaming
                     # Pattern detection happens AFTER streaming completes (in 'done' handler)

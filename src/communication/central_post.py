@@ -1336,7 +1336,8 @@ class CentralPost:
                                  reasoning_evals: Optional[Dict[str, Dict[str, Any]]] = None,
                                  coverage_report: Optional[Any] = None,
                                  successful_agents: Optional[List[str]] = None,
-                                 failed_agents: Optional[List[str]] = None) -> Dict[str, Any]:
+                                 failed_agents: Optional[List[str]] = None,
+                                 streaming_callback: Optional[Callable] = None) -> Dict[str, Any]:
         """
         Synthesize final output from all agent communications.
 
@@ -1358,6 +1359,8 @@ class CentralPost:
                 Used for degradation assessment (Issue #18).
             failed_agents: Optional list of agent IDs that failed.
                 Used for degradation assessment (Issue #18).
+            streaming_callback: Optional callback for streaming synthesis output.
+                If provided, synthesis will stream chunks in real-time.
 
         Returns:
             Dict containing:
@@ -1379,7 +1382,7 @@ class CentralPost:
         """
         return self.synthesis_engine.synthesize_agent_outputs(
             task_description, max_messages, task_complexity, reasoning_evals, coverage_report,
-            successful_agents, failed_agents
+            successful_agents, failed_agents, streaming_callback
         )
 
     def broadcast_synthesis_feedback(self, synthesis_result: Dict[str, Any],

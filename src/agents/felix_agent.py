@@ -396,15 +396,13 @@ Always identify yourself as Felix when asked about your identity."""
 
                 logger.debug(f"Direct mode iteration {iteration + 1}/{max_iterations}")
 
-                # Stream iteration indicator for subsequent calls (so GUI shows activity)
-                if iteration > 0 and streaming_callback:
-                    streaming_callback(f"\n\n---\n\n**Continuing analysis (iteration {iteration + 1})...**\n\n")
-
-                # Get LLM response - always stream to keep GUI responsive
+                # Get LLM response with streaming for real-time feedback
+                # For simple queries, this IS the final output (no synthesis needed)
+                # For command queries, synthesis will integrate results after
                 content = self._get_llm_response(
                     system_prompt=system_prompt,
                     user_prompt=current_prompt,
-                    streaming_callback=streaming_callback,  # Stream ALL iterations
+                    streaming_callback=streaming_callback,  # Stream raw Felix output
                     cancel_event=cancel_event
                 )
 
@@ -421,7 +419,7 @@ Always identify yourself as Felix when asked about your identity."""
                         sender_id=agent_id,
                         message_type=MessageType.STATUS_UPDATE,
                         content={
-                            'response': content[:500],  # Truncate for message
+                            'response': content,  # Full content for synthesis
                             'iteration': iteration,
                             'workflow_id': workflow_id
                         },
@@ -478,10 +476,7 @@ Always identify yourself as Felix when asked about your identity."""
                                 'exit_code': result.exit_code
                             })
                             command_results.append(iteration_results[-1])
-
-                            # Stream the command result to the user if callback provided
-                            if streaming_callback and result.stdout:
-                                streaming_callback(f"\n\n**Command output ({cmd}):**\n```\n{result.stdout}\n```\n\n")
+                            # Command results will be incorporated into final synthesis
 
                     except Exception as e:
                         logger.error(f"Command execution error: {e}")
@@ -517,9 +512,7 @@ You MAY output another SYSTEM_ACTION_NEEDED to:
 
 Only stop issuing commands when the task is genuinely complete or you need user input."""
 
-                # Stream continuation notice
-                if streaming_callback:
-                    streaming_callback("\n\n*Processing command results...*\n\n")
+                # Continue to next iteration (no streaming during accumulation)
 
             # Calculate confidence based on command success rate
             if command_results:
@@ -527,6 +520,12 @@ Only stop issuing commands when the task is genuinely complete or you need user 
                 confidence = 0.7 + (0.2 * success_rate)  # 0.7-0.9 based on success
             else:
                 confidence = 0.8  # Default for no-command responses
+
+            # Clean content of SYSTEM_ACTION_NEEDED patterns before synthesis
+            # Commands were already executed during iteration loop - don't expose directives to user
+            action_pattern = r'^SYSTEM_ACTION_NEEDED:\s*[^\n]+\n?'
+            content = re.sub(action_pattern, '', content, flags=re.IGNORECASE | re.MULTILINE)
+            content = re.sub(r'\n\s*\n', '\n', content).strip()  # Clean up extra whitespace
 
             # =========================================================
             # STEP 4: Store result in KnowledgeStore for future queries
@@ -588,27 +587,36 @@ Only stop issuing commands when the task is genuinely complete or you need user 
                 logger.debug(f"Performance tracking failed: {e}")
 
             # =========================================================
-            # STEP 6: Synthesize through SynthesisEngine for consistent output
+            # STEP 6: Synthesis - ONLY if commands were executed
+            # Simple queries already streamed raw Felix output directly
+            # Synthesis is only needed to integrate command execution results
             # =========================================================
             synthesis_result = None
             meta_confidence = None
-            try:
-                # Only synthesize if we have queued messages
-                synthesis_result = self.central_post.synthesize_agent_outputs(
-                    task_description=message,
-                    max_messages=5,
-                    task_complexity="SIMPLE_FACTUAL"
-                )
-                if synthesis_result:
-                    # Use synthesis if available, otherwise use raw content
-                    synthesized_content = synthesis_result.get('synthesis_content', '')
-                    if synthesized_content and len(synthesized_content) > 50:
-                        content = synthesized_content
-                        confidence = synthesis_result.get('confidence', confidence)
-                    meta_confidence = synthesis_result.get('meta_confidence')
-                    logger.debug(f"SynthesisEngine produced output with confidence={confidence}")
-            except Exception as e:
-                logger.warning(f"SynthesisEngine failed (using raw content): {e}")
+
+            if command_results:
+                # Commands were executed - use synthesis to integrate results
+                # Don't stream (content already shown), just update final response
+                try:
+                    synthesis_result = self.central_post.synthesize_agent_outputs(
+                        task_description=message,
+                        max_messages=5,
+                        task_complexity="SIMPLE_FACTUAL",
+                        streaming_callback=None  # Don't re-stream, content already shown
+                    )
+                    if synthesis_result:
+                        synthesized_content = synthesis_result.get('synthesis_content', '')
+                        if synthesized_content:
+                            content = synthesized_content
+                            confidence = synthesis_result.get('confidence', confidence)
+                        meta_confidence = synthesis_result.get('meta_confidence')
+                        logger.info(f"SynthesisEngine integrated command results, confidence={confidence}")
+                except Exception as e:
+                    logger.warning(f"SynthesisEngine failed (using raw content): {e}")
+            else:
+                # Simple response - raw Felix output already streamed directly
+                # No synthesis needed - this is the correct behavior
+                logger.debug("Simple response - raw Felix output already streamed (no synthesis needed)")
 
             return {
                 'content': content,
