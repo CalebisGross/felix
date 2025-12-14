@@ -15,6 +15,7 @@ from typing import Optional, Callable, Dict, Any, List, Tuple, Set
 import logging
 import threading
 import re
+import time
 import uuid
 from queue import Queue
 
@@ -101,6 +102,12 @@ class ChatTab(ResponsiveTab):
         self._approval_bubbles: Dict[str, ActionBubble] = {}
         self._content_buffer: str = ""  # Accumulated streaming content
         self._is_continuation = False   # Skip pattern detection on continuations
+        self._cancel_event: Optional[threading.Event] = None  # For stopping generation
+        self._processed_commands: Set[str] = set()  # Track commands already processed this response
+
+        # Cached gap tracking instances (Issue #25 fix - avoid repeated initialization)
+        self._gap_tracker = None
+        self._gap_trigger = None
 
         # Components (will be set in _setup_ui)
         self._sidebar = None
@@ -319,6 +326,19 @@ class ChatTab(ResponsiveTab):
         )
         self._knowledge_toggle.grid(row=0, column=2, padx=SPACE_MD, pady=SPACE_SM)
 
+        # Gap indicator (Issue #25)
+        self._gap_indicator_frame = ctk.CTkFrame(header_frame, fg_color="transparent")
+        self._gap_indicator_frame.grid(row=0, column=3, padx=SPACE_SM, pady=SPACE_SM)
+
+        self._gap_indicator_label = ctk.CTkLabel(
+            self._gap_indicator_frame,
+            text="",
+            font=ctk.CTkFont(size=FONT_SMALL),
+            text_color=self.theme_manager.get_color("fg_muted")
+        )
+        self._gap_indicator_label.grid(row=0, column=0)
+        self._gap_indicator_label.grid_remove()  # Hidden by default
+
         # Connection status (starts disconnected until Felix is running)
         self._status_label = ctk.CTkLabel(
             header_frame,
@@ -326,7 +346,7 @@ class ChatTab(ResponsiveTab):
             font=ctk.CTkFont(size=FONT_SMALL),
             text_color=self.theme_manager.get_color("fg_muted")
         )
-        self._status_label.grid(row=0, column=3, padx=SPACE_MD, pady=SPACE_SM, sticky="e")
+        self._status_label.grid(row=0, column=4, padx=SPACE_MD, pady=SPACE_SM, sticky="e")
 
     def _try_load_message_area(self):
         """Try to load the MessageArea component if available."""
@@ -567,6 +587,11 @@ class ChatTab(ResponsiveTab):
         not as the raw underlying LLM. This maintains Felix's identity
         while being lightweight (no multi-agent orchestration).
         """
+        # Reset state for new response (prevents loops from stale state)
+        self._content_buffer = ""
+        self._is_continuation = False
+        self._processed_commands.clear()
+
         # Update status to sending
         self._update_connection_status("sending")
 
@@ -597,6 +622,10 @@ class ChatTab(ResponsiveTab):
         # Get conversation history for context
         conversation_history = self.current_session.get_context_messages(limit=10)
 
+        # Create cancel event for this generation
+        self._cancel_event = threading.Event()
+        cancel_event = self._cancel_event  # Local reference for closure
+
         # Run in background thread
         def process():
             try:
@@ -604,6 +633,9 @@ class ChatTab(ResponsiveTab):
 
                 # Streaming callback for direct mode
                 def on_chunk(chunk_text):
+                    # Check cancellation before queuing
+                    if cancel_event.is_set():
+                        return
                     self._result_queue.put(('chunk', chunk_text))
 
                 # Run Felix in direct mode
@@ -613,7 +645,8 @@ class ChatTab(ResponsiveTab):
                     mode="direct",
                     streaming_callback=on_chunk,
                     knowledge_enabled=self.current_session.knowledge_enabled,
-                    conversation_history=conversation_history
+                    conversation_history=conversation_history,
+                    cancel_event=cancel_event
                 )
 
                 # Signal completion
@@ -635,6 +668,11 @@ class ChatTab(ResponsiveTab):
         agents (Research, Analysis, Critic) and synthesizes their outputs.
         The response still comes FROM Felix as the unified identity.
         """
+        # Reset state for new response (prevents loops from stale state)
+        self._content_buffer = ""
+        self._is_continuation = False
+        self._processed_commands.clear()
+
         # Update status to sending
         self._update_connection_status("sending")
 
@@ -665,6 +703,10 @@ class ChatTab(ResponsiveTab):
         # Get conversation history for context
         conversation_history = self.current_session.get_context_messages(limit=10)
 
+        # Create cancel event for this generation
+        self._cancel_event = threading.Event()
+        cancel_event = self._cancel_event  # Local reference for closure
+
         # Run workflow in background
         def process():
             try:
@@ -672,6 +714,9 @@ class ChatTab(ResponsiveTab):
 
                 # Streaming callback for workflow mode (receives agent name and chunk)
                 def on_thinking(agent_name, chunk_text):
+                    # Check cancellation before queuing
+                    if cancel_event.is_set():
+                        return
                     self._result_queue.put(('thinking', (agent_name, chunk_text)))
 
                 # Run Felix in full workflow mode
@@ -681,7 +726,8 @@ class ChatTab(ResponsiveTab):
                     mode="full",
                     streaming_callback=on_thinking,
                     knowledge_enabled=self.current_session.knowledge_enabled,
-                    conversation_history=conversation_history
+                    conversation_history=conversation_history,
+                    cancel_event=cancel_event
                 )
 
                 # Extract final content and confidence
@@ -707,17 +753,48 @@ class ChatTab(ResponsiveTab):
 
     def _on_stop_generation(self):
         """Stop the current generation."""
+        # Signal cancellation to background thread
+        if self._cancel_event:
+            self._cancel_event.set()
+            logger.info("Cancellation signaled to background thread")
+
         if self.current_session and self.current_session.state.is_streaming:
             self.current_session.cancel_streaming()
 
             if self._input_area:
                 self._input_area.set_streaming(False)
 
+            # Drain the result queue to prevent stale data
+            while not self._result_queue.empty():
+                try:
+                    self._result_queue.get_nowait()
+                except:
+                    break
+
+            # Finalize any streaming bubble with stopped message
+            if self._message_area and self._message_area._streaming_bubble:
+                self._message_area._streaming_bubble.append_content("\n\n*[Generation stopped by user]*")
+                self._message_area._streaming_bubble.finish_streaming()
+
+            # Clear content buffer
+            self._content_buffer = ""
+
             logger.info("Generation stopped by user")
 
     def _poll_results(self):
         """Poll the result queue for updates and check for pending approvals."""
         try:
+            # Skip processing if cancelled - just drain the queue
+            if self._cancel_event and self._cancel_event.is_set():
+                while not self._result_queue.empty():
+                    try:
+                        self._result_queue.get_nowait()
+                    except:
+                        break
+                # Schedule next poll but don't process
+                self.after(50, self._poll_results)
+                return
+
             while not self._result_queue.empty():
                 msg_type, data = self._result_queue.get_nowait()
 
@@ -762,17 +839,21 @@ class ChatTab(ResponsiveTab):
                             if self._message_area and self._message_area._streaming_bubble:
                                 self._message_area._streaming_bubble.set_content(cleaned)
 
-                            # Process detected actions
+                            # Process detected actions (with deduplication to prevent loops)
                             for action in actions:
-                                self._handle_detected_action(action['command'])
+                                cmd = action['command']
+                                if cmd not in self._processed_commands:
+                                    self._processed_commands.add(cmd)
+                                    self._handle_detected_action(cmd)
 
                             # Update session with cleaned content
                             if self.current_session:
                                 if self.current_session.state.current_streaming_message:
                                     self.current_session.state.current_streaming_message.content = cleaned
 
-                    self._content_buffer = ""  # Reset buffer
-                    self._is_continuation = False  # Reset continuation flag
+                    # NOTE: Do NOT reset _content_buffer or _is_continuation here!
+                    # They are reset at the start of _process_simple_mode/_process_workflow_mode
+                    # Resetting here causes race conditions with continuations (Issue #loop-fix)
 
                     if self.current_session:
                         self.current_session.finish_streaming()
@@ -786,13 +867,16 @@ class ChatTab(ResponsiveTab):
                 elif msg_type == 'workflow_done':
                     final_content, confidence = data
                     self._update_connection_status("connected")
-                    self._content_buffer = ""  # Reset buffer
+                    # NOTE: Buffer reset moved to start of _process_workflow_mode
 
-                    # Check final content for patterns too
+                    # Check final content for patterns too (with deduplication)
                     cleaned, actions = self._extract_system_actions(final_content)
                     if actions:
                         for action in actions:
-                            self._handle_detected_action(action['command'])
+                            cmd = action['command']
+                            if cmd not in self._processed_commands:
+                                self._processed_commands.add(cmd)
+                                self._handle_detected_action(cmd)
                         final_content = cleaned
 
                     if self.current_session:
@@ -809,7 +893,7 @@ class ChatTab(ResponsiveTab):
                 elif msg_type == 'error':
                     error_msg = f"Error: {data}"
                     self._update_connection_status("error", f"● Error: {data[:30]}")
-                    self._content_buffer = ""  # Reset buffer
+                    # NOTE: Buffer reset moved to start of processing methods
 
                     if self.current_session:
                         self.current_session.append_to_streaming(error_msg)
@@ -825,6 +909,11 @@ class ChatTab(ResponsiveTab):
             # Poll for pending approval requests from Felix
             self._poll_approval_messages()
 
+            # Poll for gap status updates (Issue #25) - less frequently
+            if not hasattr(self, '_last_gap_poll') or time.time() - self._last_gap_poll > 5.0:
+                self._poll_gap_status()
+                self._last_gap_poll = time.time()
+
         except Exception as e:
             logger.error(f"Error polling results: {e}")
             # Reset streaming state on error to prevent stuck input
@@ -837,6 +926,92 @@ class ChatTab(ResponsiveTab):
     # =========================================================================
     # HELPER METHODS
     # =========================================================================
+
+    def _poll_gap_status(self):
+        """
+        Poll for knowledge gap status and update indicator (Issue #25).
+
+        Checks GapAcquisitionTrigger for high-priority gaps and updates
+        the gap indicator in the chat header.
+        """
+        try:
+            # Lazy initialization - only create instances once
+            if self._gap_trigger is None:
+                from src.knowledge.gap_directed_learning import GapAcquisitionTrigger
+                from src.knowledge.gap_tracker import GapTracker
+
+                self._gap_tracker = GapTracker()
+                self._gap_trigger = GapAcquisitionTrigger(self._gap_tracker)
+
+            # Get gap summary using cached instances
+            summary = self._gap_trigger.get_gap_summary()
+
+            # Update indicator
+            self._update_gap_indicator(summary)
+
+        except ImportError:
+            # Gap system not available - hide indicator
+            self._gap_indicator_label.grid_remove()
+        except Exception as e:
+            logger.debug(f"Gap status polling failed: {e}")
+            self._gap_indicator_label.grid_remove()
+
+    def _update_gap_indicator(self, summary: Dict[str, Any]):
+        """
+        Update the gap indicator in the chat header (Issue #25).
+
+        Args:
+            summary: Gap summary dict from GapAcquisitionTrigger.get_gap_summary()
+        """
+        high_priority = summary.get('high_priority_gaps', 0)
+        total_active = summary.get('total_active_gaps', 0)
+
+        if high_priority > 0:
+            # Show warning indicator for high-priority gaps
+            self._gap_indicator_label.configure(
+                text=f"⚠ {high_priority} gap{'s' if high_priority > 1 else ''}",
+                text_color=self.theme_manager.get_color("warning")
+            )
+            self._gap_indicator_label.grid()
+
+            # Update tooltip-like behavior via hover
+            self._gap_indicator_label.bind("<Enter>", lambda e: self._show_gap_tooltip(summary))
+            self._gap_indicator_label.bind("<Leave>", lambda e: self._hide_gap_tooltip())
+
+        elif total_active > 0:
+            # Show informational indicator for any active gaps
+            self._gap_indicator_label.configure(
+                text=f"○ {total_active} gap{'s' if total_active > 1 else ''}",
+                text_color=self.theme_manager.get_color("fg_muted")
+            )
+            self._gap_indicator_label.grid()
+        else:
+            # No gaps - hide indicator
+            self._gap_indicator_label.grid_remove()
+
+    def _show_gap_tooltip(self, summary: Dict[str, Any]):
+        """Show tooltip with gap details on hover."""
+        top_gaps = summary.get('top_gaps', [])
+        if not top_gaps:
+            return
+
+        # Build tooltip text
+        tooltip_lines = ["Knowledge Gaps:"]
+        for gap in top_gaps[:3]:
+            domain = gap.get('domain', 'unknown')
+            concept = gap.get('concept', '(general)')
+            severity = gap.get('severity', 0)
+            tooltip_lines.append(f"  • {domain}/{concept} ({severity:.0%})")
+
+        # Update label with full text temporarily
+        self._gap_indicator_label.configure(
+            text="\n".join(tooltip_lines)
+        )
+
+    def _hide_gap_tooltip(self):
+        """Hide tooltip and restore normal gap indicator."""
+        # Restore normal indicator by re-polling
+        self._poll_gap_status()
 
     def _update_connection_status(self, state: str, message: str = None):
         """
@@ -1021,7 +1196,8 @@ class ChatTab(ResponsiveTab):
 
             except Exception as e:
                 logger.error(f"Error routing action through Felix: {e}")
-                self.after(0, lambda: self._show_system_message(f"Error executing '{command}': {e}"))
+                # Capture exception and command as default args to avoid closure bug
+                self.after(0, lambda err=str(e), cmd=command: self._show_system_message(f"Error executing '{cmd}': {err}"))
 
         thread = threading.Thread(target=do_request, daemon=True)
         thread.start()
@@ -1504,10 +1680,14 @@ COMMAND EXECUTION RESULT:
 Use this result to answer the user's question.
 
 IF THE COMMAND FAILED OR RETURNED NO RESULTS:
-- Do NOT repeat the same command - try a DIFFERENT approach
+- NEVER say you cannot execute commands - you CAN and SHOULD retry
+- Do NOT repeat the exact same command - try a DIFFERENT approach
+- For shell quoting errors: use heredoc (cat << 'EOF') instead of echo with quotes
 - For file search: use `find . -name "filename"` instead of `ls | grep`
 - For reading files: verify the path exists first with `find` before using `cat`
-- If exit code is non-zero, the command failed - acknowledge and try alternatives"""
+- If exit code is non-zero, the command failed - try an alternative approach
+- If multiple approaches fail: explain what you tried and ask user for guidance
+- Python one-liners are a reliable fallback: python3 -c "open('f.txt','w').write('...')" """
 
         # Build user prompt WITH conversation history for full context
         conversation_history = self._format_conversation_history(limit=10)
@@ -1519,10 +1699,22 @@ IF THE COMMAND FAILED OR RETURNED NO RESULTS:
         # DON'T create new bubble - continue in existing one
         # The streaming bubble already exists from the initial response
 
+        # Create/reuse cancel event for continuation
+        if not self._cancel_event or self._cancel_event.is_set():
+            self._cancel_event = threading.Event()
+        cancel_event = self._cancel_event  # Local reference for closure
+
         # Run continuation in background
         def process_continuation():
             try:
+                # Check for cancellation before starting
+                if cancel_event.is_set():
+                    return
+
                 def on_chunk(chunk):
+                    # Check cancellation before queuing
+                    if cancel_event.is_set():
+                        return
                     # Handle both string chunks and StreamingChunk objects
                     if hasattr(chunk, 'content'):
                         self._result_queue.put(('chunk', chunk.content))
@@ -1536,7 +1728,8 @@ IF THE COMMAND FAILED OR RETURNED NO RESULTS:
                     user_prompt=user_prompt,
                     temperature=0.7,
                     callback=on_chunk,
-                    batch_interval=0.1
+                    batch_interval=0.1,
+                    cancel_event=cancel_event
                 )
 
                 self._result_queue.put(('done', None))

@@ -9,7 +9,9 @@ Scrollable container for chat message bubbles with:
 """
 
 import customtkinter as ctk
-from typing import Optional, List, Dict, Callable, Any
+from typing import Optional, List, Dict, Callable, Any, Union
+from dataclasses import dataclass
+from enum import Enum
 from datetime import datetime
 import logging
 
@@ -19,6 +21,22 @@ from .message_bubble import MessageBubble, StreamingMessageBubble
 from .action_bubble import ActionBubble
 
 logger = logging.getLogger(__name__)
+
+
+class ChatWidgetType(Enum):
+    """Type of widget in the chat area."""
+    MESSAGE = "message"
+    STREAMING = "streaming"
+    ACTION = "action"
+    SYSTEM = "system"
+
+
+@dataclass
+class ChatWidget:
+    """Wrapper for tracking any widget in the chat area."""
+    widget: ctk.CTkFrame
+    widget_type: ChatWidgetType
+    widget_id: str
 
 
 class MessageArea(ctk.CTkScrollableFrame):
@@ -67,8 +85,10 @@ class MessageArea(ctk.CTkScrollableFrame):
         super().__init__(master, **kwargs)
 
         self.on_load_more = on_load_more
-        self._message_bubbles: List[MessageBubble] = []
-        self._action_bubbles: List[ActionBubble] = []
+        # Unified widget tracking - fixes row calculation bug where messages
+        # and action bubbles were tracked separately causing overlaps
+        self._widgets: List[ChatWidget] = []
+        self._widget_counter = 0  # For generating unique IDs
         self._streaming_bubble: Optional[StreamingMessageBubble] = None
         self._auto_scroll = True
         self._is_loading_more = False
@@ -97,6 +117,39 @@ class MessageArea(ctk.CTkScrollableFrame):
 
         # Register for theme changes
         self.theme_manager.register_callback(self._on_theme_change)
+
+    # =========================================================================
+    # WIDGET TRACKING HELPERS
+    # =========================================================================
+
+    def _get_next_row(self) -> int:
+        """Get the next available row for a new widget."""
+        return len(self._widgets)
+
+    def _generate_widget_id(self, prefix: str) -> str:
+        """Generate a unique widget ID."""
+        self._widget_counter += 1
+        return f"{prefix}_{self._widget_counter}"
+
+    @property
+    def _message_bubbles(self) -> List[MessageBubble]:
+        """Get all message bubbles (backward compatibility)."""
+        return [
+            w.widget for w in self._widgets
+            if w.widget_type in (ChatWidgetType.MESSAGE, ChatWidgetType.STREAMING)
+        ]
+
+    @property
+    def _action_bubbles(self) -> List[ActionBubble]:
+        """Get all action bubbles (backward compatibility)."""
+        return [
+            w.widget for w in self._widgets
+            if w.widget_type == ChatWidgetType.ACTION
+        ]
+
+    # =========================================================================
+    # MESSAGE MANAGEMENT
+    # =========================================================================
 
     def add_message(
         self,
@@ -131,14 +184,15 @@ class MessageArea(ctk.CTkScrollableFrame):
                 on_copy=self._on_message_copied
             )
 
-            # Position in grid
-            row = len(self._message_bubbles)
+            # Position in grid using unified row tracking
+            row = self._get_next_row()
+            is_first = row == 0
             bubble.grid(
                 row=row,
                 column=0,
                 sticky="ew",
                 padx=SPACE_MD,
-                pady=(SPACE_SM if row > 0 else SPACE_MD, SPACE_SM)
+                pady=(SPACE_MD if is_first else SPACE_SM, SPACE_SM)
             )
 
             # Bind mousewheel to bubble for scroll passthrough
@@ -146,8 +200,12 @@ class MessageArea(ctk.CTkScrollableFrame):
             bubble.bind("<Button-4>", self._on_mousewheel)
             bubble.bind("<Button-5>", self._on_mousewheel)
 
-            # Store reference
-            self._message_bubbles.append(bubble)
+            # Store in unified widget list
+            self._widgets.append(ChatWidget(
+                widget=bubble,
+                widget_type=ChatWidgetType.MESSAGE,
+                widget_id=self._generate_widget_id("msg")
+            ))
 
             # Auto-scroll to bottom if enabled
             if self._auto_scroll:
@@ -182,14 +240,15 @@ class MessageArea(ctk.CTkScrollableFrame):
                 on_copy=self._on_message_copied
             )
 
-            # Position in grid
-            row = len(self._message_bubbles)
+            # Position in grid using unified row tracking
+            row = self._get_next_row()
+            is_first = row == 0
             bubble.grid(
                 row=row,
                 column=0,
                 sticky="ew",
                 padx=SPACE_MD,
-                pady=(SPACE_SM if row > 0 else SPACE_MD, SPACE_SM)
+                pady=(SPACE_MD if is_first else SPACE_SM, SPACE_SM)
             )
 
             # Bind mousewheel to bubble for scroll passthrough
@@ -197,8 +256,12 @@ class MessageArea(ctk.CTkScrollableFrame):
             bubble.bind("<Button-4>", self._on_mousewheel)
             bubble.bind("<Button-5>", self._on_mousewheel)
 
-            # Store references
-            self._message_bubbles.append(bubble)
+            # Store in unified widget list
+            self._widgets.append(ChatWidget(
+                widget=bubble,
+                widget_type=ChatWidgetType.STREAMING,
+                widget_id=self._generate_widget_id("stream")
+            ))
             self._streaming_bubble = bubble
 
             # Auto-scroll to bottom
@@ -256,14 +319,15 @@ class MessageArea(ctk.CTkScrollableFrame):
                 on_deny=on_deny
             )
 
-            # Position in grid (same as messages)
-            row = len(self._message_bubbles) + len(self._action_bubbles)
+            # Position in grid using unified row tracking
+            row = self._get_next_row()
+            is_first = row == 0
             bubble.grid(
                 row=row,
                 column=0,
                 sticky="ew",
                 padx=SPACE_MD,
-                pady=(SPACE_SM if row > 0 else SPACE_MD, SPACE_SM)
+                pady=(SPACE_MD if is_first else SPACE_SM, SPACE_SM)
             )
 
             # Bind mousewheel to bubble for scroll passthrough
@@ -271,8 +335,12 @@ class MessageArea(ctk.CTkScrollableFrame):
             bubble.bind("<Button-4>", self._on_mousewheel)
             bubble.bind("<Button-5>", self._on_mousewheel)
 
-            # Store reference
-            self._action_bubbles.append(bubble)
+            # Store in unified widget list
+            self._widgets.append(ChatWidget(
+                widget=bubble,
+                widget_type=ChatWidgetType.ACTION,
+                widget_id=self._generate_widget_id("action")
+            ))
 
             # Auto-scroll to bottom
             if self._auto_scroll:
@@ -311,14 +379,15 @@ class MessageArea(ctk.CTkScrollableFrame):
                 corner_radius=8
             )
 
-            # Position in grid
-            row = len(self._message_bubbles) + len(self._action_bubbles)
+            # Position in grid using unified row tracking
+            row = self._get_next_row()
+            is_first = row == 0
             frame.grid(
                 row=row,
                 column=0,
                 sticky="ew",
                 padx=SPACE_MD,
-                pady=(SPACE_SM if row > 0 else SPACE_MD, SPACE_SM)
+                pady=(SPACE_MD if is_first else SPACE_SM, SPACE_SM)
             )
             frame.grid_columnconfigure(0, weight=1)
 
@@ -344,6 +413,13 @@ class MessageArea(ctk.CTkScrollableFrame):
             label.bind("<MouseWheel>", self._on_mousewheel)
             label.bind("<Button-4>", self._on_mousewheel)
             label.bind("<Button-5>", self._on_mousewheel)
+
+            # Store in unified widget list (was missing - caused overlaps!)
+            self._widgets.append(ChatWidget(
+                widget=frame,
+                widget_type=ChatWidgetType.SYSTEM,
+                widget_id=self._generate_widget_id("sys")
+            ))
 
             # Auto-scroll to bottom
             if self._auto_scroll:
@@ -407,18 +483,17 @@ class MessageArea(ctk.CTkScrollableFrame):
             self._auto_scroll = original_auto_scroll
 
     def clear(self):
-        """Clear all messages and action bubbles from the chat area."""
+        """Clear all widgets from the chat area."""
         try:
-            # Destroy all message bubbles
-            for bubble in self._message_bubbles:
-                bubble.destroy()
+            # Destroy all widgets in unified list
+            for chat_widget in self._widgets:
+                try:
+                    chat_widget.widget.destroy()
+                except Exception:
+                    pass  # Widget may already be destroyed
 
-            # Destroy all action bubbles
-            for bubble in self._action_bubbles:
-                bubble.destroy()
-
-            self._message_bubbles.clear()
-            self._action_bubbles.clear()
+            self._widgets.clear()
+            self._widget_counter = 0
             self._streaming_bubble = None
 
             # Reset grid row counter
@@ -498,10 +573,12 @@ class MessageArea(ctk.CTkScrollableFrame):
             True if a message was removed, False otherwise
         """
         try:
-            if self._message_bubbles:
-                last_bubble = self._message_bubbles.pop()
-                last_bubble.destroy()
-                return True
+            # Find the last message widget in the unified list
+            for i in range(len(self._widgets) - 1, -1, -1):
+                if self._widgets[i].widget_type in (ChatWidgetType.MESSAGE, ChatWidgetType.STREAMING):
+                    chat_widget = self._widgets.pop(i)
+                    chat_widget.widget.destroy()
+                    return True
             return False
         except Exception as e:
             logger.error(f"Failed to remove last message: {e}")

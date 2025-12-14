@@ -434,7 +434,7 @@ class MarkdownRenderer:
         # Base font info
         base_size = 12
 
-        # Tag configurations
+        # Tag configurations with improved spacing and colors
         tag_configs = {
             "bold": {
                 "font": ("TkDefaultFont", base_size, "bold"),
@@ -447,24 +447,36 @@ class MarkdownRenderer:
             },
             "inline_code": {
                 "font": ("Courier", base_size),
-                "background": colors["bg_tertiary"],
+                "background": colors.get("inline_code_bg", colors["bg_tertiary"]),
                 "foreground": "#E06C75" if is_dark else "#E45649",
             },
             "code_block": {
                 "font": ("Courier", base_size),
-                "background": colors["bg_primary"],
+                "background": colors.get("code_bg", colors["bg_primary"]),
+                "lmargin1": 10,          # Left margin for indentation
+                "lmargin2": 10,          # Continued line margin
+                "spacing1": 6,           # Space before code block
+                "spacing3": 6,           # Space after code block
             },
             "header1": {
-                "font": ("TkDefaultFont", 18, "bold"),
+                "font": ("TkDefaultFont", 20, "bold"),
+                "spacing1": 14,          # Space before header
+                "spacing3": 6,           # Space after header
             },
             "header2": {
-                "font": ("TkDefaultFont", 16, "bold"),
+                "font": ("TkDefaultFont", 17, "bold"),
+                "spacing1": 12,
+                "spacing3": 5,
             },
             "header3": {
-                "font": ("TkDefaultFont", 14, "bold"),
+                "font": ("TkDefaultFont", 15, "bold"),
+                "spacing1": 10,
+                "spacing3": 4,
             },
             "header4": {
                 "font": ("TkDefaultFont", 13, "bold"),
+                "spacing1": 8,
+                "spacing3": 3,
             },
             "link": {
                 "foreground": colors["accent"],
@@ -474,13 +486,27 @@ class MarkdownRenderer:
                 "foreground": colors["fg_secondary"],
                 "lmargin1": 20,
                 "lmargin2": 20,
+                "background": colors.get("code_bg", colors["bg_tertiary"]),
+                "spacing1": 4,
+                "spacing3": 4,
             },
             "list_item": {
-                "lmargin1": 15,
-                "lmargin2": 30,
+                "lmargin1": 20,
+                "lmargin2": 35,
+                "spacing1": 2,
+                "spacing3": 2,
+            },
+            "list_bullet": {
+                "lmargin1": 20,
+                "foreground": colors["fg_secondary"],
             },
             "horizontal_rule": {
                 "foreground": colors["border"],
+                "spacing1": 8,
+                "spacing3": 8,
+            },
+            "paragraph": {
+                "spacing3": 6,           # Space after paragraphs
             },
         }
 

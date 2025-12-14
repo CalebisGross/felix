@@ -99,6 +99,7 @@ class ActionBubble(ctk.CTkFrame):
         self.timestamp = timestamp or datetime.now()
         self._status = ActionStatus.BLOCKED if self.trust_level == "blocked" else ActionStatus.PENDING
         self._output_expanded = False
+        self._collapsed = False  # For auto-collapse after completion
 
         # Get colors
         colors = self.theme_manager.colors
@@ -320,7 +321,14 @@ class ActionBubble(ctk.CTkFrame):
         if self.on_deny:
             self.on_deny(self, self.command)
 
-    def set_status(self, status: ActionStatus, output: Optional[str] = None, exit_code: Optional[int] = None):
+    def set_status(
+        self,
+        status: ActionStatus,
+        output: Optional[str] = None,
+        exit_code: Optional[int] = None,
+        auto_collapse: bool = True,
+        collapse_delay: int = 2000
+    ):
         """
         Update the action status and optionally show output.
 
@@ -328,6 +336,8 @@ class ActionBubble(ctk.CTkFrame):
             status: New status
             output: Command output to display (for COMPLETE status)
             exit_code: Command exit code (for COMPLETE status)
+            auto_collapse: Whether to auto-collapse after completion (default True)
+            collapse_delay: Delay in ms before collapsing (default 2000)
         """
         self._status = status
         status_text, status_color = STATUS_INDICATORS[status]
@@ -350,6 +360,10 @@ class ActionBubble(ctk.CTkFrame):
         # Show output if provided
         if output is not None and status == ActionStatus.COMPLETE:
             self._show_output(output)
+
+        # Auto-collapse completed/denied actions after delay
+        if auto_collapse and status in (ActionStatus.COMPLETE, ActionStatus.DENIED):
+            self.after(collapse_delay, self.collapse)
 
     def _show_output(self, output: str):
         """Display command output."""
@@ -376,6 +390,58 @@ class ActionBubble(ctk.CTkFrame):
         else:
             self._output_content.grid_remove()
             self._output_toggle.configure(text="Output")
+
+    def collapse(self):
+        """
+        Collapse to minimal state after completion.
+
+        Hides output and reduces visual footprint while still showing
+        the command and status for reference.
+        """
+        if self._collapsed or self._status == ActionStatus.PENDING:
+            return
+
+        self._collapsed = True
+
+        # Hide output frame
+        if hasattr(self, '_output_frame'):
+            self._output_frame.grid_remove()
+
+        # Add click hint to status
+        current_text = self._status_label.cget("text")
+        if "[click to expand]" not in current_text:
+            self._status_label.configure(text=f"{current_text} [click to expand]")
+
+        # Bind click to expand
+        self.bind("<Button-1>", self._on_collapse_click)
+        self._command_label.bind("<Button-1>", self._on_collapse_click)
+        self._status_label.bind("<Button-1>", self._on_collapse_click)
+
+    def expand(self):
+        """Expand from collapsed state."""
+        if not self._collapsed:
+            return
+
+        self._collapsed = False
+
+        # Show output frame if it has content and status is complete
+        if hasattr(self, '_output_frame') and self._status == ActionStatus.COMPLETE:
+            self._output_frame.grid()
+
+        # Remove click hint from status
+        current_text = self._status_label.cget("text")
+        if "[click to expand]" in current_text:
+            self._status_label.configure(text=current_text.replace(" [click to expand]", ""))
+
+        # Unbind click handlers
+        self.unbind("<Button-1>")
+        self._command_label.unbind("<Button-1>")
+        self._status_label.unbind("<Button-1>")
+
+    def _on_collapse_click(self, event):
+        """Handle click on collapsed bubble to expand."""
+        self.expand()
+        return "break"  # Prevent event propagation
 
     def _on_mousewheel(self, event):
         """Pass mousewheel events to parent for scrolling."""

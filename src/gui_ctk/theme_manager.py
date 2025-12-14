@@ -25,6 +25,9 @@ COLORS = {
         # Primary: Deep Indigo - Headers, navigation, agent indicators
         "bg_tertiary": "#1F2833",
         "bg_hover": "#3A3A3A",
+        # Code backgrounds - darker than primary for visual distinction
+        "code_bg": "#0D0D0D",           # Code blocks - darker than bg_primary
+        "inline_code_bg": "#1A1A1A",    # Inline code - subtle distinction
         # Text Primary: Soft Silver - Main body text
         "fg_primary": "#C5C6C7",
         # Text Secondary: Muted Ash - Subtle labels
@@ -47,6 +50,9 @@ COLORS = {
         "bg_secondary": "#F5F5F5",
         "bg_tertiary": "#E8E9ED",
         "bg_hover": "#E0E0E0",
+        # Code backgrounds - light gray for visual distinction
+        "code_bg": "#F0F0F0",           # Code blocks - slightly darker than primary
+        "inline_code_bg": "#E8E8E8",    # Inline code - more contrast
         "fg_primary": "#1F2833",
         "fg_secondary": "#4A4A4A",
         "fg_muted": "#7A7A7A",

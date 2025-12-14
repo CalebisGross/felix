@@ -47,6 +47,15 @@ SPACE_LG = 20             # Large spacing (page margins, major gaps)
 SPACE_XL = 30             # Extra large (major section breaks)
 
 # =============================================================================
+# CHAT-SPECIFIC SPACING
+# =============================================================================
+
+CHAT_BUBBLE_GAP = SPACE_SM           # 10px between chat bubbles
+CHAT_FIRST_BUBBLE_TOP = SPACE_MD     # 15px top padding for first bubble
+CHAT_BUBBLE_HORIZONTAL = SPACE_MD    # 15px horizontal padding for bubbles
+CHAT_ACTION_COLLAPSE_DELAY = 2000    # 2s delay before auto-collapse
+
+# =============================================================================
 # COMPONENT SIZES
 # =============================================================================
 

@@ -475,29 +475,32 @@ class FelixApp(ctk.CTk):
         # Update root window
         self.configure(fg_color=colors["bg_primary"])
 
-        # Update main container
-        self.main_container.configure(fg_color=colors["bg_primary"])
+        # Update main container (guard against early callback)
+        if hasattr(self, 'main_container') and self.main_container:
+            self.main_container.configure(fg_color=colors["bg_primary"])
 
-        # Update tabview colors
-        self.tabview.configure(
-            fg_color=colors["bg_secondary"],
-            segmented_button_fg_color=colors["bg_tertiary"],
-            segmented_button_selected_color=colors["accent"],
-            segmented_button_selected_hover_color=colors["accent_hover"],
-            segmented_button_unselected_color=colors["bg_tertiary"],
-            segmented_button_unselected_hover_color=colors["bg_hover"],
-            text_color=colors["fg_primary"],
-            border_color=colors["border"]
-        )
+        # Update tabview colors (guard against early callback)
+        if hasattr(self, 'tabview') and self.tabview:
+            self.tabview.configure(
+                fg_color=colors["bg_secondary"],
+                segmented_button_fg_color=colors["bg_tertiary"],
+                segmented_button_selected_color=colors["accent"],
+                segmented_button_selected_hover_color=colors["accent_hover"],
+                segmented_button_unselected_color=colors["bg_tertiary"],
+                segmented_button_unselected_hover_color=colors["bg_hover"],
+                text_color=colors["fg_primary"],
+                border_color=colors["border"]
+            )
 
-        # Update status bar
-        self.status_bar.configure(
-            fg_color=colors["bg_secondary"],
-            border_color=colors["border"]
-        )
-        self.status_label.configure(text_color=colors["fg_primary"])
-        self.breakpoint_label.configure(text_color=colors["fg_muted"])
-        self.version_label.configure(text_color=colors["fg_muted"])
+        # Update status bar (guard against early callback)
+        if hasattr(self, 'status_bar') and self.status_bar:
+            self.status_bar.configure(
+                fg_color=colors["bg_secondary"],
+                border_color=colors["border"]
+            )
+            self.status_label.configure(text_color=colors["fg_primary"])
+            self.breakpoint_label.configure(text_color=colors["fg_muted"])
+            self.version_label.configure(text_color=colors["fg_muted"])
 
     def _poll_results(self):
         """Poll the result queue for thread-safe GUI updates."""
