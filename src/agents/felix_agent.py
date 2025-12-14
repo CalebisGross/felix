@@ -19,6 +19,7 @@ import time
 import logging
 import re
 import uuid
+import threading
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, Any, List, Callable
@@ -26,6 +27,7 @@ from dataclasses import dataclass
 
 # Felix framework imports for full integration
 from src.communication.message_types import Message, MessageType
+from src.memory.task_memory import TaskComplexity, TaskOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -165,7 +167,8 @@ Always identify yourself as Felix when asked about your identity."""
         mode: str = "auto",
         streaming_callback: Optional[Callable] = None,
         knowledge_enabled: bool = True,
-        conversation_history: Optional[List[Dict[str, str]]] = None
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+        cancel_event: Optional[threading.Event] = None
     ) -> FelixResponse:
         """
         Process a message through Felix.
@@ -184,6 +187,7 @@ Always identify yourself as Felix when asked about your identity."""
                 - For full mode: callback(agent_name, chunk_text)
             knowledge_enabled: Whether to include knowledge brain context
             conversation_history: Previous messages for context
+            cancel_event: Optional threading.Event to signal cancellation
 
         Returns:
             FelixResponse with results
@@ -213,7 +217,8 @@ Always identify yourself as Felix when asked about your identity."""
                     message=message,
                     knowledge_context=knowledge_context,
                     conversation_history=conversation_history,
-                    streaming_callback=streaming_callback
+                    streaming_callback=streaming_callback,
+                    cancel_event=cancel_event
                 )
                 mode_used = "direct"
 
@@ -223,7 +228,8 @@ Always identify yourself as Felix when asked about your identity."""
                     message=message,
                     knowledge_context=knowledge_context,
                     conversation_history=conversation_history,
-                    streaming_callback=streaming_callback
+                    streaming_callback=streaming_callback,
+                    cancel_event=cancel_event
                 )
                 mode_used = "direct"
 
@@ -232,7 +238,8 @@ Always identify yourself as Felix when asked about your identity."""
                     message=message,
                     knowledge_context=knowledge_context,
                     conversation_history=conversation_history,
-                    streaming_callback=streaming_callback
+                    streaming_callback=streaming_callback,
+                    cancel_event=cancel_event
                 )
                 mode_used = "full"
 
@@ -273,19 +280,20 @@ Always identify yourself as Felix when asked about your identity."""
             return "", []
 
         try:
-            # Query knowledge store
-            results = self.knowledge_store.query(message, limit=10)
+            # Query knowledge store using advanced_search
+            results = self.knowledge_store.advanced_search(content=message, limit=10)
 
             if not results:
                 return "", []
 
-            # Build context string
+            # Build context string from KnowledgeEntry objects
             context_parts = []
             sources = []
 
             for entry in results:
-                content = entry.get('content', '')
-                source = entry.get('source', 'Unknown')
+                # KnowledgeEntry has .content (Dict) and .source_agent (str)
+                content = entry.content.get('text', '') if isinstance(entry.content, dict) else str(entry.content)
+                source = entry.source_agent or 'Unknown'
 
                 if content:
                     context_parts.append(f"[From {source}]:\n{content}")
@@ -304,7 +312,8 @@ Always identify yourself as Felix when asked about your identity."""
         message: str,
         knowledge_context: str = "",
         conversation_history: Optional[List[Dict[str, str]]] = None,
-        streaming_callback: Optional[Callable] = None
+        streaming_callback: Optional[Callable] = None,
+        cancel_event: Optional[threading.Event] = None
     ) -> Dict[str, Any]:
         """
         Direct Felix inference - single-agent workflow through FULL Felix framework.
@@ -324,6 +333,7 @@ Always identify yourself as Felix when asked about your identity."""
             knowledge_context: Knowledge brain context
             conversation_history: Previous messages
             streaming_callback: Callback for streaming chunks
+            cancel_event: Optional threading.Event to signal cancellation
 
         Returns:
             Dict with 'content', 'confidence', 'command_results', 'meta_confidence'
@@ -337,7 +347,7 @@ Always identify yourself as Felix when asked about your identity."""
         # STEP 1: Register as agent in Felix framework
         # =========================================================
         try:
-            self.central_post.agent_registry.register_agent(
+            self.central_post.register_agent_id(
                 agent_id=agent_id,
                 metadata={
                     'agent_type': 'direct',
@@ -372,14 +382,29 @@ Always identify yourself as Felix when asked about your identity."""
             content = ""
 
             for iteration in range(max_iterations):
+                # Check for cancellation at start of each iteration
+                if cancel_event and cancel_event.is_set():
+                    logger.info("Direct mode cancelled by user")
+                    break
+
                 logger.debug(f"Direct mode iteration {iteration + 1}/{max_iterations}")
 
-                # Get LLM response
+                # Stream iteration indicator for subsequent calls (so GUI shows activity)
+                if iteration > 0 and streaming_callback:
+                    streaming_callback(f"\n\n---\n\n**Continuing analysis (iteration {iteration + 1})...**\n\n")
+
+                # Get LLM response - always stream to keep GUI responsive
                 content = self._get_llm_response(
                     system_prompt=system_prompt,
                     user_prompt=current_prompt,
-                    streaming_callback=streaming_callback if iteration == 0 else None
+                    streaming_callback=streaming_callback,  # Stream ALL iterations
+                    cancel_event=cancel_event
                 )
+
+                # Check for cancellation after LLM response
+                if cancel_event and cancel_event.is_set():
+                    logger.info("Direct mode cancelled after LLM response")
+                    break
 
                 # =========================================================
                 # STEP 2: Queue response as Message through CentralPost
@@ -474,7 +499,14 @@ Always identify yourself as Felix when asked about your identity."""
 {results_context}
 </command_execution_results>
 
-Based on the command results above, please continue your response. If the task is complete, provide a final summary. Do NOT output another SYSTEM_ACTION_NEEDED unless absolutely necessary for a NEW command."""
+Based on the command results above, please continue your response.
+
+You MAY output another SYSTEM_ACTION_NEEDED to:
+- Retry with a DIFFERENT approach if the previous command failed
+- Execute additional commands needed to complete the task
+- Verify results of previous operations
+
+Only stop issuing commands when the task is genuinely complete or you need user input."""
 
                 # Stream continuation notice
                 if streaming_callback:
@@ -510,9 +542,15 @@ Based on the command results above, please continue your response. If the task i
                 if self.task_memory:
                     self.task_memory.record_task_execution(
                         task_description=message[:200],
-                        outcome='success' if not error_occurred else 'failure',
-                        metrics={
-                            'execution_time': execution_time,
+                        task_type="direct_chat",
+                        complexity=TaskComplexity.SIMPLE,
+                        outcome=TaskOutcome.SUCCESS if not error_occurred else TaskOutcome.FAILURE,
+                        duration=execution_time,
+                        agents_used=[agent_id],
+                        strategies_used=["direct_response"],
+                        context_size=len(message),
+                        error_messages=[str(error_occurred)] if error_occurred else None,
+                        success_metrics={
                             'commands_run': len(command_results),
                             'confidence': confidence
                         }
@@ -571,7 +609,8 @@ Based on the command results above, please continue your response. If the task i
         self,
         system_prompt: str,
         user_prompt: str,
-        streaming_callback: Optional[Callable] = None
+        streaming_callback: Optional[Callable] = None,
+        cancel_event: Optional[threading.Event] = None
     ) -> str:
         """
         Get LLM response with optional streaming.
@@ -580,6 +619,7 @@ Based on the command results above, please continue your response. If the task i
             system_prompt: System prompt with Felix identity
             user_prompt: User message/context
             streaming_callback: Optional callback for streaming
+            cancel_event: Optional threading.Event to signal cancellation
 
         Returns:
             str: Complete response content
@@ -601,7 +641,8 @@ Based on the command results above, please continue your response. If the task i
                     user_prompt=user_prompt,
                     temperature=0.7,
                     callback=on_chunk,
-                    batch_interval=0.1
+                    batch_interval=0.1,
+                    cancel_event=cancel_event
                 )
                 content = ''.join(accumulated_content) if accumulated_content else (
                     response.content if hasattr(response, 'content') else str(response)
@@ -659,7 +700,8 @@ Based on the command results above, please continue your response. If the task i
         message: str,
         knowledge_context: str = "",
         conversation_history: Optional[List[Dict[str, str]]] = None,
-        streaming_callback: Optional[Callable] = None
+        streaming_callback: Optional[Callable] = None,
+        cancel_event: Optional[threading.Event] = None
     ) -> Dict[str, Any]:
         """
         Full multi-agent workflow orchestration.
@@ -673,6 +715,7 @@ Based on the command results above, please continue your response. If the task i
             knowledge_context: Knowledge brain context
             conversation_history: Previous messages
             streaming_callback: Callback for agent thinking steps
+            cancel_event: Optional threading.Event to signal cancellation
 
         Returns:
             Dict with 'content', 'confidence', 'thinking_steps'
@@ -697,7 +740,8 @@ Based on the command results above, please continue your response. If the task i
         result = run_felix_workflow(
             felix_system=self.felix_system,
             task_input=message,
-            streaming_callback=workflow_callback
+            streaming_callback=workflow_callback,
+            cancel_event=cancel_event
         )
 
         # Extract results

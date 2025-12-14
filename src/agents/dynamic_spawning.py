@@ -20,8 +20,18 @@ from enum import Enum
 from collections import deque, defaultdict
 
 # Import Message and MessageType only when needed to avoid circular imports
+# TaskMemory imported lazily to avoid circular imports
 
 logger = logging.getLogger('felix_workflows')
+
+
+def _get_task_memory():
+    """Lazily import TaskMemory to avoid circular imports."""
+    try:
+        from src.memory.task_memory import TaskMemory
+        return TaskMemory
+    except ImportError:
+        return None
 
 
 class ConfidenceTrend(Enum):
@@ -713,21 +723,24 @@ class TeamSizeOptimizer:
 class DynamicSpawning:
     """
     Main coordinator for dynamic agent spawning combining all monitoring systems.
-    
-    Integrates ConfidenceMonitor, ContentAnalyzer, and TeamSizeOptimizer
-    to make intelligent spawning decisions.
+
+    Integrates ConfidenceMonitor, ContentAnalyzer, TeamSizeOptimizer, and
+    TaskMemory to make intelligent spawning decisions based on historical
+    patterns and current analysis.
     """
-    
+
     def __init__(self, agent_factory, confidence_threshold: float = 0.8,
-                 max_agents: int = 25, token_budget_limit: int = 45000):
+                 max_agents: int = 25, token_budget_limit: int = 45000,
+                 task_memory=None):
         """
         Initialize dynamic spawning system.
-        
+
         Args:
             agent_factory: AgentFactory instance for creating agents
             confidence_threshold: Confidence threshold for spawning
             max_agents: Maximum allowed agents
             token_budget_limit: Total token budget limit
+            task_memory: Optional TaskMemory instance for historical pattern consultation
         """
         self.agent_factory = agent_factory
 
@@ -737,19 +750,97 @@ class DynamicSpawning:
         self.team_optimizer = TeamSizeOptimizer(max_agents=max_agents,
                                               token_budget_limit=token_budget_limit)
 
+        # TaskMemory integration (Issue #24)
+        self.task_memory = task_memory
+        self._task_memory_strategy: Optional[Dict[str, Any]] = None  # Cached strategy recommendation
+
         # State tracking
         self._last_analysis_time = 0.0
         self._spawning_history: List[SpawningDecision] = []
-        self.task_description: Optional[str] = None  # NEW: Store task description for plugin-aware spawning
+        self.task_description: Optional[str] = None  # Store task description for plugin-aware spawning
+        self._task_type: Optional[str] = None  # Store task type for TaskMemory consultation
+        self._task_complexity: Optional[str] = None  # Store complexity for TaskMemory consultation
 
-    def set_task_description(self, task_description: str):
+    def set_task_description(self, task_description: str, task_type: str = "general",
+                              task_complexity: str = "medium"):
         """
         Set the task description for plugin-aware spawning decisions.
 
+        Also queries TaskMemory for historical strategy recommendations if available.
+
         Args:
             task_description: The description of the current task
+            task_type: Type/category of the task (e.g., "research", "coding", "analysis")
+            task_complexity: Complexity level ("simple", "medium", "complex")
         """
         self.task_description = task_description
+        self._task_type = task_type
+        self._task_complexity = task_complexity
+
+        # Query TaskMemory for strategy recommendations (Issue #24)
+        self._task_memory_strategy = self._consult_task_memory(
+            task_description, task_type, task_complexity
+        )
+
+        if self._task_memory_strategy and self._task_memory_strategy.get('patterns_used', 0) > 0:
+            logger.info(f"TaskMemory consultation: {self._task_memory_strategy.get('patterns_used')} similar patterns found, "
+                       f"success probability: {self._task_memory_strategy.get('success_probability', 0):.1%}")
+
+    def _consult_task_memory(self, task_description: str, task_type: str,
+                             task_complexity: str) -> Optional[Dict[str, Any]]:
+        """
+        Consult TaskMemory for strategy recommendations based on similar past tasks.
+
+        Args:
+            task_description: Description of the task
+            task_type: Task type/category
+            task_complexity: Complexity level
+
+        Returns:
+            Strategy recommendation dict or None if unavailable
+        """
+        if not self.task_memory:
+            return None
+
+        try:
+            # Map string complexity to TaskComplexity enum
+            TaskMemory = _get_task_memory()
+            if not TaskMemory:
+                return None
+
+            from src.memory.task_memory import TaskComplexity
+
+            complexity_map = {
+                "simple": TaskComplexity.SIMPLE,
+                "moderate": TaskComplexity.MODERATE,
+                "medium": TaskComplexity.MODERATE,
+                "complex": TaskComplexity.COMPLEX,
+                "very_complex": TaskComplexity.VERY_COMPLEX,
+            }
+            complexity_enum = complexity_map.get(task_complexity.lower(), TaskComplexity.MODERATE)
+
+            # Get strategy recommendation
+            strategy = self.task_memory.recommend_strategy(
+                task_description=task_description,
+                task_type=task_type,
+                complexity=complexity_enum
+            )
+
+            return strategy
+
+        except Exception as e:
+            logger.warning(f"TaskMemory consultation failed: {e}")
+            return None
+
+    def get_task_memory_strategy(self) -> Optional[Dict[str, Any]]:
+        """
+        Get the cached TaskMemory strategy recommendation.
+
+        Returns:
+            Strategy dict with keys: strategies, agents, estimated_duration,
+            success_probability, recommendations, potential_issues, patterns_used
+        """
+        return self._task_memory_strategy
 
     def analyze_and_spawn(self, processed_messages: List[Any], 
                          current_agents: List[Any], current_time: float) -> List[Any]:
@@ -815,7 +906,10 @@ class DynamicSpawning:
     def _make_spawning_decisions(self, confidence_metrics: ConfidenceMetrics,
                                 content_analysis: ContentAnalysis,
                                 current_agents: List[Any], current_time: float) -> List[SpawningDecision]:
-        """Make intelligent spawning decisions based on all available data."""
+        """Make intelligent spawning decisions based on all available data.
+
+        Issue #24: Now integrates TaskMemory recommendations to learn from historical patterns.
+        """
         decisions = []
 
         # Check if team expansion is warranted
@@ -832,7 +926,7 @@ class DynamicSpawning:
         if not should_expand:
             return decisions  # No spawning needed
 
-        # NEW: Get suitable agents using plugin registry if task description is available
+        # Get suitable agents using plugin registry if task description is available
         suitable_agent_types = None
         if self.task_description and hasattr(self.agent_factory, 'get_suitable_agents_for_task'):
             try:
@@ -859,17 +953,37 @@ class DynamicSpawning:
                 logger.warning(f"Failed to get suitable agents from registry: {e}")
                 suitable_agent_types = None
 
+        # Issue #24: Get TaskMemory recommended agents (proven successful for similar tasks)
+        task_memory_agents = []
+        if self._task_memory_strategy:
+            task_memory_agents = self._task_memory_strategy.get('agents', [])
+            if task_memory_agents:
+                # Filter out already-spawned types
+                current_types = {agent.agent_type for agent in current_agents if hasattr(agent, 'agent_type')}
+                task_memory_agents = [t for t in task_memory_agents if t not in current_types]
+                if task_memory_agents:
+                    logger.debug(f"TaskMemory recommends: {task_memory_agents} (from historical patterns)")
+
         # Priority 1: Confidence-based spawning (task-aware if possible)
         if confidence_metrics.current_average < 0.7:
-            # NEW: Use suitable agents if available, otherwise fall back to default
-            if suitable_agent_types and len(suitable_agent_types) > 0:
-                agent_type = suitable_agent_types[0]  # Highest priority suitable agent
+            # Issue #24: Prioritize TaskMemory recommendations > plugin registry > default
+            if task_memory_agents and len(task_memory_agents) > 0:
+                agent_type = task_memory_agents[0]  # Historical success-based recommendation
+                reasoning_suffix = " (TaskMemory: proven successful for similar tasks)"
+            elif suitable_agent_types and len(suitable_agent_types) > 0:
+                agent_type = suitable_agent_types[0]  # Plugin registry recommendation
                 reasoning_suffix = " (task-relevant agent selected)"
             else:
                 agent_type = self.confidence_monitor.get_recommended_agent_type()
                 reasoning_suffix = " (default agent selected)"
 
             priority_score = 1.0 - confidence_metrics.current_average  # Higher priority for lower confidence
+
+            # Issue #24: Boost priority if TaskMemory has high success rate for this pattern
+            if self._task_memory_strategy:
+                success_prob = self._task_memory_strategy.get('success_probability', 0.0)
+                if success_prob > 0.7:
+                    priority_score *= 1.2  # 20% boost for high-confidence historical patterns
 
             # CRITICAL: Clamp spawn time range to valid 0.0-1.0 bounds
             clamped_time = min(max(current_time, 0.0), 0.99)  # Ensure spawn_time stays within 0-1
@@ -886,11 +1000,20 @@ class DynamicSpawning:
             ))
         
         # Priority 2: Content-based spawning (task-aware if possible)
-        # NEW: Filter suggested types against suitable types if available
+        # Issue #24: Also consider TaskMemory recommendations for content-based spawning
         types_to_consider = content_analysis.suggested_agent_types
+
+        # Merge TaskMemory recommended agents into consideration (prioritize historical success)
+        if task_memory_agents:
+            # Add TaskMemory agents that aren't already in the list
+            for tm_agent in task_memory_agents:
+                if tm_agent not in types_to_consider:
+                    types_to_consider.insert(0, tm_agent)  # Prepend for higher priority
+
+        # Filter suggested types against suitable types if available
         if suitable_agent_types is not None:
             # Only consider suggested types that are also task-suitable
-            types_to_consider = [t for t in types_to_consider if t in suitable_agent_types or t in ["research", "analysis", "critic"]]
+            types_to_consider = [t for t in types_to_consider if t in suitable_agent_types or t in ["research", "analysis", "critic"] or t in task_memory_agents]
             if types_to_consider:
                 logger.debug(f"Filtered content suggestions to task-suitable types: {types_to_consider}")
 

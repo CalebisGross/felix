@@ -14,6 +14,7 @@ is a comparison baseline for benchmarking purposes.
 
 import time
 import logging
+import threading
 from datetime import datetime
 from typing import Dict, Any, Optional, Callable
 
@@ -155,7 +156,9 @@ def _store_file_discoveries(result_content: str, knowledge_store, agent_id: str 
 def run_felix_workflow(felix_system, task_input: str,
                        progress_callback: Optional[Callable[[str, float], None]] = None,
                        max_steps_override: Optional[int] = None,
-                       parent_workflow_id: Optional[int] = None) -> Dict[str, Any]:
+                       parent_workflow_id: Optional[int] = None,
+                       streaming_callback: Optional[Callable] = None,
+                       cancel_event: Optional[threading.Event] = None) -> Dict[str, Any]:
     """
     Run a workflow using the Felix framework components.
 
@@ -173,6 +176,8 @@ def run_felix_workflow(felix_system, task_input: str,
         progress_callback: Optional callback(status_message, progress_percentage)
         max_steps_override: Optional override for max workflow steps (None = adaptive)
         parent_workflow_id: Optional ID of parent workflow to continue from
+        streaming_callback: Optional callback for streaming agent outputs
+        cancel_event: Optional threading.Event to signal cancellation
 
     Returns:
         Dictionary with workflow results and metadata
@@ -584,6 +589,11 @@ def run_felix_workflow(felix_system, task_input: str,
         # Store original total for consistent progress calculation
         original_total_steps = total_steps
         for step in range(total_steps):
+            # Check for cancellation at start of each step
+            if cancel_event and cancel_event.is_set():
+                logger.info("Workflow cancelled by user")
+                break
+
             current_time = step * time_step
             # Use original total for percentage, clamp to 95% to reserve 100% for completion
             progress_pct = min(95, (step / original_total_steps) * 100)

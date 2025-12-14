@@ -780,7 +780,39 @@ class CentralPost:
         self.agent_registry.register_agent(agent.agent_id, agent_metadata)
 
         return connection_id
-    
+
+    def register_agent_id(self, agent_id: str, metadata: Optional[Dict[str, Any]] = None) -> str:
+        """
+        Register an agent by ID without requiring an agent object.
+
+        This is a lightweight registration for cases where a full Agent object
+        is not available (e.g., direct mode in FelixAgent).
+
+        Args:
+            agent_id: Unique identifier for the agent
+            metadata: Optional additional metadata about the agent
+
+        Returns:
+            Connection ID for the registered agent
+        """
+        if agent_id in self._registered_agents:
+            # Already registered, return existing connection ID
+            return self._registered_agents[agent_id]
+
+        # Create unique connection ID
+        connection_id = str(uuid.uuid4())
+
+        # Register in connection tracking
+        self._registered_agents[agent_id] = connection_id
+        self._connection_times[agent_id] = time.time()
+
+        # Also register in agent awareness registry if metadata provided
+        if metadata:
+            self.agent_registry.register_agent(agent_id=agent_id, metadata=metadata)
+
+        logger.debug(f"Registered agent by ID: {agent_id} -> {connection_id}")
+        return connection_id
+
     def deregister_agent(self, agent_id: str) -> bool:
         """
         Deregister an agent from the central post.

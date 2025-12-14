@@ -18,6 +18,7 @@ Usage:
 """
 
 import logging
+import threading
 from typing import Optional, Dict, Any, List, Callable
 
 from src.agents.felix_agent import FelixAgent, FelixResponse
@@ -31,7 +32,8 @@ def run_felix(
     mode: str = "auto",
     streaming_callback: Optional[Callable] = None,
     knowledge_enabled: bool = True,
-    conversation_history: Optional[List[Dict[str, str]]] = None
+    conversation_history: Optional[List[Dict[str, str]]] = None,
+    cancel_event: Optional[threading.Event] = None
 ) -> Dict[str, Any]:
     """
     Unified Felix entry point for all interactions.
@@ -56,6 +58,7 @@ def run_felix(
         knowledge_enabled: Whether to include knowledge brain context
         conversation_history: Previous messages for context continuity
             Format: [{"role": "user"/"assistant", "content": "..."}]
+        cancel_event: Optional threading.Event to signal cancellation
 
     Returns:
         Dict containing:
@@ -92,7 +95,8 @@ def run_felix(
             mode=mode,
             streaming_callback=streaming_callback,
             knowledge_enabled=knowledge_enabled,
-            conversation_history=conversation_history
+            conversation_history=conversation_history,
+            cancel_event=cancel_event
         )
 
         # Convert response to dict
