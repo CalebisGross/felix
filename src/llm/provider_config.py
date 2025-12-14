@@ -121,10 +121,11 @@ class ProviderConfigLoader:
 
             elif provider_type == "simple_response":
                 # Last-resort fallback provider - always available
-                provider = SimpleResponseProvider(
-                    message=config.get("message"),  # Optional custom message
-                    verbose_logging=config.get("verbose_logging", False)
-                )
+                # Only pass message if explicitly provided in config (otherwise use provider's default)
+                simple_kwargs = {"verbose_logging": config.get("verbose_logging", False)}
+                if "message" in config:
+                    simple_kwargs["message"] = config["message"]
+                provider = SimpleResponseProvider(**simple_kwargs)
 
             else:
                 logger.error(f"Unknown provider type: {provider_type}")
