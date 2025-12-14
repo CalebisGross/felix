@@ -473,6 +473,8 @@ class SystemExecutor:
                 cwd=str(cwd),
                 env=exec_env,
                 text=True,
+                encoding='utf-8',
+                errors='replace',  # Replace invalid bytes with replacement character
                 bufsize=1,  # Line buffered
                 preexec_fn=os.setsid if os.name != 'nt' else None
             )
