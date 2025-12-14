@@ -678,6 +678,7 @@ def run_felix_workflow(felix_system, task_input: str,
                         # Process task through LLM at this checkpoint (with or without collaborative context)
                         # Pass central_post and streaming flag for real-time communication
                         # Phase 3.2: Wrap with failure recovery
+                        checkpoint_start_time = time.time()  # Track checkpoint processing time
                         try:
                             result = agent.process_task_with_llm(
                                 task,
@@ -766,6 +767,25 @@ def run_felix_workflow(felix_system, task_input: str,
                         agent.mark_checkpoint_processed()
 
                         logger.info(f"  ✓ Agent {agent.agent_id} completed checkpoint {checkpoint:.1f}: confidence={result.confidence:.2f}, stage={agent.processing_stage}")
+
+                        # Record agent performance metrics
+                        if felix_system.performance_tracker:
+                            try:
+                                felix_system.performance_tracker.record_agent_checkpoint(
+                                    agent_id=agent.agent_id,
+                                    agent_type=agent.agent_type,
+                                    spawn_time=agent.spawn_time,
+                                    checkpoint=checkpoint,
+                                    confidence=result.confidence,
+                                    tokens_used=result.tokens_used or 0,
+                                    processing_time=time.time() - checkpoint_start_time,
+                                    depth_ratio=agent.progress,
+                                    phase=agent.processing_stage,
+                                    workflow_id=workflow_id,
+                                    content_preview=result.content[:500] if result.content else None
+                                )
+                            except Exception as perf_err:
+                                logger.debug(f"Performance tracking failed: {perf_err}")
 
                         # Store agent output with full metrics for GUI display
                         agent_manager.store_agent_output(

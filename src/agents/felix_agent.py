@@ -370,7 +370,14 @@ Always identify yourself as Felix when asked about your identity."""
 
             # Build initial user prompt with history
             if conversation_history:
-                history_text = self._format_history(conversation_history)
+                # Check if history is large enough to warrant compression
+                history_size = sum(len(m.get('content', '')) for m in conversation_history)
+                if history_size > 3000 and self.central_post.context_compressor:
+                    # Use compression for large histories
+                    history_text = self._compress_history(conversation_history)
+                    logger.debug(f"Compressed conversation history from {history_size} chars")
+                else:
+                    history_text = self._format_history(conversation_history)
                 base_prompt = f"{history_text}\n\nCURRENT MESSAGE:\nUSER: {message}"
             else:
                 base_prompt = message
@@ -421,7 +428,9 @@ Always identify yourself as Felix when asked about your identity."""
                         timestamp=time.time()
                     )
                     self.central_post.queue_message(msg)
-                    logger.debug(f"Queued message to CentralPost: {msg.message_id}")
+                    # Process message so synthesis engine can access it
+                    self.central_post.process_next_message()
+                    logger.debug(f"Queued and processed message to CentralPost: {msg.message_id}")
                 except Exception as e:
                     logger.warning(f"Message queuing failed (continuing): {e}")
 
@@ -559,6 +568,25 @@ Only stop issuing commands when the task is genuinely complete or you need user 
             except Exception as e:
                 logger.warning(f"TaskMemory recording failed (continuing): {e}")
 
+            # Record agent performance metrics
+            try:
+                if hasattr(self.felix_system, 'performance_tracker') and self.felix_system.performance_tracker:
+                    self.felix_system.performance_tracker.record_agent_checkpoint(
+                        agent_id=agent_id,
+                        agent_type='direct',
+                        spawn_time=start_time,
+                        checkpoint=1.0,
+                        confidence=confidence,
+                        tokens_used=0,
+                        processing_time=execution_time,
+                        depth_ratio=1.0,
+                        phase='synthesis',
+                        content_preview=content[:500] if content else None
+                    )
+                    logger.debug("Recorded performance in AgentPerformanceTracker")
+            except Exception as e:
+                logger.debug(f"Performance tracking failed: {e}")
+
             # =========================================================
             # STEP 6: Synthesize through SynthesisEngine for consistent output
             # =========================================================
@@ -573,7 +601,7 @@ Only stop issuing commands when the task is genuinely complete or you need user 
                 )
                 if synthesis_result:
                     # Use synthesis if available, otherwise use raw content
-                    synthesized_content = synthesis_result.get('synthesis', '')
+                    synthesized_content = synthesis_result.get('synthesis_content', '')
                     if synthesized_content and len(synthesized_content) > 50:
                         content = synthesized_content
                         confidence = synthesis_result.get('confidence', confidence)
@@ -778,3 +806,58 @@ Only stop issuing commands when the task is genuinely complete or you need user 
             formatted.append(f"{role}: {content}")
 
         return "\n".join(formatted)
+
+    def _compress_history(self, history: List[Dict[str, str]], target_size: int = 2000) -> str:
+        """
+        Compress conversation history using ContextCompressor.
+
+        Uses hierarchical summarization to preserve important context while
+        reducing size for large conversation histories.
+
+        Args:
+            history: List of message dicts with 'role' and 'content'
+            target_size: Target size in characters for compressed output
+
+        Returns:
+            str: Compressed history string
+        """
+        if not history:
+            return ""
+
+        try:
+            # Build context dict for compressor
+            context_dict = {}
+            for i, msg in enumerate(history):
+                role = msg.get('role', 'user')
+                content = msg.get('content', '')
+                context_dict[f"msg_{i}_{role}"] = content
+
+            # Compress using central_post's context_compressor
+            from src.memory.context_compression import CompressionStrategy
+
+            compressed = self.central_post.context_compressor.compress_context(
+                context=context_dict,
+                target_size=target_size,
+                strategy=CompressionStrategy.HIERARCHICAL_SUMMARY
+            )
+
+            # Extract and format compressed content
+            if compressed and compressed.content:
+                # Build formatted output from compressed content
+                formatted = ["CONVERSATION HISTORY (compressed):"]
+                for _, value in compressed.content.items():
+                    if isinstance(value, str) and value.strip():
+                        formatted.append(value)
+
+                logger.info(
+                    f"Compressed history: {compressed.original_size} -> "
+                    f"{compressed.compressed_size} chars "
+                    f"(ratio: {compressed.compression_ratio:.2%})"
+                )
+                return "\n".join(formatted)
+
+        except Exception as e:
+            logger.warning(f"History compression failed, using standard format: {e}")
+
+        # Fallback to standard formatting with limit
+        return self._format_history(history, limit=5)

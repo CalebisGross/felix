@@ -21,6 +21,7 @@ from src.llm.web_search_client import WebSearchClient
 from src.memory.knowledge_store import KnowledgeStore
 from src.memory.task_memory import TaskMemory
 from src.memory.context_compression import ContextCompressor, CompressionConfig, CompressionStrategy, CompressionLevel
+from src.memory.agent_performance_tracker import AgentPerformanceTracker
 from src.agents import ResearchAgent, AnalysisAgent, CriticAgent, PromptOptimizer
 from src.agents.system_agent import SystemAgent
 from src.agents.agent import AgentState
@@ -245,6 +246,7 @@ class FelixSystem:
         self.knowledge_store: Optional[KnowledgeStore] = None
         self.task_memory: Optional[TaskMemory] = None
         self.context_compressor: Optional[ContextCompressor] = None
+        self.performance_tracker: Optional[AgentPerformanceTracker] = None
 
         # Knowledge Brain components
         self.embedding_provider: Optional[EmbeddingProvider] = None
@@ -335,7 +337,8 @@ class FelixSystem:
             if self.config.enable_memory:
                 self.knowledge_store = KnowledgeStore(self.config.knowledge_db_path)
                 self.task_memory = TaskMemory(self.config.memory_db_path)
-                logger.info("Memory systems initialized")
+                self.performance_tracker = AgentPerformanceTracker()
+                logger.info("Memory systems initialized (including performance tracker)")
 
             # Initialize context compressor
             if self.config.enable_compression:
