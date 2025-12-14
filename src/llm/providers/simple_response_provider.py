@@ -10,7 +10,8 @@ Part of Issue #16: Add LLM Provider Fallback for Inference
 
 import time
 import logging
-from typing import List, Callable
+import threading
+from typing import List, Callable, Optional
 
 from src.llm.base_provider import (
     BaseLLMProvider,
@@ -102,7 +103,8 @@ class SimpleResponseProvider(BaseLLMProvider):
     def complete_streaming(
         self,
         request: LLMRequest,
-        callback: Callable[[str], None]
+        callback: Callable[[str], None],
+        cancel_event: Optional[threading.Event] = None
     ) -> LLMResponse:
         """
         Return a graceful 'service unavailable' response with streaming simulation.
@@ -113,6 +115,7 @@ class SimpleResponseProvider(BaseLLMProvider):
         Args:
             request: LLMRequest (used for agent_id logging only)
             callback: Function called with each word chunk
+            cancel_event: Optional threading.Event to signal cancellation
 
         Returns:
             LLMResponse with unavailable message
@@ -125,6 +128,9 @@ class SimpleResponseProvider(BaseLLMProvider):
         # Stream the message word-by-word for visual feedback
         words = self.unavailable_message.split(' ')
         for i, word in enumerate(words):
+            # Check for cancellation
+            if cancel_event and cancel_event.is_set():
+                break
             # Add space before words (except first)
             chunk = word if i == 0 else ' ' + word
             callback(chunk)

@@ -7,7 +7,8 @@ Maintains backward compatibility while enabling multi-provider support.
 
 import time
 import logging
-from typing import Callable, List
+import threading
+from typing import Callable, List, Optional
 
 from src.llm.base_provider import (
     BaseLLMProvider,
@@ -110,7 +111,8 @@ class LMStudioProvider(BaseLLMProvider):
             raise ProviderError(f"LM Studio completion failed: {e}")
 
     def complete_streaming(self, request: LLMRequest,
-                          callback: Callable[[str], None]) -> LLMResponse:
+                          callback: Callable[[str], None],
+                          cancel_event: Optional[threading.Event] = None) -> LLMResponse:
         """Generate a streaming completion using LM Studio."""
         start_time = time.time()
 
@@ -126,7 +128,8 @@ class LMStudioProvider(BaseLLMProvider):
                 temperature=request.temperature,
                 max_tokens=request.max_tokens,
                 model=request.model or self.default_model,
-                callback=callback  # Pass callback directly
+                callback=callback,  # Pass callback directly
+                cancel_event=cancel_event  # Pass cancellation event
             )
 
             response_time = time.time() - start_time

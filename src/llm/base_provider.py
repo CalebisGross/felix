@@ -10,6 +10,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Optional, List, Callable, Dict, Any
 from enum import Enum
+import threading
 
 
 class ProviderType(Enum):
@@ -148,7 +149,8 @@ class BaseLLMProvider(ABC):
     def complete_streaming(
         self,
         request: LLMRequest,
-        callback: Callable[[str], None]
+        callback: Callable[[str], None],
+        cancel_event: Optional[threading.Event] = None
     ) -> LLMResponse:
         """
         Generate a completion with streaming.
@@ -156,6 +158,7 @@ class BaseLLMProvider(ABC):
         Args:
             request: LLMRequest with prompt and parameters
             callback: Function called with each token/chunk as it arrives
+            cancel_event: Optional threading.Event to signal cancellation
 
         Returns:
             LLMResponse with full generated content and metadata

@@ -500,7 +500,8 @@ class LMStudioClient:
         model: str = "local-model",
         batch_interval: float = 0.1,
         callback: Optional[Callable[[StreamingChunk], None]] = None,
-        token_controller: Optional[TokenAwareStreamController] = None
+        token_controller: Optional[TokenAwareStreamController] = None,
+        cancel_event: Optional[threading.Event] = None
     ) -> LLMResponse:
         """
         Stream LLM completion with time-batched token delivery and optional budget control.
@@ -518,6 +519,7 @@ class LMStudioClient:
             batch_interval: Time between partial updates (default 0.1s = 100ms)
             callback: Called with batched chunks for real-time updates
             token_controller: Optional TokenAwareStreamController for budget enforcement
+            cancel_event: Optional threading.Event to signal cancellation
 
         Returns:
             Complete LLMResponse after stream finishes
@@ -576,6 +578,11 @@ class LMStudioClient:
 
             # Process stream with time-based batching and optional token control
             for chunk in stream:
+                # Check for cancellation signal
+                if cancel_event and cancel_event.is_set():
+                    logger.info(f"Streaming cancelled by user for {agent_id}")
+                    break
+
                 if chunk.choices and len(chunk.choices) > 0 and chunk.choices[0].delta.content:
                     delta_content = chunk.choices[0].delta.content
 

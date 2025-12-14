@@ -7,6 +7,7 @@ backward compatibility with existing code.
 
 import logging
 import time
+import threading
 from typing import Optional, Callable, Any, Union
 
 from src.llm.llm_router import LLMRouter
@@ -130,7 +131,8 @@ class RouterAdapter:
                           chunk_callback: Optional[Callable] = None,
                           callback: Optional[Callable] = None,
                           batch_interval: float = 0.1,
-                          token_controller: Optional[Any] = None) -> LMStudioResponse:
+                          token_controller: Optional[Any] = None,
+                          cancel_event: Optional[threading.Event] = None) -> LMStudioResponse:
         """
         Complete a prompt with streaming (compatible with LMStudioClient interface).
 
@@ -145,6 +147,7 @@ class RouterAdapter:
             callback: Primary callback parameter (accepts StreamingChunk)
             batch_interval: Time batching interval (accepted for compatibility, handled by providers)
             token_controller: Token budget controller (accepted for compatibility, not enforced)
+            cancel_event: Optional threading.Event to signal cancellation
 
         Returns:
             LMStudioResponse (compatible format)
@@ -209,7 +212,7 @@ class RouterAdapter:
 
         try:
             # Route through router with wrapped streaming callback
-            response = self.router.complete_streaming(request, streaming_wrapper)
+            response = self.router.complete_streaming(request, streaming_wrapper, cancel_event)
 
             # Convert to LMStudioResponse format for compatibility
             return LMStudioResponse(

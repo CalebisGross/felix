@@ -6,6 +6,7 @@ Supports primary provider with fallback chain for reliability.
 """
 
 import logging
+import threading
 from typing import List, Callable, Optional
 
 from src.llm.base_provider import (
@@ -137,13 +138,15 @@ class LLMRouter:
         raise ProviderError(f"All LLM providers failed:\n{error_summary}")
 
     def complete_streaming(self, request: LLMRequest,
-                          callback: Callable[[str], None]) -> LLMResponse:
+                          callback: Callable[[str], None],
+                          cancel_event: Optional[threading.Event] = None) -> LLMResponse:
         """
         Generate a streaming completion with fallback support.
 
         Args:
             request: LLM request
             callback: Function called with each token/chunk
+            cancel_event: Optional threading.Event to signal cancellation
 
         Returns:
             LLM response from successful provider
@@ -164,7 +167,7 @@ class LLMRouter:
                     logger.info(f"Attempting streaming with {provider_name} "
                               f"({'primary' if is_primary else f'fallback {i}'})")
 
-                response = provider.complete_streaming(request, callback)
+                response = provider.complete_streaming(request, callback, cancel_event)
 
                 # Success!
                 if is_primary:

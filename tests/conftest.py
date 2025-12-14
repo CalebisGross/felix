@@ -54,10 +54,22 @@ def mock_llm_provider():
                 finish_reason="stop"
             )
 
-        def complete_streaming(self, request, callback):
+        def complete_streaming(self, request, callback, cancel_event=None):
             self.call_count += 1
             if self.should_fail:
                 raise Exception("Mock provider failure")
+            # Check cancellation (for testing)
+            if cancel_event and cancel_event.is_set():
+                return LLMResponse(
+                    content="",
+                    tokens_used=0,
+                    prompt_tokens=0,
+                    completion_tokens=0,
+                    response_time=0.0,
+                    model="mock-model",
+                    provider="mock",
+                    finish_reason="cancelled"
+                )
             callback("Mock ")
             callback("streaming ")
             callback("response")

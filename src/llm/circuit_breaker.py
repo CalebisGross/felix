@@ -14,7 +14,7 @@ import time
 import logging
 from enum import Enum
 from dataclasses import dataclass
-from threading import Lock
+from threading import Lock, Event
 from typing import Optional, Callable, List
 
 from src.llm.base_provider import (
@@ -254,12 +254,13 @@ class CircuitBreakerProvider(BaseLLMProvider):
     def complete_streaming(
         self,
         request: LLMRequest,
-        callback: Callable[[str], None]
+        callback: Callable[[str], None],
+        cancel_event: Optional[Event] = None
     ) -> LLMResponse:
         """Streaming complete with circuit breaker protection."""
         try:
             with self._breaker:
-                return self._provider.complete_streaming(request, callback)
+                return self._provider.complete_streaming(request, callback, cancel_event)
         except CircuitBreakerError as e:
             raise ProviderConnectionError(
                 f"Circuit breaker open for {self._provider.get_provider_name()}: {e}"
