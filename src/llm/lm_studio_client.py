@@ -540,6 +540,8 @@ class LMStudioClient:
         batch_buffer = ""  # Buffer for time-based batching
         last_batch_time = time.time()
         tokens_so_far = 0
+        chunk_count = 0  # Total chunks received from stream
+        empty_chunk_count = 0  # Chunks with no content
 
         try:
             messages = [
@@ -584,12 +586,22 @@ class LMStudioClient:
 
             # Process stream with time-based batching and optional token control
             for chunk in stream:
+                chunk_count += 1
+
                 # Check for cancellation signal
                 if cancel_event and cancel_event.is_set():
                     logger.info(f"Streaming cancelled by user for {agent_id}")
                     break
 
-                if chunk.choices and len(chunk.choices) > 0 and chunk.choices[0].delta.content:
+                # Track empty chunks for diagnostics
+                has_content = chunk.choices and len(chunk.choices) > 0 and chunk.choices[0].delta.content
+                if not has_content:
+                    empty_chunk_count += 1
+                    # Log first few empty chunks for debugging
+                    if empty_chunk_count <= 3 and self.verbose_logging:
+                        logger.debug(f"Empty chunk {chunk_count} for {agent_id}: choices={bool(chunk.choices)}")
+
+                if has_content:
                     delta_content = chunk.choices[0].delta.content
 
                     # Token-aware processing (if controller provided)
@@ -644,6 +656,14 @@ class LMStudioClient:
             self.total_requests += 1
             self.total_response_time += response_time
 
+            # CRITICAL: Detect and warn when streaming completes with no content
+            if not accumulated_content and tokens_so_far == 0:
+                logger.warning(
+                    f"Streaming completed but NO CONTENT accumulated for {agent_id}. "
+                    f"Chunks processed: {chunk_count}, Empty chunks: {empty_chunk_count}, "
+                    f"Duration: {response_time:.2f}s. This may indicate LLM response issues."
+                )
+
             if self.verbose_logging:
                 content_preview = accumulated_content[:200] + "..." if len(accumulated_content) > 200 else accumulated_content
 
@@ -652,6 +672,7 @@ class LMStudioClient:
                 logger.info(f"  Agent: {agent_id}")
                 logger.info(f"  Duration: {response_time:.2f}s")
                 logger.info(f"  Tokens: ~{tokens_so_far}")
+                logger.info(f"  Chunks: {chunk_count} total, {empty_chunk_count} empty")
                 logger.info(f"  Content ({len(accumulated_content)} chars): {content_preview}")
                 logger.info("=" * 60)
 

@@ -169,7 +169,9 @@ Always identify yourself as Felix when asked about your identity."""
         streaming_callback: Optional[Callable] = None,
         knowledge_enabled: bool = True,
         conversation_history: Optional[List[Dict[str, str]]] = None,
-        cancel_event: Optional[threading.Event] = None
+        cancel_event: Optional[threading.Event] = None,
+        approval_callback: Optional[Callable[[Dict], Dict]] = None,
+        approval_threshold: float = 0.6
     ) -> FelixResponse:
         """
         Process a message through Felix.
@@ -189,6 +191,8 @@ Always identify yourself as Felix when asked about your identity."""
             knowledge_enabled: Whether to include knowledge brain context
             conversation_history: Previous messages for context
             cancel_event: Optional threading.Event to signal cancellation
+            approval_callback: Callback for user approval of low-confidence synthesis
+            approval_threshold: Confidence threshold below which approval is required
 
         Returns:
             FelixResponse with results
@@ -796,7 +800,9 @@ Only stop issuing commands when the task is genuinely complete or you need user 
             felix_system=self.felix_system,
             task_input=message,
             streaming_callback=workflow_callback,
-            cancel_event=cancel_event
+            cancel_event=cancel_event,
+            approval_callback=approval_callback,
+            approval_threshold=approval_threshold
         )
 
         # Extract results from centralpost_synthesis dict

@@ -213,10 +213,19 @@ class RouterAdapter:
             # Route through router with wrapped streaming callback
             response = self.router.complete_streaming(request, streaming_wrapper, cancel_event)
 
+            # FALLBACK: Use locally accumulated text if provider returned empty
+            final_content = response.content
+            if not final_content and accumulated_text:
+                logger.warning(
+                    f"Provider returned empty content for {agent_id}, "
+                    f"using locally accumulated text ({len(accumulated_text)} chars)"
+                )
+                final_content = accumulated_text
+
             # Convert to LMStudioResponse format for compatibility
             return LMStudioResponse(
-                content=response.content,
-                tokens_used=response.tokens_used,
+                content=final_content,
+                tokens_used=response.tokens_used if response.tokens_used else chunk_count,
                 response_time=response.response_time,
                 model=response.model,
                 temperature=temperature,

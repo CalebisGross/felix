@@ -12,10 +12,12 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QTextCursor, QFont
 
 from ..core.theme import Colors
+from ..core.signals import get_signals
 from ..widgets.message_bubble import UserBubble, AssistantBubble, StreamingBubble, SystemBubble
 from ..widgets.typing_indicator import TypingIndicator
 from ..widgets.action_bubble import ActionBubble, ActionStatus
 from ..widgets.progress_bubble import ProgressBubble, WorkflowStepStatus
+from ..widgets.synthesis_review_bubble import SynthesisReviewBubble
 from ..models.message_model import Message, MessageRole, MessageModel
 
 
@@ -79,6 +81,16 @@ class MessageArea(QScrollArea):
     ) -> ActionBubble:
         """Add an action (command approval) bubble."""
         bubble = ActionBubble(action_id, command, description, risk_level)
+        self._insert_bubble(bubble)
+        return bubble
+
+    def add_synthesis_review_bubble(
+        self,
+        review_id: str,
+        review_data: dict
+    ) -> SynthesisReviewBubble:
+        """Add a synthesis review bubble for low-confidence approval."""
+        bubble = SynthesisReviewBubble(review_id, review_data)
         self._insert_bubble(bubble)
         return bubble
 
@@ -373,7 +385,9 @@ class Workspace(QWidget):
         self.setObjectName("workspace")
         self._model = MessageModel()
         self._action_bubbles = {}  # action_id -> ActionBubble
+        self._synthesis_review_bubbles = {}  # review_id -> SynthesisReviewBubble
         self._setup_ui()
+        self._connect_synthesis_review_signals()
 
     def _setup_ui(self):
         """Set up workspace UI."""
@@ -581,3 +595,46 @@ class Workspace(QWidget):
     def get_progress_bubble(self) -> Optional[ProgressBubble]:
         """Get current progress bubble for advanced control."""
         return self._message_area.get_progress_bubble()
+
+    # ========================================================================
+    # Synthesis Review (Low-Confidence Synthesis Approval)
+    # ========================================================================
+
+    def _connect_synthesis_review_signals(self):
+        """Connect to global synthesis review signals."""
+        signals = get_signals()
+        signals.synthesis_review_requested.connect(self._on_synthesis_review_requested)
+
+    @Slot(str, dict)
+    def _on_synthesis_review_requested(self, review_id: str, review_data: dict):
+        """Handle synthesis review request by showing review bubble."""
+        bubble = self._message_area.add_synthesis_review_bubble(review_id, review_data)
+
+        # Connect bubble signals to handlers
+        bubble.accepted.connect(self._on_synthesis_accepted)
+        bubble.rejected.connect(self._on_synthesis_rejected)
+        bubble.regenerate_requested.connect(self._on_synthesis_regenerate)
+
+        self._synthesis_review_bubbles[review_id] = bubble
+
+    def _on_synthesis_accepted(self, review_id: str):
+        """Handle synthesis acceptance."""
+        signals = get_signals()
+        signals.synthesis_review_response.emit(review_id, {'action': 'accept'})
+
+    def _on_synthesis_rejected(self, review_id: str, reason: str):
+        """Handle synthesis rejection."""
+        signals = get_signals()
+        signals.synthesis_review_response.emit(review_id, {
+            'action': 'reject',
+            'reason': reason
+        })
+
+    def _on_synthesis_regenerate(self, review_id: str, strategy: str, user_input: str):
+        """Handle synthesis regeneration request."""
+        signals = get_signals()
+        signals.synthesis_review_response.emit(review_id, {
+            'action': strategy,
+            'strategy': strategy,
+            'user_input': user_input
+        })

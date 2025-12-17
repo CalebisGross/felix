@@ -1355,7 +1355,9 @@ class CentralPost:
                                  coverage_report: Optional[Any] = None,
                                  successful_agents: Optional[List[str]] = None,
                                  failed_agents: Optional[List[str]] = None,
-                                 streaming_callback: Optional[Callable] = None) -> Dict[str, Any]:
+                                 streaming_callback: Optional[Callable] = None,
+                                 approval_callback: Optional[Callable[[Dict], Dict]] = None,
+                                 approval_threshold: float = 0.6) -> Dict[str, Any]:
         """
         Synthesize final output from all agent communications.
 
@@ -1379,6 +1381,11 @@ class CentralPost:
                 Used for degradation assessment (Issue #18).
             streaming_callback: Optional callback for streaming synthesis output.
                 If provided, synthesis will stream chunks in real-time.
+            approval_callback: Optional callback for user approval of low-confidence
+                synthesis. If provided and confidence < approval_threshold, invoked
+                with review data. Should return dict with 'action' key.
+            approval_threshold: Confidence threshold below which approval is required.
+                Default 0.6. Only applies if approval_callback is provided.
 
         Returns:
             Dict containing:
@@ -1394,13 +1401,16 @@ class CentralPost:
                 - degraded_reason: Human-readable reason for degradation
                 - successful_agents: List of successful agent IDs
                 - failed_agents: List of failed agent IDs
+                - user_approved: Whether user approved (if approval_callback used)
+                - user_declined: Whether user declined (if approval_callback used)
 
         Raises:
             RuntimeError: If no LLM client available for synthesis
         """
         return self.synthesis_engine.synthesize_agent_outputs(
             task_description, max_messages, task_complexity, reasoning_evals, coverage_report,
-            successful_agents, failed_agents, streaming_callback
+            successful_agents, failed_agents, streaming_callback,
+            approval_callback=approval_callback, approval_threshold=approval_threshold
         )
 
     def broadcast_synthesis_feedback(self, synthesis_result: Dict[str, Any],

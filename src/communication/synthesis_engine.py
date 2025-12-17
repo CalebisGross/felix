@@ -665,6 +665,19 @@ Your output should reflect JUSTIFIED confidence, not reflexive confidence. If th
                         callback=text_callback,
                         batch_interval=0.1
                     )
+
+                    # FALLBACK: If streaming returned empty content, try non-streaming
+                    if not llm_response.content and hasattr(self.llm_client, 'complete'):
+                        logger.warning(
+                            "Streaming returned empty content, falling back to non-streaming synthesis"
+                        )
+                        llm_response = self.llm_client.complete(
+                            agent_id="synthesis_engine",
+                            system_prompt=system_prompt,
+                            user_prompt=user_prompt,
+                            temperature=temperature,
+                            max_tokens=max_tokens
+                        )
                 else:
                     llm_response = self.llm_client.complete(
                         agent_id="synthesis_engine",
@@ -715,6 +728,13 @@ Your output should reflect JUSTIFIED confidence, not reflexive confidence. If th
             logger.info(f"  Epistemic caveats: {len(meta_confidence_result['epistemic_caveats'])}")
         if synthesis_attempts >= max_attempts:
             logger.warning(f"  ⚠️  Used fallback synthesis (all LLM attempts failed)")
+
+        # VALIDATION: Warn if synthesis produced empty content after all attempts
+        if not llm_response.content:
+            logger.error(
+                f"Synthesis produced EMPTY content after {synthesis_attempts} attempts. "
+                f"This indicates a critical issue with LLM response handling."
+            )
 
         # Assess degradation (Issue #18)
         used_fallback = synthesis_attempts >= max_attempts

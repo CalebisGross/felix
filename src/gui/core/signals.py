@@ -32,6 +32,10 @@ class FelixSignals(QObject):
     approval_requested = Signal(str, dict)  # approval_id, command details
     approval_resolved = Signal(str, str)  # approval_id, decision (approved/denied)
 
+    # Synthesis review signals (for low-confidence synthesis approval)
+    synthesis_review_requested = Signal(str, dict)  # review_id, review_data
+    synthesis_review_response = Signal(str, dict)  # review_id, decision dict
+
     # Command execution
     command_started = Signal(str, str)  # exec_id, command
     command_output = Signal(str, str)  # exec_id, output line

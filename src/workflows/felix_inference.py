@@ -34,7 +34,9 @@ def run_felix(
     streaming_callback: Optional[Callable] = None,
     knowledge_enabled: bool = True,
     conversation_history: Optional[List[Dict[str, str]]] = None,
-    cancel_event: Optional[threading.Event] = None
+    cancel_event: Optional[threading.Event] = None,
+    approval_callback: Optional[Callable[[Dict], Dict]] = None,
+    approval_threshold: float = 0.6
 ) -> Dict[str, Any]:
     """
     Unified Felix entry point for all interactions.
@@ -60,6 +62,9 @@ def run_felix(
         conversation_history: Previous messages for context continuity
             Format: [{"role": "user"/"assistant", "content": "..."}]
         cancel_event: Optional threading.Event to signal cancellation
+        approval_callback: Callback for user approval of low-confidence synthesis.
+            Invoked when synthesis confidence < approval_threshold.
+        approval_threshold: Confidence threshold below which approval is required.
 
     Returns:
         Dict containing:
@@ -99,7 +104,9 @@ def run_felix(
             streaming_callback=streaming_callback,
             knowledge_enabled=knowledge_enabled,
             conversation_history=conversation_history,
-            cancel_event=cancel_event
+            cancel_event=cancel_event,
+            approval_callback=approval_callback,
+            approval_threshold=approval_threshold
         )
 
         end_time = datetime.now()

@@ -2,6 +2,7 @@
 
 import logging
 import threading
+import uuid
 from typing import Optional, Dict, Any, List
 
 from PySide6.QtCore import QObject, Signal, Slot, QTimer
@@ -63,6 +64,14 @@ class FelixAdapter(QObject):
         self._approval_timer = QTimer(self)
         self._approval_timer.timeout.connect(self._check_pending_approvals)
         self._emitted_approvals: set = set()  # Track approvals we've already signaled
+
+        # Synthesis review state (for low-confidence synthesis approval)
+        self._synthesis_review_events: Dict[str, threading.Event] = {}
+        self._synthesis_review_decisions: Dict[str, Dict[str, Any]] = {}
+
+        # Connect to synthesis review response signal
+        signals = get_signals()
+        signals.synthesis_review_response.connect(self._on_synthesis_review_response)
 
     @property
     def is_running(self) -> bool:
@@ -248,6 +257,67 @@ class FelixAdapter(QObject):
         except Exception as e:
             logger.error(f"Error responding to approval: {e}")
 
+    # ========================================================================
+    # Synthesis Review (Low-Confidence Synthesis Approval)
+    # ========================================================================
+
+    def create_synthesis_approval_callback(self):
+        """Create a callback for synthesis approval that bridges worker thread to GUI.
+
+        Returns:
+            Callable that can be passed to synthesize_agent_outputs() as approval_callback.
+            When invoked by the synthesis engine, it will:
+            1. Emit synthesis_review_requested signal with review data
+            2. Block the worker thread until user responds via GUI
+            3. Return the user's decision dict
+        """
+        def approval_callback(review_data: Dict[str, Any]) -> Dict[str, Any]:
+            """Called by synthesis engine when confidence < threshold."""
+            review_id = str(uuid.uuid4())[:8]
+
+            # Create event for this review
+            event = threading.Event()
+            self._synthesis_review_events[review_id] = event
+            self._synthesis_review_decisions[review_id] = None
+
+            logger.info(f"Synthesis review requested: {review_id} (confidence={review_data.get('confidence', 0):.2f})")
+
+            # Emit signal to GUI (must be done in Qt thread)
+            signals = get_signals()
+            signals.synthesis_review_requested.emit(review_id, review_data)
+
+            # Block until user responds (with timeout)
+            if event.wait(timeout=300):  # 5 minute timeout
+                decision = self._synthesis_review_decisions.get(review_id, {'action': 'accept'})
+                logger.info(f"Synthesis review {review_id} resolved: {decision.get('action')}")
+            else:
+                # Timeout - auto-accept
+                decision = {'action': 'accept'}
+                logger.warning(f"Synthesis review {review_id} timed out, auto-accepting")
+
+            # Cleanup
+            self._synthesis_review_events.pop(review_id, None)
+            self._synthesis_review_decisions.pop(review_id, None)
+
+            return decision
+
+        return approval_callback
+
+    @Slot(str, dict)
+    def _on_synthesis_review_response(self, review_id: str, decision: Dict[str, Any]):
+        """Handle synthesis review response from GUI.
+
+        Args:
+            review_id: The review request ID
+            decision: Dict with 'action' key ('accept', 'reject', or regeneration strategy)
+        """
+        if review_id in self._synthesis_review_events:
+            self._synthesis_review_decisions[review_id] = decision
+            self._synthesis_review_events[review_id].set()  # Unblock the waiting thread
+            logger.info(f"Received synthesis review response for {review_id}: {decision.get('action')}")
+        else:
+            logger.warning(f"Received response for unknown synthesis review: {review_id}")
+
     @Slot(str, str, bool)
     def send_message(
         self,
@@ -279,6 +349,9 @@ class FelixAdapter(QObject):
         # Import here to avoid circular imports
         from src.workflows.felix_inference import run_felix
 
+        # Create approval callback for synthesis review
+        approval_callback = self.create_synthesis_approval_callback()
+
         # Create streaming worker
         self._current_worker = StreamingWorker(
             run_felix,
@@ -286,7 +359,8 @@ class FelixAdapter(QObject):
             message,
             mode=mode,
             knowledge_enabled=knowledge_enabled,
-            conversation_history=self._conversation_history.copy()
+            conversation_history=self._conversation_history.copy(),
+            approval_callback=approval_callback
         )
 
         # Connect signals

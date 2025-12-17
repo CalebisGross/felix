@@ -164,7 +164,9 @@ def run_felix_workflow(felix_system, task_input: str,
                        max_steps_override: Optional[int] = None,
                        parent_workflow_id: Optional[int] = None,
                        streaming_callback: Optional[Callable] = None,
-                       cancel_event: Optional[threading.Event] = None) -> Dict[str, Any]:
+                       cancel_event: Optional[threading.Event] = None,
+                       approval_callback: Optional[Callable[[Dict], Dict]] = None,
+                       approval_threshold: float = 0.6) -> Dict[str, Any]:
     """
     Run a workflow using the Felix framework components.
 
@@ -184,6 +186,9 @@ def run_felix_workflow(felix_system, task_input: str,
         parent_workflow_id: Optional ID of parent workflow to continue from
         streaming_callback: Optional callback for streaming agent outputs
         cancel_event: Optional threading.Event to signal cancellation
+        approval_callback: Optional callback for user approval of low-confidence synthesis.
+            Invoked when synthesis confidence < approval_threshold.
+        approval_threshold: Confidence threshold below which approval is required (default 0.6)
 
     Returns:
         Dictionary with workflow results and metadata
@@ -1539,7 +1544,9 @@ def run_felix_workflow(felix_system, task_input: str,
                                 coverage_report=coverage_report,
                                 successful_agents=results.get("successful_agents", []),
                                 failed_agents=results.get("failed_agents", []),
-                                streaming_callback=streaming_callback
+                                streaming_callback=streaming_callback,
+                                approval_callback=approval_callback,
+                                approval_threshold=approval_threshold
                             )
                             results["centralpost_synthesis"] = synthesis_result
                             logger.info(f"✓ CentralPost synthesis complete!")
@@ -1611,7 +1618,9 @@ def run_felix_workflow(felix_system, task_input: str,
                     coverage_report=coverage_report,
                     successful_agents=results.get("successful_agents", []),
                     failed_agents=results.get("failed_agents", []),
-                    streaming_callback=streaming_callback
+                    streaming_callback=streaming_callback,
+                    approval_callback=approval_callback,
+                    approval_threshold=approval_threshold
                 )
                 results["centralpost_synthesis"] = synthesis_result
                 logger.info(f"✓ Final CentralPost synthesis complete")
