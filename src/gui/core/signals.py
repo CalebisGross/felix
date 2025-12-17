@@ -43,6 +43,9 @@ class FelixSignals(QObject):
     # Log messages
     log_message = Signal(str, str)  # level, message
 
+    # Layout changes
+    layout_mode_changed = Signal(str)  # "compact" | "standard" | "wide"
+
 
 # Global singleton instance
 _signals_instance = None

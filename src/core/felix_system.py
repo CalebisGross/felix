@@ -22,6 +22,8 @@ from src.memory.knowledge_store import KnowledgeStore
 from src.memory.task_memory import TaskMemory
 from src.memory.context_compression import ContextCompressor, CompressionConfig, CompressionStrategy, CompressionLevel
 from src.memory.agent_performance_tracker import AgentPerformanceTracker
+from src.feedback.feedback_manager import FeedbackManager
+from src.feedback.feedback_integrator import FeedbackIntegrator
 from src.agents import ResearchAgent, AnalysisAgent, CriticAgent, PromptOptimizer
 from src.agents.system_agent import SystemAgent
 from src.agents.agent import AgentState
@@ -35,6 +37,7 @@ try:
         EmbeddingProvider
     )
     from src.knowledge.embeddings import TierRecoveryConfig
+    from src.knowledge.workflow_integration import KnowledgeBrainIntegration
     KNOWLEDGE_BRAIN_AVAILABLE = True
 except ImportError as e:
     logger.debug(f"Knowledge Brain not available: {e}")
@@ -44,6 +47,7 @@ except ImportError as e:
     KnowledgeRetriever = None
     EmbeddingProvider = None
     TierRecoveryConfig = None
+    KnowledgeBrainIntegration = None
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +85,7 @@ class FelixConfig:
     enable_metrics: bool = True
     enable_memory: bool = True
     enable_dynamic_spawning: bool = True
+    spawn_cooldown_seconds: float = 2.0  # Seconds between agent spawns (prevents spawn storms)
     enable_compression: bool = True
     enable_spoke_topology: bool = True
     verbose_llm_logging: bool = True  # Log detailed LLM requests/responses
@@ -247,11 +252,14 @@ class FelixSystem:
         self.task_memory: Optional[TaskMemory] = None
         self.context_compressor: Optional[ContextCompressor] = None
         self.performance_tracker: Optional[AgentPerformanceTracker] = None
+        self.feedback_manager: Optional[FeedbackManager] = None
+        self.feedback_integrator: Optional[FeedbackIntegrator] = None
 
         # Knowledge Brain components
         self.embedding_provider: Optional[EmbeddingProvider] = None
         self.knowledge_retriever: Optional[KnowledgeRetriever] = None
         self.knowledge_daemon: Optional[KnowledgeDaemon] = None
+        self.knowledge_integration: Optional[KnowledgeBrainIntegration] = None
 
         # Current simulation time
         self._current_time = 0.0
@@ -338,7 +346,12 @@ class FelixSystem:
                 self.knowledge_store = KnowledgeStore(self.config.knowledge_db_path)
                 self.task_memory = TaskMemory(self.config.memory_db_path)
                 self.performance_tracker = AgentPerformanceTracker()
-                logger.info("Memory systems initialized (including performance tracker)")
+                self.feedback_manager = FeedbackManager()
+                self.feedback_integrator = FeedbackIntegrator(
+                    feedback_manager=self.feedback_manager,
+                    knowledge_db_path=self.config.knowledge_db_path
+                )
+                logger.info("Memory systems initialized (including performance tracker, feedback manager, integrator)")
 
             # Initialize context compressor
             if self.config.enable_compression:
@@ -382,7 +395,11 @@ class FelixSystem:
                     )
                     logger.info("  Knowledge retriever initialized")
 
-                    # 3. Create daemon config
+                    # 3. Create knowledge brain integration (workflow bridge)
+                    self.knowledge_integration = KnowledgeBrainIntegration(self.knowledge_retriever)
+                    logger.info("  Knowledge integration bridge initialized")
+
+                    # 4. Create daemon config
                     daemon_config = DaemonConfig(
                         watch_directories=self.config.knowledge_watch_dirs or ['./knowledge_sources'],
                         enable_batch_processing=True,
@@ -395,15 +412,16 @@ class FelixSystem:
                         chunk_overlap=self.config.knowledge_chunk_overlap
                     )
 
-                    # 4. Create knowledge daemon
+                    # 5. Create knowledge daemon
                     self.knowledge_daemon = KnowledgeDaemon(
                         config=daemon_config,
                         knowledge_store=self.knowledge_store,
-                        llm_client=self.lm_client
+                        llm_client=self.lm_client,
+                        embedding_provider=self.embedding_provider
                     )
                     logger.info("  Knowledge daemon initialized")
 
-                    # 5. Start daemon if enabled
+                    # 6. Start daemon if enabled
                     if self.config.knowledge_daemon_enabled:
                         self.knowledge_daemon.start()
                         logger.info("  Knowledge daemon started")
@@ -416,6 +434,7 @@ class FelixSystem:
                     self.embedding_provider = None
                     self.knowledge_retriever = None
                     self.knowledge_daemon = None
+                    self.knowledge_integration = None
             elif self.config.enable_knowledge_brain and not KNOWLEDGE_BRAIN_AVAILABLE:
                 logger.warning("Knowledge Brain enabled but dependencies not available")
 
@@ -441,7 +460,8 @@ class FelixSystem:
                 knowledge_store=self.knowledge_store,  # CRITICAL: Share the same knowledge_store instance!
                 config=self.config,  # Pass config for auto-approval and other settings
                 gui_mode=True,  # Enable GUI mode to use approval dialogs instead of CLI prompts
-                prompt_manager=self.prompt_manager  # Pass prompt manager for synthesis prompts
+                prompt_manager=self.prompt_manager,  # Pass prompt manager for synthesis prompts
+                performance_tracker=self.performance_tracker  # Pass for agent spawning decisions
             )
             logger.info("Central post initialized with synthesis capability and shared knowledge store (GUI mode enabled)")
 
@@ -461,7 +481,10 @@ class FelixSystem:
                 web_search_client=self.web_search_client,
                 max_web_queries=self.config.web_search_max_queries,
                 prompt_manager=self.prompt_manager,
-                prompt_optimizer=self.prompt_optimizer
+                prompt_optimizer=self.prompt_optimizer,
+                task_memory=self.task_memory,
+                performance_tracker=self.performance_tracker,
+                spawn_cooldown_seconds=self.config.spawn_cooldown_seconds
             )
             logger.info("Agent factory initialized with prompt manager and optimizer")
 
@@ -753,6 +776,58 @@ class FelixSystem:
                 "active_connections": metrics.get("active_connections", 0)
             })
 
+            # Add agent phase counts from registry
+            if hasattr(self.central_post, 'agent_registry'):
+                registry = self.central_post.agent_registry
+                if hasattr(registry, 'get_agents_in_phase'):
+                    status.update({
+                        "agents_exploration": len(registry.get_agents_in_phase('exploration')),
+                        "agents_analysis": len(registry.get_agents_in_phase('analysis')),
+                        "agents_synthesis": len(registry.get_agents_in_phase('synthesis'))
+                    })
+
+        # Build detailed agents_list from both agent_registry (primary) and agent_manager (fallback)
+        # This ensures consistency with the phase counts shown in the sidebar
+        agents_list = []
+        seen_ids = set()
+
+        # Primary source: agent_registry (same source as phase counts)
+        if self.central_post and hasattr(self.central_post, 'agent_registry'):
+            registry = self.central_post.agent_registry
+            if hasattr(registry, 'get_active_agents'):
+                for agent_data in registry.get_active_agents():
+                    agent_id = agent_data.get("agent_id", "unknown")
+                    if agent_id not in seen_ids:
+                        seen_ids.add(agent_id)
+                        agents_list.append({
+                            "id": agent_id,
+                            "type": agent_data.get("agent_type", "Agent"),
+                            "phase": agent_data.get("phase", "exploration"),
+                            "confidence": agent_data.get("avg_confidence", 0.5)
+                        })
+
+        # Fallback source: agent_manager (for any agents not in registry)
+        for agent in self.agent_manager.get_all_agents():
+            agent_id = getattr(agent, 'agent_id', str(id(agent)))
+            if agent_id not in seen_ids:
+                seen_ids.add(agent_id)
+                agent_type = getattr(agent, 'agent_type', type(agent).__name__)
+                phase = 'exploration'
+                confidence = 0.5
+                if self.central_post and hasattr(self.central_post, 'get_agent_info'):
+                    info = self.central_post.get_agent_info(agent_id)
+                    if info:
+                        phase = info.get('phase', 'exploration')
+                        perf = info.get('performance', {})
+                        confidence = perf.get('avg_confidence', 0.5)
+                agents_list.append({
+                    "id": agent_id,
+                    "type": agent_type,
+                    "phase": phase,
+                    "confidence": confidence
+                })
+        status["agents_list"] = agents_list
+
         if self.config.enable_memory and self.central_post:
             memory_summary = self.central_post.get_memory_summary()
             status.update({
@@ -775,6 +850,36 @@ class FelixSystem:
                 "compression_enabled": True,
                 "compression_strategy": self.config.compression_strategy
             })
+
+        # Add workflow state for ActivityView - derived from agent phases
+        exploration = status.get("agents_exploration", 0)
+        analysis = status.get("agents_analysis", 0)
+        synthesis = status.get("agents_synthesis", 0)
+        total_agents = exploration + analysis + synthesis
+
+        if total_agents == 0:
+            workflow_phase = "idle"
+            workflow_step = 0
+            workflow_total = 0
+        elif synthesis > 0:
+            workflow_phase = "synthesis"
+            workflow_step = 3
+            workflow_total = 3
+        elif analysis > 0:
+            workflow_phase = "analysis"
+            workflow_step = 2
+            workflow_total = 3
+        else:
+            workflow_phase = "exploration"
+            workflow_step = 1
+            workflow_total = 3
+
+        status["workflow_state"] = {
+            "phase": workflow_phase,
+            "current_step": workflow_step,
+            "total_steps": workflow_total,
+            "status_message": f"{total_agents} agent(s) active" if total_agents > 0 else ""
+        }
 
         return status
 

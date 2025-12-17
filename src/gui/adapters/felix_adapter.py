@@ -9,6 +9,9 @@ from PySide6.QtCore import QObject, Signal, Slot, QTimer
 from ..core.signals import get_signals
 from ..core.worker import StreamingWorker
 
+# Import ApprovalDecision enum for type conversion
+from src.execution.approval_manager import ApprovalDecision
+
 logger = logging.getLogger(__name__)
 
 
@@ -56,6 +59,11 @@ class FelixAdapter(QObject):
         self._status_timer = QTimer(self)
         self._status_timer.timeout.connect(self._poll_status)
 
+        # Approval polling timer (faster for responsiveness)
+        self._approval_timer = QTimer(self)
+        self._approval_timer.timeout.connect(self._check_pending_approvals)
+        self._emitted_approvals: set = set()  # Track approvals we've already signaled
+
     @property
     def is_running(self) -> bool:
         """Check if Felix system is running."""
@@ -65,6 +73,18 @@ class FelixAdapter(QObject):
     def felix_system(self):
         """Get the underlying FelixSystem instance."""
         return self._felix_system
+
+    def set_conversation_history(self, history: List[Dict[str, str]]):
+        """Set the conversation history (used when restoring sessions).
+
+        Args:
+            history: List of {"role": "user"/"assistant", "content": "..."}
+        """
+        self._conversation_history = history.copy()
+
+    def clear_conversation_history(self):
+        """Clear the conversation history (used when starting a new session)."""
+        self._conversation_history.clear()
 
     @Slot(dict)
     def start_system(self, config: Optional[Dict[str, Any]] = None):
@@ -116,6 +136,8 @@ class FelixAdapter(QObject):
             self.system_started.emit()
             # Start status polling
             self._status_timer.start(2000)  # Poll every 2 seconds
+            # Start approval polling (faster for UI responsiveness)
+            self._approval_timer.start(500)  # Poll every 500ms
             # Emit initial status
             self._poll_status()
         else:
@@ -134,8 +156,10 @@ class FelixAdapter(QObject):
             logger.warning("Felix system not running")
             return
 
-        # Stop status polling
+        # Stop polling timers
         self._status_timer.stop()
+        self._approval_timer.stop()
+        self._emitted_approvals.clear()
 
         # Cancel any ongoing request
         self.cancel_request()
@@ -173,6 +197,56 @@ class FelixAdapter(QObject):
                 self.status_updated.emit(status)
             except Exception as e:
                 logger.warning(f"Error polling status: {e}")
+
+    def _check_pending_approvals(self):
+        """Poll for pending approval requests and emit signals."""
+        if not self._felix_system or not self._felix_system.central_post:
+            return
+
+        try:
+            scm = self._felix_system.central_post.system_command_manager
+            if not scm or not scm.approval_manager:
+                return
+
+            pending = scm.approval_manager.get_pending_approvals()
+
+            for approval in pending:
+                if approval.approval_id not in self._emitted_approvals:
+                    self._emitted_approvals.add(approval.approval_id)
+                    signals = get_signals()
+                    signals.approval_requested.emit(approval.approval_id, {
+                        'command': approval.command,
+                        'context': approval.context or '',
+                        'risk_level': approval.risk_assessment if isinstance(approval.risk_assessment, str) else (approval.risk_assessment.get('level', 'MEDIUM') if approval.risk_assessment else 'MEDIUM'),
+                        'agent_id': approval.agent_id or ''
+                    })
+                    logger.info(f"Emitted approval request signal: {approval.approval_id}")
+        except Exception as e:
+            logger.warning(f"Error checking pending approvals: {e}")
+
+    def respond_to_approval(self, approval_id: str, decision: str):
+        """Send approval decision back to SystemCommandManager.
+
+        Args:
+            approval_id: The approval request ID
+            decision: One of 'approve_once', 'approve_always_exact',
+                     'approve_always_command', 'deny' (lowercase to match enum values)
+        """
+        if not self._felix_system or not self._felix_system.central_post:
+            logger.warning("Cannot respond to approval - system not running")
+            return
+
+        try:
+            scm = self._felix_system.central_post.system_command_manager
+            # Convert string to ApprovalDecision enum
+            # The enum values are lowercase: 'approve_once', 'deny', etc.
+            decision_enum = ApprovalDecision(decision.lower())
+            scm.approve_system_action(approval_id, decision_enum)
+            logger.info(f"Sent approval response: {approval_id} -> {decision_enum.value}")
+        except ValueError as e:
+            logger.error(f"Invalid approval decision '{decision}': {e}")
+        except Exception as e:
+            logger.error(f"Error responding to approval: {e}")
 
     @Slot(str, str, bool)
     def send_message(
@@ -233,8 +307,31 @@ class FelixAdapter(QObject):
                 "content": content
             })
 
+        # Save to workflow history database (for Memory dev view)
+        self._save_to_workflow_history(result)
+
         self.response_complete.emit(result)
         self._current_worker = None
+
+    def _save_to_workflow_history(self, result: Dict[str, Any]):
+        """Save workflow result to history database for persistence and dev view access."""
+        try:
+            from src.memory.workflow_history import WorkflowHistory
+
+            # Only save if we have actual content
+            if not result.get("content"):
+                return
+
+            workflow_history = WorkflowHistory()
+            workflow_id = workflow_history.save_workflow_output(result)
+
+            if workflow_id:
+                logger.info(f"Saved workflow to history (ID: {workflow_id})")
+            else:
+                logger.warning("Failed to save workflow to history database")
+
+        except Exception as e:
+            logger.warning(f"Could not save to workflow history: {e}")
 
     @Slot()
     def cancel_request(self):

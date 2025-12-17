@@ -2,6 +2,11 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## HARD RULES
+
+1. We use a venv at .venv for development. Any testing or execution must be done in this venv.
+2. Never use attribution in GitHub comments.
+
 ## Codebase Structure Reference
 
 For the complete file structure, see `codebase_structure.txt` in the project root. This file is the authoritative reference for understanding the codebase layout.
@@ -10,7 +15,7 @@ For the complete file structure, see `codebase_structure.txt` in the project roo
 
 Felix is a production-ready, air-gapped multi-agent AI framework designed for organizations requiring complete data isolation. It works entirely offline with zero external dependencies using a 3-tier fallback system (LM Studio → TF-IDF → SQLite FTS5).
 
-## Build & Run Commands
+## Build & Run Commands (MUST BE IN VENV or use PYTHON3)
 
 ```bash
 # Setup

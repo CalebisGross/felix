@@ -150,6 +150,99 @@ class FeedbackManager:
             logger.warning(f"{self.db_path} does not exist - will be created")
             self.db_path.touch()
 
+        # Ensure required tables exist
+        self._ensure_tables()
+
+    def _ensure_tables(self):
+        """Create required tables if they don't exist."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            # Tier 1: Quick workflow ratings
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS workflow_ratings (
+                    rating_id TEXT PRIMARY KEY,
+                    workflow_id TEXT NOT NULL,
+                    rating TEXT NOT NULL CHECK(rating IN ('positive', 'negative')),
+                    created_at REAL NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_workflow_ratings
+                ON workflow_ratings(workflow_id, created_at DESC)
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_rating_type
+                ON workflow_ratings(rating, created_at DESC)
+            """)
+
+            # Tier 2: Detailed workflow feedback
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS workflow_feedback_detailed (
+                    feedback_id TEXT PRIMARY KEY,
+                    workflow_id TEXT NOT NULL,
+                    accuracy_rating INTEGER CHECK(accuracy_rating BETWEEN 1 AND 5),
+                    relevance_rating INTEGER CHECK(relevance_rating BETWEEN 1 AND 5),
+                    completeness_rating INTEGER CHECK(completeness_rating BETWEEN 1 AND 5),
+                    user_comments TEXT,
+                    created_at REAL NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_detailed_feedback_workflow
+                ON workflow_feedback_detailed(workflow_id)
+            """)
+
+            # Tier 3: Knowledge-level feedback
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS knowledge_feedback (
+                    feedback_id TEXT PRIMARY KEY,
+                    knowledge_id TEXT NOT NULL,
+                    feedback_type TEXT NOT NULL CHECK(feedback_type IN ('correct', 'incorrect', 'unsure')),
+                    reason_category TEXT CHECK(reason_category IN (
+                        'factually_wrong', 'outdated', 'irrelevant', 'missing_context', 'other'
+                    )),
+                    reason_detail TEXT,
+                    correction_suggestion TEXT,
+                    created_at REAL NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_knowledge_feedback_entry
+                ON knowledge_feedback(knowledge_id, created_at DESC)
+            """)
+
+            # Feedback patterns for reliability tracking
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS feedback_patterns (
+                    pattern_id TEXT PRIMARY KEY,
+                    pattern_type TEXT NOT NULL CHECK(pattern_type IN (
+                        'source_reliability', 'agent_accuracy', 'domain_quality', 'task_type_success'
+                    )),
+                    pattern_key TEXT NOT NULL,
+                    positive_count INTEGER DEFAULT 0,
+                    negative_count INTEGER DEFAULT 0,
+                    reliability_score REAL DEFAULT 0.5,
+                    sample_size INTEGER DEFAULT 0,
+                    last_updated REAL NOT NULL,
+                    UNIQUE(pattern_type, pattern_key)
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_feedback_patterns_type
+                ON feedback_patterns(pattern_type, reliability_score DESC)
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_feedback_patterns_reliability
+                ON feedback_patterns(reliability_score DESC, sample_size DESC)
+            """)
+
+            conn.commit()
+            logger.debug("Feedback system tables ensured")
+        except Exception as e:
+            logger.error(f"Failed to ensure feedback tables: {e}")
+        finally:
+            conn.close()
+
     def _get_connection(self) -> sqlite3.Connection:
         """Get database connection."""
         conn = sqlite3.connect(self.db_path)

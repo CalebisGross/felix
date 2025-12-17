@@ -470,7 +470,8 @@ IMPORTANT:
                     if self.embedding_provider:
                         try:
                             text = f"{concept.concept_name}: {concept.definition}"
-                            concept_embedding = self.embedding_provider.get_embedding(text)
+                            embed_result = self.embedding_provider.embed(text)
+                            concept_embedding = embed_result.embedding if embed_result else None
                         except Exception as e:
                             logger.warning(f"Embedding failed for '{concept.concept_name}': {e}")
 

@@ -441,7 +441,7 @@ class ContextCompressor:
             key_info.extend(caps[:2])  # Limit to avoid clutter
         
         if key_info:
-            summary += f" Key details: {', '.join(set(key_info)[:5])}"
+            summary += f" Key details: {', '.join(list(set(key_info))[:5])}"
         
         return summary
     

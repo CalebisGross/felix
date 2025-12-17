@@ -599,7 +599,8 @@ Be concise but precise. Extract 3-10 concepts maximum.
                     if self.embedding_provider:
                         try:
                             text_for_embedding = f"{concept.concept_name}: {concept.definition}"
-                            concept_embedding = self.embedding_provider.get_embedding(text_for_embedding)
+                            embed_result = self.embedding_provider.embed(text_for_embedding)
+                            concept_embedding = embed_result.embedding if embed_result else None
                         except Exception as emb_e:
                             logger.warning(f"Failed to generate embedding for concept '{concept.concept_name}': {emb_e}")
                             # Continue without embedding - it's optional

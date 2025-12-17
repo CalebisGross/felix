@@ -528,21 +528,23 @@ class TeamSizeOptimizer:
     """
     
     def __init__(self, max_agents: int = 25, token_budget_limit: int = 45000,
-                 performance_weight: float = 0.4, efficiency_weight: float = 0.6):
+                 performance_weight: float = 0.4, efficiency_weight: float = 0.6,
+                 spawn_cooldown_seconds: float = 2.0):
         """
         Initialize team size optimizer.
-        
+
         Args:
             max_agents: Maximum allowed agents
             token_budget_limit: Total token budget limit
             performance_weight: Weight for performance in optimization
-            efficiency_weight: Weight for efficiency in optimization  
+            efficiency_weight: Weight for efficiency in optimization
+            spawn_cooldown_seconds: Seconds between agent spawns (prevents spawn storms)
         """
         self.max_agents = max_agents
         self.token_budget_limit = token_budget_limit
         self.performance_weight = performance_weight
         self.efficiency_weight = efficiency_weight
-        
+
         # Historical performance tracking
         self._team_size_performance: Dict[int, List[float]] = defaultdict(list)
         self._team_size_efficiency: Dict[int, List[float]] = defaultdict(list)
@@ -551,7 +553,7 @@ class TeamSizeOptimizer:
 
         # Spawn cooldown tracking (prevent spawning too frequently)
         self._last_spawn_time = 0.0
-        self._spawn_cooldown_seconds = 30.0  # Wait 30 seconds between spawn checks
+        self._spawn_cooldown_seconds = spawn_cooldown_seconds
     
     def update_current_state(self, team_size: int, token_usage: int) -> None:
         """Update current team state for optimization calculations."""
@@ -731,7 +733,8 @@ class DynamicSpawning:
 
     def __init__(self, agent_factory, confidence_threshold: float = 0.8,
                  max_agents: int = 25, token_budget_limit: int = 45000,
-                 task_memory=None):
+                 task_memory=None, performance_tracker=None,
+                 spawn_cooldown_seconds: float = 2.0):
         """
         Initialize dynamic spawning system.
 
@@ -741,6 +744,8 @@ class DynamicSpawning:
             max_agents: Maximum allowed agents
             token_budget_limit: Total token budget limit
             task_memory: Optional TaskMemory instance for historical pattern consultation
+            performance_tracker: Optional AgentPerformanceTracker for agent type statistics
+            spawn_cooldown_seconds: Seconds between agent spawns (prevents spawn storms)
         """
         self.agent_factory = agent_factory
 
@@ -748,11 +753,15 @@ class DynamicSpawning:
         self.confidence_monitor = ConfidenceMonitor(confidence_threshold=confidence_threshold)
         self.content_analyzer = ContentAnalyzer()
         self.team_optimizer = TeamSizeOptimizer(max_agents=max_agents,
-                                              token_budget_limit=token_budget_limit)
+                                              token_budget_limit=token_budget_limit,
+                                              spawn_cooldown_seconds=spawn_cooldown_seconds)
 
         # TaskMemory integration (Issue #24)
         self.task_memory = task_memory
         self._task_memory_strategy: Optional[Dict[str, Any]] = None  # Cached strategy recommendation
+
+        # AgentPerformanceTracker integration (for historical agent type performance)
+        self.performance_tracker = performance_tracker
 
         # State tracking
         self._last_analysis_time = 0.0
@@ -841,6 +850,49 @@ class DynamicSpawning:
             success_probability, recommendations, potential_issues, patterns_used
         """
         return self._task_memory_strategy
+
+    def get_agent_performance_boost(self, agent_type: str, days: int = 30) -> float:
+        """
+        Get priority boost factor based on historical agent type performance.
+
+        Uses AgentPerformanceTracker to query historical performance statistics
+        for the given agent type. High-performing agent types get priority boost.
+
+        Args:
+            agent_type: Type of agent to check (e.g., "research", "analysis")
+            days: Number of days of history to consider
+
+        Returns:
+            Boost factor (1.0 = no boost, >1.0 = higher priority, <1.0 = lower priority)
+        """
+        if not self.performance_tracker:
+            return 1.0
+
+        try:
+            stats = self.performance_tracker.get_agent_type_statistics(
+                agent_type=agent_type,
+                days=days
+            )
+
+            if not stats or stats.get('checkpoint_count', 0) < 5:
+                # Not enough data - no boost
+                return 1.0
+
+            avg_confidence = stats.get('avg_confidence', 0.5)
+
+            # High-performing agents (avg confidence > 0.8) get priority boost
+            if avg_confidence >= 0.8:
+                return 1.2  # 20% boost
+            elif avg_confidence >= 0.7:
+                return 1.1  # 10% boost
+            elif avg_confidence < 0.5:
+                return 0.9  # 10% penalty for historically low performers
+            else:
+                return 1.0  # Neutral
+
+        except Exception as e:
+            logger.debug(f"Could not get performance stats for {agent_type}: {e}")
+            return 1.0
 
     def analyze_and_spawn(self, processed_messages: List[Any], 
                          current_agents: List[Any], current_time: float) -> List[Any]:
@@ -984,6 +1036,12 @@ class DynamicSpawning:
                 success_prob = self._task_memory_strategy.get('success_probability', 0.0)
                 if success_prob > 0.7:
                     priority_score *= 1.2  # 20% boost for high-confidence historical patterns
+
+            # Apply AgentPerformanceTracker boost based on historical agent performance
+            performance_boost = self.get_agent_performance_boost(agent_type)
+            if performance_boost != 1.0:
+                priority_score *= performance_boost
+                logger.debug(f"Applied performance boost {performance_boost:.2f} for {agent_type}")
 
             # CRITICAL: Clamp spawn time range to valid 0.0-1.0 bounds
             clamped_time = min(max(current_time, 0.0), 0.99)  # Ensure spawn_time stays within 0-1

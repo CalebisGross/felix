@@ -49,6 +49,7 @@ class TypingIndicator(QFrame):
         super().__init__(parent)
         self.setObjectName("typingIndicator")
         self._animations = []
+        self._animation_started = False
         self._setup_ui()
 
     def _setup_ui(self):
@@ -98,12 +99,27 @@ class TypingIndicator(QFrame):
 
     def start(self):
         """Start the animation."""
+        self._animation_started = True
         # Start animations with staggered delays
         for i, anim in enumerate(self._animations):
-            QTimer.singleShot(i * 150, anim.start)
+            QTimer.singleShot(i * 150, lambda a=anim: self._start_if_valid(a))
+
+    def _start_if_valid(self, anim):
+        """Start animation only if widget is still valid.
+
+        Wrapped in try/except to handle case where Qt's C++ object
+        has been deleted before the QTimer.singleShot callback fires.
+        """
+        try:
+            if self._animation_started and self.isVisible():
+                anim.start()
+        except RuntimeError:
+            # Widget was deleted by Qt - safely ignore
+            pass
 
     def stop(self):
         """Stop the animation."""
+        self._animation_started = False
         for anim in self._animations:
             anim.stop()
 

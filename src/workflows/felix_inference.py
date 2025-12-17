@@ -110,7 +110,14 @@ def run_felix(
             'execution_time': response.execution_time,
             'error': response.error,
             # Backward compatibility with old workflow results
-            'centralpost_synthesis': response.content,
+            'centralpost_synthesis': {
+                'synthesis_content': response.content,
+                'confidence': response.confidence,
+                'agents_synthesized': len(response.thinking_steps) if response.thinking_steps else 0,
+                'tokens_used': 0,
+                'max_tokens': 0,
+                'temperature': 0.0,
+            },
             'synthesis': response.content,
         }
 
@@ -130,6 +137,13 @@ def run_felix(
             'knowledge_sources': None,
             'execution_time': 0.0,
             'error': str(e),
-            'centralpost_synthesis': f"Error: {str(e)}",
+            'centralpost_synthesis': {
+                'synthesis_content': f"Error: {str(e)}",
+                'confidence': 0.0,
+                'agents_synthesized': 0,
+                'tokens_used': 0,
+                'max_tokens': 0,
+                'temperature': 0.0,
+            },
             'synthesis': f"Error: {str(e)}",
         }

@@ -164,7 +164,6 @@ class SettingsView(QWidget):
         status_row.addStretch()
 
         test_btn = QPushButton("Test")
-        test_btn.setFixedWidth(50)
         test_btn.clicked.connect(self._test_llm_connection)
         status_row.addWidget(test_btn)
         layout.addLayout(status_row)

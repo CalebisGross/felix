@@ -28,6 +28,7 @@ from dataclasses import dataclass
 # Felix framework imports for full integration
 from src.communication.message_types import Message, MessageType
 from src.memory.task_memory import TaskComplexity, TaskOutcome
+from src.memory.knowledge_store import KnowledgeQuery, ConfidenceLevel
 
 logger = logging.getLogger(__name__)
 
@@ -270,6 +271,9 @@ Always identify yourself as Felix when asked about your identity."""
         """
         Gather relevant knowledge context for the message.
 
+        Uses MemoryFacade for sophisticated retrieval when available,
+        falling back to simple search otherwise.
+
         Args:
             message: User's input message
 
@@ -280,8 +284,23 @@ Always identify yourself as Felix when asked about your identity."""
             return "", []
 
         try:
-            # Query knowledge store using advanced_search
-            results = self.knowledge_store.advanced_search(content=message, limit=10)
+            results = []
+
+            # Prefer MemoryFacade for sophisticated retrieval (domain filtering, relevance, meta-learning)
+            if self.central_post and hasattr(self.central_post, 'memory_facade') and self.central_post.memory_facade:
+                query = KnowledgeQuery(
+                    domains=None,  # Search all domains (including web_search results)
+                    content_keywords=[message],
+                    min_confidence=ConfidenceLevel.MEDIUM,
+                    limit=10,
+                    use_semantic_search=True  # Enable if embeddings available
+                )
+                results = self.central_post.memory_facade.retrieve_knowledge_with_query(query)
+                logger.debug(f"Knowledge retrieval via MemoryFacade: {len(results)} entries")
+            else:
+                # Fallback to simple search
+                results = self.knowledge_store.advanced_search(content=message, limit=10)
+                logger.debug(f"Knowledge retrieval via simple search: {len(results)} entries")
 
             if not results:
                 return "", []
@@ -780,9 +799,23 @@ Only stop issuing commands when the task is genuinely complete or you need user 
             cancel_event=cancel_event
         )
 
-        # Extract results
-        content = result.get('centralpost_synthesis', result.get('synthesis', ''))
-        confidence = result.get('confidence', 0.0)
+        # Extract results from centralpost_synthesis dict
+        # The synthesis is a dict with 'synthesis_content', 'confidence', etc.
+        synthesis = result.get('centralpost_synthesis') or {}
+        if isinstance(synthesis, dict):
+            content = synthesis.get('synthesis_content', '')
+            confidence = synthesis.get('confidence', 0.0)
+        else:
+            # Fallback if synthesis is somehow a string
+            content = str(synthesis) if synthesis else ''
+            confidence = 0.0
+
+        # Fallback: if no synthesis, try to get best agent response
+        if not content and result.get('llm_responses'):
+            best_response = max(result['llm_responses'], key=lambda r: r.get('confidence', 0.0))
+            content = best_response.get('response', '')
+            confidence = best_response.get('confidence', 0.0)
+            logger.warning("No synthesis available, using best agent response as fallback")
 
         return {
             'content': content,
@@ -852,10 +885,30 @@ Only stop issuing commands when the task is genuinely complete or you need user 
             # Extract and format compressed content
             if compressed and compressed.content:
                 # Build formatted output from compressed content
+                # Hierarchical summary returns nested dicts: {'core': {}, 'supporting': {...}, 'auxiliary': {}}
                 formatted = ["CONVERSATION HISTORY (compressed):"]
-                for _, value in compressed.content.items():
-                    if isinstance(value, str) and value.strip():
-                        formatted.append(value)
+
+                # Extract strings from the nested structure
+                def extract_strings(obj):
+                    """Recursively extract string values from nested dicts."""
+                    if isinstance(obj, str):
+                        if obj.strip():
+                            return [obj]
+                        return []
+                    elif isinstance(obj, dict):
+                        result = []
+                        for v in obj.values():
+                            result.extend(extract_strings(v))
+                        return result
+                    elif isinstance(obj, (list, tuple)):
+                        result = []
+                        for item in obj:
+                            result.extend(extract_strings(item))
+                        return result
+                    return []
+
+                extracted = extract_strings(compressed.content)
+                formatted.extend(extracted)
 
                 logger.info(
                     f"Compressed history: {compressed.original_size} -> "

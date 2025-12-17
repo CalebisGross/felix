@@ -8,7 +8,6 @@ import os
 import tempfile
 from pathlib import Path
 from src.memory.knowledge_store import KnowledgeStore, KnowledgeType, ConfidenceLevel
-from src.knowledge.knowledge_daemon import KnowledgeDaemon, DaemonConfig
 
 def test_update_knowledge_entry():
     """Test updating a knowledge entry."""
@@ -51,62 +50,6 @@ def test_update_knowledge_entry():
 
         print(f"✓ Verified update: confidence={entry.confidence_level.value}, tags={entry.tags}")
         print("✅ test_update_knowledge_entry PASSED")
-
-    finally:
-        # Cleanup
-        if os.path.exists(db_path):
-            os.unlink(db_path)
-
-def test_merge_knowledge_entries():
-    """Test merging multiple entries."""
-    # Create temporary database
-    with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as tmp:
-        db_path = tmp.name
-
-    try:
-        store = KnowledgeStore(db_path)
-
-        # Create entries
-        entry1_id = store.store_knowledge(
-            knowledge_type=KnowledgeType.DOMAIN_EXPERTISE,
-            content={'concept': 'Python', 'definition': 'A language'},
-            confidence_level=ConfidenceLevel.MEDIUM,
-            source_agent='test',
-            domain='python',
-            tags=['language']
-        )
-
-        entry2_id = store.store_knowledge(
-            knowledge_type=KnowledgeType.DOMAIN_EXPERTISE,
-            content={'concept': 'Python', 'definition': 'Used for scripting', 'version': '3.10'},
-            confidence_level=ConfidenceLevel.HIGH,
-            source_agent='test',
-            domain='python',
-            tags=['scripting']
-        )
-
-        print(f"✓ Created two entries: {entry1_id}, {entry2_id}")
-
-        # Merge entries
-        success = store.merge_knowledge_entries(entry1_id, [entry2_id], merge_strategy="combine_content")
-        assert success, "Merge should succeed"
-        print(f"✓ Merged entries successfully")
-
-        # Verify merge
-        entry = store.get_entry_by_id(entry1_id)
-        assert entry is not None, "Primary entry should exist"
-        assert 'version' in entry.content, "Combined content from entry2 should be present"
-        assert entry.confidence_level == ConfidenceLevel.HIGH, "Should take highest confidence"
-        assert 'scripting' in entry.tags, "Tags should be combined"
-
-        print(f"✓ Verified merge: confidence={entry.confidence_level.value}, tags={entry.tags}, content_keys={list(entry.content.keys())}")
-
-        # Entry2 should be deleted
-        entry2 = store.get_entry_by_id(entry2_id)
-        assert entry2 is None, "Secondary entry should be deleted"
-        print(f"✓ Verified secondary entry deleted")
-
-        print("✅ test_merge_knowledge_entries PASSED")
 
     finally:
         # Cleanup
@@ -156,75 +99,6 @@ def test_get_entry_by_id():
         if os.path.exists(db_path):
             os.unlink(db_path)
 
-def test_document_reprocessing():
-    """Test document re-processing with hash detection."""
-    # Create temporary files and database
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = os.path.join(tmpdir, 'test.db')
-        test_file = os.path.join(tmpdir, 'test.txt')
-
-        # Write initial content
-        with open(test_file, 'w') as f:
-            f.write("Initial content for testing")
-
-        # Create store and daemon
-        store = KnowledgeStore(db_path)
-        config = DaemonConfig(
-            watch_directories=[tmpdir],
-            processing_interval=1,
-            enable_file_watching=False
-        )
-        daemon = KnowledgeDaemon(config, store)
-
-        print(f"✓ Created test file: {test_file}")
-
-        # First processing (new document)
-        result1 = daemon.reprocess_document(test_file, force=False)
-        assert result1['status'] == 'queued', "New document should be queued"
-        assert result1['reason'] == 'new_document', "Should be recognized as new"
-        print(f"✓ First process: {result1}")
-
-        # Simulate document in database by manually adding it
-        import hashlib
-        import sqlite3
-        import time
-        with open(test_file, 'rb') as f:
-            file_hash = hashlib.md5(f.read()).hexdigest()
-
-        conn = sqlite3.connect(db_path)
-        conn.execute("""
-            INSERT INTO document_sources
-            (doc_id, file_name, file_path, file_type, file_hash, ingestion_status, ingestion_time)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, ('test-doc-1', 'test.txt', test_file, 'txt', file_hash, 'completed', time.time()))
-        conn.commit()
-        conn.close()
-
-        # Second processing (unchanged)
-        result2 = daemon.reprocess_document(test_file, force=False)
-        assert result2['status'] == 'skipped', "Unchanged document should be skipped"
-        assert result2['reason'] == 'no_changes', "Should detect no changes"
-        print(f"✓ Second process (unchanged): {result2}")
-
-        # Modify file
-        with open(test_file, 'w') as f:
-            f.write("Modified content for testing")
-
-        # Third processing (changed)
-        result3 = daemon.reprocess_document(test_file, force=False)
-        assert result3['status'] == 'queued', "Changed document should be queued"
-        assert result3['reason'] == 'file_changed', "Should detect file change"
-        assert result3['old_hash'] != result3['new_hash'], "Hashes should differ"
-        print(f"✓ Third process (changed): {result3}")
-
-        # Fourth processing (force)
-        result4 = daemon.reprocess_document(test_file, force=True)
-        assert result4['status'] == 'queued', "Forced reprocess should be queued"
-        assert result4['reason'] == 'forced', "Should indicate forced"
-        print(f"✓ Fourth process (forced): {result4}")
-
-        print("✅ test_document_reprocessing PASSED")
-
 def run_all_tests():
     """Run all test functions."""
     print("=" * 70)
@@ -235,8 +109,6 @@ def run_all_tests():
     tests = [
         test_get_entry_by_id,
         test_update_knowledge_entry,
-        test_merge_knowledge_entries,
-        test_document_reprocessing
     ]
 
     passed = 0

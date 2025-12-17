@@ -736,11 +736,27 @@ Your output should reflect JUSTIFIED confidence, not reflexive confidence. If th
             )
 
         # Call validation functions (imported at line 35, now actually used!)
+        # These functions are designed for knowledge entries but can work with synthesis output
         validation_score = None
         validation_flags = None
         try:
-            validation_score = calculate_validation_score(final_content, task_description)
-            validation_flags = get_validation_flags(final_content)
+            # Wrap synthesis content for validation
+            # - source_agent: "synthesis_engine" (this is synthesis output)
+            # - domain: "workflow_task" (agent-generated content)
+            # - confidence_level: use the synthesis_confidence
+            validation_score = calculate_validation_score(
+                content=final_content,
+                source_agent="synthesis_engine",
+                domain="workflow_task",
+                confidence_level=synthesis_confidence,
+                existing_knowledge=None
+            )
+            validation_flags = get_validation_flags(
+                content=final_content,
+                source_agent="synthesis_engine",
+                domain="workflow_task",
+                existing_knowledge=None
+            )
 
             logger.info(f"  Validation score: {validation_score:.2f}")
             if validation_flags:

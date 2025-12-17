@@ -1,8 +1,47 @@
 """Theme system for Felix GUI with dark/light mode support."""
 
 from PySide6.QtCore import QObject, Signal
-from PySide6.QtGui import QPalette, QColor
-from PySide6.QtWidgets import QApplication
+from PySide6.QtGui import QPalette, QColor, QFontMetrics
+from PySide6.QtWidgets import QApplication, QPushButton
+
+
+def create_button(text: str, min_width: int = None) -> QPushButton:
+    """Create a button that auto-sizes to fit its text.
+
+    Use this instead of manually calling setFixedWidth() on buttons.
+    The button will use the global stylesheet padding and auto-size.
+
+    Args:
+        text: Button text
+        min_width: Optional minimum width (use only for very short text like "OK")
+
+    Returns:
+        QPushButton configured for proper sizing
+    """
+    btn = QPushButton(text)
+    if min_width:
+        btn.setMinimumWidth(min_width)
+    # Don't use setFixedWidth - let the button auto-size based on text
+    return btn
+
+
+def calculate_text_width(text: str, padding: int = 32) -> int:
+    """Calculate the minimum width needed for text with padding.
+
+    Useful when you need to know how wide a button should be.
+
+    Args:
+        text: The text to measure
+        padding: Extra space for button borders/padding (default 32px)
+
+    Returns:
+        Width in pixels
+    """
+    app = QApplication.instance()
+    if app:
+        fm = QFontMetrics(app.font())
+        return fm.horizontalAdvance(text) + padding
+    return len(text) * 8 + padding  # Rough estimate if no app
 
 
 class DarkColors:

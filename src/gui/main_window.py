@@ -1,17 +1,19 @@
 """Main window with 3-panel layout."""
 
 import logging
+from enum import Enum
 from typing import Optional, Dict, Any, List
 
-from PySide6.QtCore import Slot, Qt
+from PySide6.QtCore import Slot, Qt, QSettings, Signal
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QSplitter, QFrame, QLabel, QMessageBox, QStatusBar,
-    QMenuBar, QMenu
+    QMenuBar, QMenu, QInputDialog, QLineEdit
 )
-from PySide6.QtGui import QShortcut, QKeySequence, QAction
+from PySide6.QtGui import QShortcut, QKeySequence, QAction, QResizeEvent
 
 from .core.theme import Colors, get_theme_manager
+from .core.signals import get_signals
 from .adapters.felix_adapter import FelixAdapter
 from .panels.sidebar import Sidebar
 from .panels.workspace import Workspace
@@ -20,6 +22,13 @@ from .models.session_model import Session, SessionStore
 from .models.message_model import Message, MessageRole
 
 logger = logging.getLogger(__name__)
+
+
+class LayoutMode(Enum):
+    """Layout modes based on window width."""
+    COMPACT = "compact"      # < 900px - auto-collapse context panel
+    STANDARD = "standard"    # 900-1400px - normal layout
+    WIDE = "wide"            # > 1400px - extra space available
 
 
 class MainWindow(QMainWindow):
@@ -41,12 +50,25 @@ class MainWindow(QMainWindow):
     +------------------+--------------------------------+------------------+
     """
 
+    # Signal emitted when layout mode changes due to window resize
+    layout_mode_changed = Signal(str)  # "compact" | "standard" | "wide"
+
+    # Breakpoints for responsive layout
+    COMPACT_BREAKPOINT = 900
+    WIDE_BREAKPOINT = 1400
+
     def __init__(self):
         super().__init__()
 
         self.setWindowTitle("Felix")
-        self.setMinimumSize(1024, 700)
-        self.resize(1400, 850)
+        self.setMinimumSize(800, 600)  # Allow smaller windows
+
+        # Settings for persistence
+        self._settings = QSettings("Felix", "FelixGUI")
+
+        # Layout tracking
+        self._current_layout_mode = LayoutMode.STANDARD
+        self._context_was_collapsed_by_resize = False  # Track if we auto-collapsed
 
         # Create adapter
         self._adapter = FelixAdapter(self)
@@ -54,6 +76,9 @@ class MainWindow(QMainWindow):
         # Session management
         self._session_store = SessionStore(parent=self)
         self._current_session: Optional[Session] = None
+
+        # Pending config from settings (applied when Felix starts)
+        self._pending_config: Dict[str, Any] = {}
 
         # Set up UI
         self._setup_ui()
@@ -63,6 +88,9 @@ class MainWindow(QMainWindow):
 
         # Status bar
         self._setup_status_bar()
+
+        # Restore window state from settings
+        self._restore_layout()
 
         # Load sessions
         self._load_sessions()
@@ -85,30 +113,37 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._sidebar)
 
         # Main splitter for workspace and context panel
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.setHandleWidth(1)
-        splitter.setStyleSheet(f"""
+        self._splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._splitter.setHandleWidth(6)  # Wider handle for easier grabbing
+        self._splitter.setChildrenCollapsible(False)  # Prevent accidental collapse
+        self._splitter.setStyleSheet(f"""
             QSplitter::handle {{
                 background-color: {Colors.BORDER};
+            }}
+            QSplitter::handle:hover {{
+                background-color: {Colors.ACCENT};
+            }}
+            QSplitter::handle:pressed {{
+                background-color: {Colors.ACCENT_HOVER};
             }}
         """)
 
         # Workspace (main area)
         self._workspace = Workspace()
-        splitter.addWidget(self._workspace)
+        self._splitter.addWidget(self._workspace)
 
         # Context panel (collapsible right side)
         self._context_panel = ContextPanel()
-        splitter.addWidget(self._context_panel)
+        self._splitter.addWidget(self._context_panel)
 
         # Set splitter sizes (workspace gets more space)
-        splitter.setSizes([900, 250])
+        self._splitter.setSizes([900, 320])
 
-        # Allow workspace to stretch, context to stay smaller
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 0)
+        # Allow workspace to stretch, context panel can be resized by user
+        self._splitter.setStretchFactor(0, 1)
+        self._splitter.setStretchFactor(1, 0)
 
-        layout.addWidget(splitter, 1)
+        layout.addWidget(self._splitter, 1)
 
     def _setup_menu_bar(self):
         """Set up menu bar with View menu for developer mode."""
@@ -177,16 +212,29 @@ class MainWindow(QMainWindow):
 
         view_menu.addSeparator()
 
-        # Context panel tabs
+        # Context panel tabs with keyboard shortcuts
+        show_activity_action = QAction("Show &Activity", self)
+        show_activity_action.setShortcut(QKeySequence("Ctrl+1"))
+        show_activity_action.triggered.connect(self._context_panel.show_activity)
+        view_menu.addAction(show_activity_action)
+
         show_terminal_action = QAction("Show &Terminal", self)
+        show_terminal_action.setShortcut(QKeySequence("Ctrl+2"))
         show_terminal_action.triggered.connect(self._context_panel.show_terminal)
         view_menu.addAction(show_terminal_action)
 
         show_knowledge_action = QAction("Show &Knowledge", self)
+        show_knowledge_action.setShortcut(QKeySequence("Ctrl+3"))
         show_knowledge_action.triggered.connect(self._context_panel.show_knowledge)
         view_menu.addAction(show_knowledge_action)
 
+        show_learning_action = QAction("Show &Learning", self)
+        show_learning_action.setShortcut(QKeySequence("Ctrl+4"))
+        show_learning_action.triggered.connect(self._context_panel.show_learning)
+        view_menu.addAction(show_learning_action)
+
         show_settings_action = QAction("Show &Quick Settings", self)
+        show_settings_action.setShortcut(QKeySequence("Ctrl+5"))
         show_settings_action.triggered.connect(self._context_panel.show_settings)
         view_menu.addAction(show_settings_action)
 
@@ -199,18 +247,21 @@ class MainWindow(QMainWindow):
 
         view_menu.addSeparator()
 
-        # Developer mode submenu
+        # Developer mode submenu with shortcuts
         dev_menu = view_menu.addMenu("&Developer")
 
         self._agents_action = QAction("&Agents View", self)
+        self._agents_action.setShortcut(QKeySequence("Ctrl+Shift+A"))
         self._agents_action.triggered.connect(self._show_agents_view)
         dev_menu.addAction(self._agents_action)
 
         self._memory_action = QAction("&Memory View", self)
+        self._memory_action.setShortcut(QKeySequence("Ctrl+Shift+M"))
         self._memory_action.triggered.connect(self._show_memory_view)
         dev_menu.addAction(self._memory_action)
 
         self._prompts_action = QAction("&Prompts View", self)
+        self._prompts_action.setShortcut(QKeySequence("Ctrl+Shift+P"))
         self._prompts_action.triggered.connect(self._show_prompts_view)
         dev_menu.addAction(self._prompts_action)
 
@@ -323,10 +374,19 @@ class MainWindow(QMainWindow):
         # Session management
         self._sidebar.session_selected.connect(self._on_session_selected)
         self._sidebar.new_session_requested.connect(self._on_new_session)
+        self._sidebar.rename_requested.connect(self._on_rename_session)
+        self._sidebar.delete_requested.connect(self._on_delete_session)
 
         # Adapter -> Context panel
         self._adapter.system_started.connect(self._on_system_started)
         self._adapter.system_stopped.connect(self._on_system_stopped)
+        # Unified status updates to ActivityView (same data source as sidebar)
+        self._adapter.status_updated.connect(
+            self._context_panel.get_activity_view().update_from_status
+        )
+
+        # Settings panel -> Store pending config for next start
+        self._context_panel.settings_changed.connect(self._on_settings_changed)
 
         # Adapter -> Status bar
         self._adapter.system_started.connect(
@@ -336,11 +396,134 @@ class MainWindow(QMainWindow):
             lambda: self.statusBar().showMessage("Felix stopped")
         )
 
+        # Approval handling - FelixSignals -> MainWindow -> Workspace and ActivityView
+        signals = get_signals()
+        signals.approval_requested.connect(self._on_approval_requested)
+        signals.approval_resolved.connect(self._on_approval_resolved)
+
+        # Workspace approval signals -> Adapter response
+        # Use lowercase to match ApprovalDecision enum values
+        self._workspace.action_approved.connect(
+            lambda aid: self._adapter.respond_to_approval(aid, 'approve_once')
+        )
+        self._workspace.action_denied.connect(
+            lambda aid: self._adapter.respond_to_approval(aid, 'deny')
+        )
+
+        # Status updates with workflow state -> ActivityView
+        self._adapter.status_updated.connect(self._on_status_updated_for_activity)
+
+    @Slot(str, dict)
+    def _on_approval_requested(self, approval_id: str, details: dict):
+        """Handle incoming approval request - show in both Workspace and ActivityView."""
+        logger.info(f"Approval requested: {approval_id} - {details.get('command', 'unknown')}")
+        # Show in workspace
+        self._workspace.add_action(
+            action_id=approval_id,
+            command=details.get('command', ''),
+            description=details.get('context', ''),
+            risk_level=details.get('risk_level', 'MEDIUM')
+        )
+        # Also show in activity view
+        self._context_panel.get_activity_view().add_pending_approval(
+            approval_id,
+            details.get('command', ''),
+            details.get('risk_level', 'MEDIUM')
+        )
+
+    @Slot(str, str)
+    def _on_approval_resolved(self, approval_id: str, decision: str):
+        """Handle approval resolution - update ActivityView."""
+        logger.info(f"Approval resolved: {approval_id} -> {decision}")
+        self._context_panel.get_activity_view().remove_pending_approval(approval_id)
+
+    @Slot(dict)
+    def _on_status_updated_for_activity(self, status: Dict[str, Any]):
+        """Handle status updates for ActivityView workflow progress."""
+        workflow_state = status.get('workflow_state', {})
+        phase = workflow_state.get('phase', 'idle')
+
+        if phase != 'idle':
+            self._context_panel.get_activity_view().update_workflow_progress(
+                phase,
+                workflow_state.get('current_step', 0),
+                workflow_state.get('total_steps', 0),
+                workflow_state.get('status_message', '')
+            )
+
+    @Slot(dict)
+    def _on_settings_changed(self, settings: Dict[str, Any]):
+        """Handle settings changes from SettingsView.
+
+        Maps GUI settings keys to FelixConfig parameter names and stores
+        for use when Felix is started/restarted.
+
+        Args:
+            settings: Dict from SettingsView._get_current_settings()
+        """
+        # Map SettingsView keys to FelixConfig parameter names
+        # Only include keys that FelixConfig actually accepts
+        config_mapping = {
+            'knowledge_enabled': 'enable_knowledge_brain',  # Key mapping!
+            'web_search_enabled': 'web_search_enabled',
+            'command_approval_required': 'auto_approve_system_actions',  # Inverted!
+            'streaming_enabled': 'enable_streaming',
+            'max_agents': 'max_agents',
+            # Note: llm_provider, model, timeout are GUI-only and not passed to FelixConfig
+        }
+
+        # Build FelixConfig-compatible dict
+        self._pending_config = {}
+        for gui_key, config_key in config_mapping.items():
+            if gui_key in settings:
+                value = settings[gui_key]
+                # Handle inversions
+                if gui_key == 'command_approval_required':
+                    value = not value  # GUI asks "require approval?", config is "auto approve"
+                self._pending_config[config_key] = value
+
+        logger.debug(f"Pending config updated: {self._pending_config}")
+
     @Slot()
     def _on_start_requested(self):
         """Handle start request from sidebar."""
         self.statusBar().showMessage("Starting Felix...")
-        self._adapter.start_system()
+
+        # Always read current settings from SettingsView, not just pending changes
+        # This ensures settings are applied on first start, not just after changes
+        config = self._get_current_felix_config()
+
+        logger.info(f"Starting Felix with config: {config}")
+        self._adapter.start_system(config)
+
+    def _get_current_felix_config(self) -> Dict[str, Any]:
+        """Get FelixConfig-compatible dict from current SettingsView values.
+
+        This reads the actual checkbox/spinner values, ensuring settings
+        are applied even if the user didn't change anything from defaults.
+        """
+        settings_view = self._context_panel.get_settings_view()
+        gui_settings = settings_view._get_current_settings()
+
+        # Map GUI settings keys to FelixConfig parameter names
+        config_mapping = {
+            'knowledge_enabled': 'enable_knowledge_brain',
+            'web_search_enabled': 'web_search_enabled',
+            'command_approval_required': 'auto_approve_system_actions',  # Inverted!
+            'streaming_enabled': 'enable_streaming',
+            'max_agents': 'max_agents',
+        }
+
+        config = {}
+        for gui_key, config_key in config_mapping.items():
+            if gui_key in gui_settings:
+                value = gui_settings[gui_key]
+                # Handle inversions
+                if gui_key == 'command_approval_required':
+                    value = not value  # GUI asks "require approval?", config is "auto approve"
+                config[config_key] = value
+
+        return config
 
     @Slot()
     def _on_system_started(self):
@@ -440,6 +623,7 @@ class MainWindow(QMainWindow):
             )
 
             if reply == QMessageBox.StandardButton.Yes:
+                self._save_layout()  # Save before stopping
                 self._adapter.stop_system()
                 self._context_panel.cleanup()
                 self._session_store.close()
@@ -452,6 +636,7 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
 
+        self._save_layout()  # Save layout on close
         self._context_panel.cleanup()
         self._session_store.close()
         event.accept()
@@ -463,12 +648,9 @@ class MainWindow(QMainWindow):
         sessions = self._session_store.get_all_sessions()
         self._sidebar.load_sessions(sessions)
 
-        # If there are sessions, select the most recent one
-        if sessions:
-            self._on_session_selected(sessions[0].id)
-        else:
-            # Start with a fresh workspace
-            self._workspace.set_title("New Chat")
+        # Always start with a fresh workspace (user can select previous sessions)
+        self._workspace.set_title("New Chat")
+        self._current_session = None
 
     def _create_new_session(self) -> Session:
         """Create a new session and set it as current."""
@@ -486,11 +668,14 @@ class MainWindow(QMainWindow):
         self._workspace.get_model().clear()
         # Clear the message area manually since we're not using new_chat_requested signal
         self._workspace._message_area.clear()
+        # Clear adapter conversation history for fresh start
+        self._adapter.clear_conversation_history()
 
     @Slot()
     def _on_new_chat(self):
         """Handle new chat request from workspace."""
         self._create_new_session()
+        self._adapter.clear_conversation_history()
 
     @Slot(str)
     def _on_session_selected(self, session_id: str):
@@ -502,6 +687,15 @@ class MainWindow(QMainWindow):
 
         self._current_session = session
         self._workspace.set_title(session.title)
+
+        # Sync conversation history to adapter so Felix has context
+        history = []
+        for msg in session.messages:
+            history.append({
+                "role": msg.role.value,
+                "content": msg.content
+            })
+        self._adapter.set_conversation_history(history)
 
         # Clear and repopulate workspace
         self._workspace._message_area.clear()
@@ -517,6 +711,62 @@ class MainWindow(QMainWindow):
 
             # Also add to model for conversation history
             self._workspace.get_model()._messages.append(message)
+
+    @Slot(str)
+    def _on_rename_session(self, session_id: str):
+        """Handle session rename request."""
+        session = self._session_store.get_session(session_id)
+        if not session:
+            logger.warning(f"Session not found for rename: {session_id}")
+            return
+
+        new_title, ok = QInputDialog.getText(
+            self,
+            "Rename Session",
+            "New name:",
+            QLineEdit.EchoMode.Normal,
+            session.title
+        )
+
+        if ok and new_title.strip():
+            session.title = new_title.strip()
+            self._session_store.update_session(session)
+            self._sidebar.update_session(session)
+
+            # Update workspace title if this is the current session
+            if self._current_session and self._current_session.id == session_id:
+                self._current_session.title = session.title
+                self._workspace.set_title(session.title)
+
+            logger.info(f"Session renamed: {session_id} -> {new_title}")
+
+    @Slot(str)
+    def _on_delete_session(self, session_id: str):
+        """Handle session delete request."""
+        session = self._session_store.get_session(session_id)
+        if not session:
+            logger.warning(f"Session not found for delete: {session_id}")
+            return
+
+        reply = QMessageBox.warning(
+            self,
+            "Delete Session",
+            f"Delete '{session.title}'?\n\nThis cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            # If deleting current session, create a new one first
+            if self._current_session and session_id == self._current_session.id:
+                self._current_session = None
+                self._workspace._message_area.clear()
+                self._workspace.get_model().clear()
+                self._workspace.set_title("New Chat")
+
+            self._session_store.delete_session(session_id)
+            self._sidebar.remove_session(session_id)
+            logger.info(f"Session deleted: {session_id}")
 
     def _save_message_to_session(self, role: str, content: str):
         """Save a message to the current session."""
@@ -538,3 +788,90 @@ class MainWindow(QMainWindow):
         self._workspace.set_processing(False)
         self._workspace.add_message("system", "Generation stopped by user")
         self.statusBar().showMessage("Generation stopped")
+
+    # ========== Layout Persistence & Responsive Handling ==========
+
+    def _save_layout(self):
+        """Save layout state to settings."""
+        self._settings.setValue("geometry", self.saveGeometry())
+        self._settings.setValue("windowState", self.saveState())
+        self._settings.setValue("splitterSizes", self._splitter.sizes())
+        self._settings.setValue("contextPanelWidth", self._context_panel.get_user_width())
+        self._settings.setValue("contextPanelCollapsed", self._context_panel.is_collapsed())
+        logger.debug("Layout saved to settings")
+
+    def _restore_layout(self):
+        """Restore layout state from settings."""
+        # Restore window geometry
+        geometry = self._settings.value("geometry")
+        if geometry:
+            self.restoreGeometry(geometry)
+        else:
+            # Default size if no saved geometry
+            self.resize(1400, 850)
+
+        # Restore window state
+        state = self._settings.value("windowState")
+        if state:
+            self.restoreState(state)
+
+        # Restore splitter sizes
+        splitter_sizes = self._settings.value("splitterSizes")
+        if splitter_sizes:
+            # QSettings may return strings, convert to ints
+            if isinstance(splitter_sizes, list):
+                sizes = [int(s) for s in splitter_sizes]
+                self._splitter.setSizes(sizes)
+
+        # Restore context panel width
+        context_width = self._settings.value("contextPanelWidth", type=int)
+        if context_width:
+            self._context_panel.set_user_width(context_width)
+
+        # Restore collapsed state
+        was_collapsed = self._settings.value("contextPanelCollapsed", type=bool)
+        if was_collapsed:
+            self._context_panel._collapse()
+
+        logger.debug("Layout restored from settings")
+
+    def resizeEvent(self, event: QResizeEvent):
+        """Handle window resize for responsive layout."""
+        super().resizeEvent(event)
+
+        new_width = event.size().width()
+        old_mode = self._current_layout_mode
+        new_mode = self._calculate_layout_mode(new_width)
+
+        if new_mode != old_mode:
+            self._current_layout_mode = new_mode
+            self._handle_layout_mode_change(old_mode, new_mode)
+            self.layout_mode_changed.emit(new_mode.value)
+            logger.debug(f"Layout mode changed: {old_mode.value} -> {new_mode.value}")
+
+    def _calculate_layout_mode(self, width: int) -> LayoutMode:
+        """Calculate layout mode based on window width."""
+        if width < self.COMPACT_BREAKPOINT:
+            return LayoutMode.COMPACT
+        elif width > self.WIDE_BREAKPOINT:
+            return LayoutMode.WIDE
+        else:
+            return LayoutMode.STANDARD
+
+    def _handle_layout_mode_change(self, old_mode: LayoutMode, new_mode: LayoutMode):
+        """Handle layout mode transition."""
+        # Auto-collapse context panel when going to COMPACT mode
+        if new_mode == LayoutMode.COMPACT and not self._context_panel.is_collapsed():
+            self._context_was_collapsed_by_resize = True
+            self._context_panel._collapse()
+            logger.debug("Auto-collapsed context panel for compact mode")
+
+        # Auto-expand context panel when leaving COMPACT mode (if we collapsed it)
+        elif old_mode == LayoutMode.COMPACT and self._context_was_collapsed_by_resize:
+            self._context_was_collapsed_by_resize = False
+            self._context_panel._expand()
+            logger.debug("Auto-expanded context panel after leaving compact mode")
+
+    def get_layout_mode(self) -> LayoutMode:
+        """Get current layout mode."""
+        return self._current_layout_mode

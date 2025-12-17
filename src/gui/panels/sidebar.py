@@ -1,16 +1,93 @@
 """Sidebar panel with system status, controls, and session list."""
 
+from enum import Enum
 from typing import Optional, Dict, Any, List
 
-from PySide6.QtCore import Signal, Slot, Qt
+from PySide6.QtCore import Signal, Slot, Qt, QPoint
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QFrame, QScrollArea, QSizePolicy,
-    QListWidget, QListWidgetItem
+    QListWidget, QListWidgetItem, QComboBox, QMenu
 )
 
 from ..core.theme import Colors
 from ..models.session_model import Session
+
+
+class UserMode(Enum):
+    """User interface complexity modes."""
+    CASUAL = "casual"
+    POWER = "power"
+    DEVELOPER = "developer"
+
+
+class AgentPhaseBar(QFrame):
+    """Visual indicator of agent distribution across phases."""
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self._exploration = 0
+        self._analysis = 0
+        self._synthesis = 0
+        self._setup_ui()
+
+    def _setup_ui(self):
+        """Set up the phase bar UI."""
+        self.setFixedHeight(24)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        # Exploration count
+        self._exploration_badge = QLabel("E: 0")
+        self._exploration_badge.setStyleSheet(f"""
+            background-color: {Colors.STATUS_STARTING};
+            color: white;
+            font-size: 10px;
+            font-weight: 600;
+            padding: 2px 6px;
+            border-radius: 4px;
+        """)
+        layout.addWidget(self._exploration_badge)
+
+        # Analysis count
+        self._analysis_badge = QLabel("A: 0")
+        self._analysis_badge.setStyleSheet(f"""
+            background-color: {Colors.ACCENT};
+            color: white;
+            font-size: 10px;
+            font-weight: 600;
+            padding: 2px 6px;
+            border-radius: 4px;
+        """)
+        layout.addWidget(self._analysis_badge)
+
+        # Synthesis count
+        self._synthesis_badge = QLabel("S: 0")
+        self._synthesis_badge.setStyleSheet(f"""
+            background-color: {Colors.STATUS_RUNNING};
+            color: white;
+            font-size: 10px;
+            font-weight: 600;
+            padding: 2px 6px;
+            border-radius: 4px;
+        """)
+        layout.addWidget(self._synthesis_badge)
+
+        layout.addStretch()
+
+    def update_counts(self, exploration: int, analysis: int, synthesis: int):
+        """Update phase counts."""
+        self._exploration = exploration
+        self._analysis = analysis
+        self._synthesis = synthesis
+        self._exploration_badge.setText(f"E: {exploration}")
+        self._analysis_badge.setText(f"A: {analysis}")
+        self._synthesis_badge.setText(f"S: {synthesis}")
+
+    def clear(self):
+        """Clear all counts."""
+        self.update_counts(0, 0, 0)
 
 
 class StatusCard(QFrame):
@@ -55,6 +132,11 @@ class StatusCard(QFrame):
 
         layout.addLayout(status_row)
 
+        # Agent phase bar (shows when running)
+        self._phase_bar = AgentPhaseBar()
+        self._phase_bar.hide()  # Hidden when stopped
+        layout.addWidget(self._phase_bar)
+
         # Stats grid
         stats_layout = QVBoxLayout()
         stats_layout.setSpacing(4)
@@ -83,6 +165,8 @@ class StatusCard(QFrame):
         self._agents_label.setText("Agents: --")
         self._messages_label.setText("Messages: --")
         self._provider_label.setText("Provider: --")
+        self._phase_bar.hide()
+        self._phase_bar.clear()
 
     def _set_starting_state(self):
         """Set UI to starting state."""
@@ -99,6 +183,7 @@ class StatusCard(QFrame):
             border-radius: 5px;
         """)
         self._status_label.setText("Running")
+        self._phase_bar.show()
 
     @Slot(dict)
     def update_status(self, status: Dict[str, Any]):
@@ -114,6 +199,12 @@ class StatusCard(QFrame):
             elif provider == "lm_studio":
                 provider = "LM Studio"
             self._provider_label.setText(f"Provider: {provider}")
+
+            # Update agent phase counts if available
+            exploration = status.get("agents_exploration", 0)
+            analysis = status.get("agents_analysis", 0)
+            synthesis = status.get("agents_synthesis", 0)
+            self._phase_bar.update_counts(exploration, analysis, synthesis)
         else:
             self._set_stopped_state()
 
@@ -127,6 +218,8 @@ class SessionList(QWidget):
 
     session_selected = Signal(str)  # session_id
     new_session_requested = Signal()
+    rename_requested = Signal(str)  # session_id
+    delete_requested = Signal(str)  # session_id
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -139,10 +232,29 @@ class SessionList(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
 
-        # Header with New button
-        header = QHBoxLayout()
+        # New Chat button (full width, prominent)
+        new_btn = QPushButton("+ New Chat")
+        new_btn.setFixedHeight(32)
+        new_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        new_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {Colors.ACCENT};
+                color: white;
+                border: none;
+                border-radius: 6px;
+                font-size: 12px;
+                font-weight: 600;
+            }}
+            QPushButton:hover {{
+                background-color: {Colors.ACCENT_HOVER};
+            }}
+        """)
+        new_btn.clicked.connect(self.new_session_requested.emit)
+        layout.addWidget(new_btn)
 
-        title = QLabel("Sessions")
+        # Sessions header
+        header = QHBoxLayout()
+        title = QLabel("Recent")
         title.setStyleSheet(f"""
             color: {Colors.TEXT_MUTED};
             font-size: 11px;
@@ -151,30 +263,7 @@ class SessionList(QWidget):
             letter-spacing: 1px;
         """)
         header.addWidget(title)
-
         header.addStretch()
-
-        new_btn = QPushButton("+")
-        new_btn.setFixedSize(24, 24)
-        new_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        new_btn.setToolTip("New Chat")
-        new_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: transparent;
-                color: {Colors.TEXT_MUTED};
-                border: 1px solid {Colors.BORDER};
-                border-radius: 4px;
-                font-size: 16px;
-                font-weight: 600;
-            }}
-            QPushButton:hover {{
-                background-color: {Colors.SURFACE};
-                color: {Colors.TEXT_PRIMARY};
-            }}
-        """)
-        new_btn.clicked.connect(self.new_session_requested.emit)
-        header.addWidget(new_btn)
-
         layout.addLayout(header)
 
         # Session list
@@ -202,6 +291,8 @@ class SessionList(QWidget):
             }}
         """)
         self._list.itemClicked.connect(self._on_item_clicked)
+        self._list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._list.customContextMenuRequested.connect(self._show_context_menu)
         layout.addWidget(self._list)
 
         # Empty state
@@ -215,6 +306,49 @@ class SessionList(QWidget):
         session_id = item.data(Qt.ItemDataRole.UserRole)
         if session_id:
             self.session_selected.emit(session_id)
+
+    def _show_context_menu(self, pos: QPoint):
+        """Show context menu for session item."""
+        item = self._list.itemAt(pos)
+        if not item:
+            return
+
+        session_id = item.data(Qt.ItemDataRole.UserRole)
+        if not session_id:
+            return
+
+        menu = QMenu(self)
+        menu.setStyleSheet(f"""
+            QMenu {{
+                background-color: {Colors.SURFACE};
+                border: 1px solid {Colors.BORDER};
+                border-radius: 4px;
+                padding: 4px;
+            }}
+            QMenu::item {{
+                color: {Colors.TEXT_PRIMARY};
+                padding: 6px 16px;
+                border-radius: 4px;
+            }}
+            QMenu::item:selected {{
+                background-color: {Colors.BACKGROUND_LIGHT};
+            }}
+            QMenu::separator {{
+                height: 1px;
+                background-color: {Colors.BORDER};
+                margin: 4px 8px;
+            }}
+        """)
+
+        rename_action = menu.addAction("Rename...")
+        rename_action.triggered.connect(lambda: self.rename_requested.emit(session_id))
+
+        menu.addSeparator()
+
+        delete_action = menu.addAction("Delete")
+        delete_action.triggered.connect(lambda: self.delete_requested.emit(session_id))
+
+        menu.exec(self._list.mapToGlobal(pos))
 
     def add_session(self, session: Session):
         """Add a session to the list."""
@@ -295,17 +429,24 @@ class Sidebar(QWidget):
         stop_requested: Emitted when Stop button clicked
         session_selected: Emitted when a session is selected (session_id)
         new_session_requested: Emitted when New Session is requested
+        rename_requested: Emitted when session rename is requested (session_id)
+        delete_requested: Emitted when session delete is requested (session_id)
+        mode_changed: Emitted when user mode changes (casual/power/developer)
     """
 
     start_requested = Signal()
     stop_requested = Signal()
     session_selected = Signal(str)  # session_id
     new_session_requested = Signal()
+    rename_requested = Signal(str)  # session_id
+    delete_requested = Signal(str)  # session_id
+    mode_changed = Signal(str)  # "casual" | "power" | "developer"
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.setObjectName("sidebar")
         self.setFixedWidth(220)
+        self._current_mode = UserMode.POWER  # Default to Power mode
         self._setup_ui()
 
     def _setup_ui(self):
@@ -319,7 +460,10 @@ class Sidebar(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(16)
+        layout.setSpacing(12)
+
+        # Header row with title and mode selector
+        header_layout = QHBoxLayout()
 
         # Logo/Title
         title = QLabel("Felix")
@@ -328,7 +472,11 @@ class Sidebar(QWidget):
             font-size: 20px;
             font-weight: 600;
         """)
-        layout.addWidget(title)
+        header_layout.addWidget(title)
+
+        header_layout.addStretch()
+
+        layout.addLayout(header_layout)
 
         # Status card
         self._status_card = StatusCard()
@@ -353,68 +501,20 @@ class Sidebar(QWidget):
 
         layout.addLayout(controls_layout)
 
-        # Separator
+        # Separator before sessions
         separator = QFrame()
         separator.setFrameShape(QFrame.Shape.HLine)
         separator.setStyleSheet(f"background-color: {Colors.BORDER};")
         separator.setFixedHeight(1)
         layout.addWidget(separator)
 
-        # Navigation section
-        nav_label = QLabel("Navigation")
-        nav_label.setStyleSheet(f"""
-            color: {Colors.TEXT_MUTED};
-            font-size: 11px;
-            font-weight: 500;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        """)
-        layout.addWidget(nav_label)
-
-        # Nav buttons
-        self._chat_btn = self._create_nav_button("Chat", active=True)
-        layout.addWidget(self._chat_btn)
-
-        # Separator before sessions
-        separator2 = QFrame()
-        separator2.setFrameShape(QFrame.Shape.HLine)
-        separator2.setStyleSheet(f"background-color: {Colors.BORDER};")
-        separator2.setFixedHeight(1)
-        layout.addWidget(separator2)
-
         # Session list
         self._session_list = SessionList()
         self._session_list.session_selected.connect(self.session_selected.emit)
         self._session_list.new_session_requested.connect(self.new_session_requested.emit)
+        self._session_list.rename_requested.connect(self.rename_requested.emit)
+        self._session_list.delete_requested.connect(self.delete_requested.emit)
         layout.addWidget(self._session_list, 1)  # Give it stretch
-
-    def _create_nav_button(self, text: str, active: bool = False) -> QPushButton:
-        """Create a navigation button."""
-        btn = QPushButton(text)
-        btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setCheckable(True)
-        btn.setChecked(active)
-
-        base_style = f"""
-            QPushButton {{
-                background-color: transparent;
-                color: {Colors.TEXT_SECONDARY};
-                border: none;
-                border-radius: 6px;
-                padding: 8px 12px;
-                text-align: left;
-                font-weight: 500;
-            }}
-            QPushButton:hover {{
-                background-color: {Colors.SURFACE};
-            }}
-            QPushButton:checked {{
-                background-color: {Colors.SURFACE};
-                color: {Colors.TEXT_PRIMARY};
-            }}
-        """
-        btn.setStyleSheet(base_style)
-        return btn
 
     def _on_start_clicked(self):
         """Handle Start button click."""
@@ -470,3 +570,19 @@ class Sidebar(QWidget):
     def select_session(self, session_id: str):
         """Select a session."""
         self._session_list.select_session(session_id)
+
+    def remove_session(self, session_id: str):
+        """Remove a session from the sidebar."""
+        self._session_list.remove_session(session_id)
+
+    # ========== Mode Management ==========
+
+    def get_mode(self) -> UserMode:
+        """Get current user mode."""
+        return self._current_mode
+
+    def set_mode(self, mode: UserMode):
+        """Set user mode programmatically."""
+        if self._current_mode != mode:
+            self._current_mode = mode
+            self.mode_changed.emit(mode.value)

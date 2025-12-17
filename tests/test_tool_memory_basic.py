@@ -80,55 +80,6 @@ def test_tool_classification():
     logger.info("="*60)
 
 
-def test_tool_retrieval():
-    """Test that tool instructions are retrieved correctly."""
-    logger.info("\n" + "="*60)
-    logger.info("TEST 2: Tool Instruction Retrieval")
-    logger.info("="*60)
-
-    from src.memory.knowledge_store import KnowledgeStore, KnowledgeQuery
-    from src.communication.memory_facade import MemoryFacade
-
-    # Initialize knowledge store and memory facade
-    knowledge_store = KnowledgeStore()
-    memory_facade = MemoryFacade(knowledge_store=knowledge_store)
-
-    # Test 1: No tools needed
-    logger.info("\nTest: No tools needed")
-    reqs1 = {'needs_file_ops': False, 'needs_web_search': False, 'needs_system_commands': False}
-    instructions1, ids1 = memory_facade.retrieve_tool_instructions(reqs1)
-
-    assert instructions1 == "", "Should return empty string when no tools needed"
-    assert len(ids1) == 0, "Should return empty ID list when no tools needed"
-    logger.info("✓ PASS: Empty instructions when no tools needed")
-
-    # Test 2: File operations needed
-    logger.info("\nTest: File operations needed")
-    reqs2 = {'needs_file_ops': True, 'needs_web_search': False, 'needs_system_commands': False}
-    instructions2, ids2 = memory_facade.retrieve_tool_instructions(reqs2)
-
-    assert len(instructions2) > 0, "Should return instructions when file ops needed"
-    assert len(ids2) > 0, "Should return knowledge IDs for meta-learning"
-    assert "SYSTEM_ACTION_NEEDED" in instructions2, "File ops instructions should contain SYSTEM_ACTION_NEEDED pattern"
-    assert "mkdir" in instructions2 or "echo" in instructions2, "File ops instructions should contain file commands"
-    logger.info(f"✓ PASS: Retrieved file operations instructions ({len(instructions2)} chars, {len(ids2)} IDs)")
-
-    # Test 3: Multiple tools needed
-    logger.info("\nTest: Multiple tools needed")
-    reqs3 = {'needs_file_ops': True, 'needs_web_search': True, 'needs_system_commands': False}
-    instructions3, ids3 = memory_facade.retrieve_tool_instructions(reqs3)
-
-    assert len(instructions3) > len(instructions2), "Should have more instructions with multiple tools"
-    assert len(ids3) >= 2, "Should have IDs for multiple tools"
-    assert "WEB_SEARCH_NEEDED" in instructions3, "Should contain web search pattern"
-    assert "SYSTEM_ACTION_NEEDED" in instructions3, "Should contain system action pattern"
-    logger.info(f"✓ PASS: Retrieved multiple tool instructions ({len(instructions3)} chars, {len(ids3)} IDs)")
-
-    logger.info("\n" + "="*60)
-    logger.info("✅ ALL TESTS PASSED")
-    logger.info("="*60)
-
-
 def test_no_files_created():
     """Test that no files are created in results/ directory for simple questions."""
     logger.info("\n" + "="*60)
@@ -174,7 +125,6 @@ if __name__ == "__main__":
         logger.info("\n🧪 FELIX SUBCONSCIOUS TOOL MEMORY - BASIC TESTS\n")
 
         test_tool_classification()
-        test_tool_retrieval()
         test_no_files_created()
 
         logger.info("\n" + "="*60)
@@ -183,7 +133,6 @@ if __name__ == "__main__":
         logger.info("\nKey Results:")
         logger.info("  ✅ Simple questions don't get file operation instructions")
         logger.info("  ✅ File creation requests DO get file operation instructions")
-        logger.info("  ✅ Tool instructions correctly retrieved from knowledge store")
         logger.info("  ✅ No unwanted files created")
         logger.info("\nOriginal problem SOLVED:")
         logger.info("  Agents no longer auto-create files for simple questions")

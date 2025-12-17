@@ -349,6 +349,32 @@ def run_felix_workflow(felix_system, task_input: str,
         except Exception as e:
             logger.warning(f"Coverage analysis failed (continuing without): {e}")
 
+        # Phase 2: Augment workflow context with knowledge brain
+        # This injects relevant knowledge into the task context BEFORE agents spawn
+        augmented_knowledge_context = ""
+        if felix_system.knowledge_integration and felix_system.config.knowledge_auto_augment:
+            try:
+                logger.info("=" * 60)
+                logger.info("🧠 KNOWLEDGE BRAIN AUGMENTATION")
+                augmented_knowledge_context = felix_system.knowledge_integration.augment_workflow_context(
+                    task_description=task_input,
+                    task_type=classified_task_type,
+                    task_complexity=task_complexity,
+                    max_concepts=15,
+                    auto_apply=True
+                )
+                if augmented_knowledge_context:
+                    # Prepend knowledge context to task context
+                    knowledge_header = "\n--- RELEVANT KNOWLEDGE FROM BRAIN ---\n"
+                    task.context = f"{knowledge_header}{augmented_knowledge_context}\n\n{task.context}"
+                    logger.info(f"  ✓ Augmented with {len(augmented_knowledge_context)} chars of knowledge")
+                    logger.info(f"  Knowledge IDs tracked: {len(felix_system.knowledge_integration.current_workflow_knowledge)}")
+                else:
+                    logger.info("  No relevant knowledge found for this task")
+                logger.info("=" * 60)
+            except Exception as e:
+                logger.warning(f"Knowledge brain augmentation failed (continuing without): {e}")
+
         # Phase 3.2: Initialize failure recovery manager with circuit breaker
         from src.workflows.failure_recovery import (
             FailureRecoveryManager, FailureType, WorkflowAbortedException
@@ -1831,6 +1857,53 @@ def run_felix_workflow(felix_system, task_input: str,
             except Exception as knowledge_error:
                 # Don't fail workflow if knowledge recording fails
                 logger.warning(f"Could not record knowledge usage: {knowledge_error}")
+
+        # === KNOWLEDGE BRAIN OUTCOME RECORDING ===
+        # Record workflow outcome for knowledge brain meta-learning
+        if felix_system.knowledge_integration:
+            try:
+                # Determine workflow success for knowledge brain feedback
+                final_confidence = results.get("centralpost_synthesis", {}).get("confidence", 0.0)
+                workflow_success = final_confidence >= 0.7
+
+                felix_system.knowledge_integration.record_workflow_outcome(
+                    workflow_id=workflow_id,
+                    task_type=classified_task_type,
+                    task_complexity=task_complexity,
+                    workflow_success=workflow_success,
+                    final_confidence=final_confidence
+                )
+                logger.info("=" * 60)
+                logger.info("🧠 KNOWLEDGE BRAIN OUTCOME RECORDED")
+                logger.info(f"  Success: {workflow_success}, Confidence: {final_confidence:.2f}")
+                logger.info("=" * 60)
+            except Exception as kb_error:
+                logger.warning(f"Could not record knowledge brain outcome: {kb_error}")
+
+        # === FEEDBACK INTEGRATOR - WORKFLOW RATING WITH KNOWLEDGE PROPAGATION ===
+        # Record workflow outcome and propagate to knowledge entries (enables learning from success/failure)
+        if felix_system.feedback_integrator:
+            try:
+                # Determine workflow success for feedback
+                final_confidence = results.get("centralpost_synthesis", {}).get("confidence", 0.0)
+                workflow_success = final_confidence >= 0.7
+
+                # Get knowledge IDs used in this workflow for propagation
+                knowledge_ids_used = results.get("knowledge_entry_ids", [])
+
+                felix_system.feedback_integrator.submit_workflow_rating_with_propagation(
+                    workflow_id=workflow_id,
+                    positive=workflow_success,
+                    knowledge_ids_used=knowledge_ids_used
+                )
+                logger.info("=" * 60)
+                logger.info("📝 FEEDBACK INTEGRATOR - WORKFLOW RATING WITH PROPAGATION")
+                logger.info(f"  Workflow: {workflow_id}")
+                logger.info(f"  Rating: {'positive' if workflow_success else 'negative'}")
+                logger.info(f"  Knowledge entries updated: {len(knowledge_ids_used)}")
+                logger.info("=" * 60)
+            except Exception as feedback_error:
+                logger.warning(f"Could not record feedback with propagation: {feedback_error}")
 
         # === PERFORMANCE MONITORING ===
         # Record final workflow metrics and log performance summary

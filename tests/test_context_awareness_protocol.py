@@ -87,14 +87,16 @@ def test_context_inventory_generation():
         ]
     )
 
-    assert "✅ TOOLS AVAILABLE" in inventory1, "Missing tools available indicator!"
-    assert "✅ WEB SEARCH DATA" in inventory1, "Missing web search data indicator!"
-    assert "✅ PREVIOUS AGENT OUTPUTS: 2" in inventory1, "Missing previous outputs indicator!"
+    assert "✅ TOOLS AVAILABLE:" in inventory1, "Missing tools available indicator!"
+    assert "✅ WEB SEARCH DATA:" in inventory1, "Missing web search data indicator!"
+    assert "✅ PREVIOUS AGENT OUTPUTS: 2 message(s)" in inventory1, "Missing previous outputs indicator!"
     assert "DO NOT request web search" in inventory1, "Missing web search instruction!"
 
     logger.info("  ✓ Inventory with tools, web search, and previous outputs: PASS")
 
     # Scenario 2: No tools, no web search, first agent
+    # Note: Tools are always available via fallback (MINIMAL_TOOLS_FALLBACK),
+    # so we expect ✅ even when no explicit tools are provided
     inventory2 = builder.build_context_inventory(
         tool_instructions="",
         tool_instruction_ids=[],
@@ -102,7 +104,7 @@ def test_context_inventory_generation():
         context_history=[]
     )
 
-    assert "❌ TOOLS: None available" in inventory2, "Missing 'no tools' indicator!"
+    assert "✅ TOOLS AVAILABLE:" in inventory2, "Missing 'tools available' indicator (tools always available via fallback)!"
     assert "❌ WEB SEARCH DATA: No results yet" in inventory2, "Missing 'no web search' indicator!"
     assert "❌ PREVIOUS OUTPUTS: You are the first agent" in inventory2, "Missing 'first agent' indicator!"
 

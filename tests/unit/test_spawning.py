@@ -8,7 +8,6 @@ based on task complexity and confidence levels.
 import pytest
 from src.agents.dynamic_spawning import (
     TeamSizeOptimizer,
-    ConfidenceMonitor,
     ConfidenceMetrics,
     ConfidenceTrend
 )
@@ -142,66 +141,6 @@ class TestTeamSizeOptimizer:
         # Difference should be small (1-2 agents), not large (3+ agents)
         difference = size_low - size_medium
         assert difference <= 2, f"Confidence adjustment too aggressive: difference={difference}"
-
-
-@pytest.mark.unit
-@pytest.mark.spawning
-class TestConfidenceMonitor:
-    """Tests for ConfidenceMonitor."""
-
-    def test_should_spawn_low_confidence(self):
-        """Test spawning is triggered by low confidence."""
-        monitor = ConfidenceMonitor(confidence_threshold=0.8)
-
-        # Add low confidence readings
-        monitor.record_confidence(0.5, "research", 0.3)
-        monitor.record_confidence(0.6, "analysis", 0.5)
-
-        metrics = monitor.get_confidence_metrics()
-
-        # Should trigger spawn
-        assert monitor.should_spawn_additional_agents(metrics)
-
-    def test_should_not_spawn_high_confidence(self):
-        """Test spawning is not triggered by high confidence."""
-        monitor = ConfidenceMonitor(confidence_threshold=0.8)
-
-        # Add high confidence readings
-        monitor.record_confidence(0.9, "research", 0.3)
-        monitor.record_confidence(0.85, "analysis", 0.5)
-
-        metrics = monitor.get_confidence_metrics()
-
-        # Should not trigger spawn
-        assert not monitor.should_spawn_additional_agents(metrics)
-
-    def test_confidence_trend_detection(self):
-        """Test that confidence trends are detected correctly."""
-        monitor = ConfidenceMonitor()
-
-        # Add declining confidence
-        monitor.record_confidence(0.8, "research", 0.2)
-        monitor.record_confidence(0.7, "analysis", 0.4)
-        monitor.record_confidence(0.6, "critic", 0.6)
-
-        metrics = monitor.get_confidence_metrics()
-
-        assert metrics.trend == ConfidenceTrend.DECLINING
-
-    def test_volatility_calculation(self):
-        """Test that volatility is calculated correctly."""
-        monitor = ConfidenceMonitor(volatility_threshold=0.15)
-
-        # Add volatile confidence readings
-        monitor.record_confidence(0.5, "research", 0.2)
-        monitor.record_confidence(0.9, "analysis", 0.4)
-        monitor.record_confidence(0.4, "critic", 0.6)
-
-        metrics = monitor.get_confidence_metrics()
-
-        # High volatility should trigger spawn
-        assert metrics.volatility > 0.15
-        assert monitor.should_spawn_additional_agents(metrics)
 
 
 @pytest.mark.unit

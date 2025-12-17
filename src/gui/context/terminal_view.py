@@ -90,7 +90,6 @@ class TerminalView(QWidget):
         # Kill button
         self._kill_btn = QPushButton("Kill")
         self._kill_btn.setProperty("danger", True)
-        self._kill_btn.setFixedWidth(60)
         self._kill_btn.setEnabled(False)
         self._kill_btn.clicked.connect(self._on_kill_clicked)
         header.addWidget(self._kill_btn)
@@ -205,7 +204,6 @@ class TerminalView(QWidget):
         filter_row.addWidget(self._status_filter)
 
         refresh_btn = QPushButton("Refresh")
-        refresh_btn.setFixedWidth(60)
         refresh_btn.clicked.connect(self._refresh_history)
         filter_row.addWidget(refresh_btn)
 

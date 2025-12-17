@@ -15,6 +15,8 @@ Runs indefinitely in background threads with graceful shutdown support.
 import logging
 import time
 import threading
+import hashlib
+import sqlite3
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Callable
 from dataclasses import dataclass

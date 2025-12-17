@@ -254,6 +254,12 @@ class TestPluginValidation:
     """Tests for plugin validation."""
 
     @pytest.fixture
+    def temp_plugin_dir(self):
+        """Create temporary directory for test plugins."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield Path(tmpdir)
+
+    @pytest.fixture
     def registry(self):
         """Create fresh registry."""
         return AgentPluginRegistry()

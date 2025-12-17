@@ -21,6 +21,13 @@ from .confidence_calibrator import ConfidenceCalibrator
 from .threshold_learner import ThresholdLearner
 from src.memory.task_memory import TaskComplexity
 
+# Optional FeedbackManager for unified statistics
+try:
+    from src.feedback.feedback_manager import FeedbackManager
+    FEEDBACK_AVAILABLE = True
+except ImportError:
+    FEEDBACK_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -330,7 +337,8 @@ class RecommendationEngine:
                 'days': days,
                 'pattern_learner': {},
                 'confidence_calibrator': {},
-                'threshold_learner': {}
+                'threshold_learner': {},
+                'feedback_integrator': {}
             }
 
             # Pattern learner statistics
@@ -345,11 +353,30 @@ class RecommendationEngine:
             threshold_stats = self.threshold_learner.get_threshold_statistics(days=days)
             stats['threshold_learner'] = threshold_stats
 
-            # Calculate overall learning health
+            # Feedback integrator statistics (if available)
+            feedback_stats = {'total_ratings': 0, 'available': False}
+            if FEEDBACK_AVAILABLE:
+                try:
+                    feedback_manager = FeedbackManager()
+                    global_feedback = feedback_manager.get_global_feedback_stats()
+                    feedback_stats = {
+                        'available': True,
+                        'total_ratings': global_feedback.get('total_ratings', 0),
+                        'positive_ratings': global_feedback.get('positive_ratings', 0),
+                        'avg_accuracy': global_feedback.get('avg_accuracy'),
+                        'avg_relevance': global_feedback.get('avg_relevance'),
+                        'knowledge_feedback_counts': global_feedback.get('knowledge_counts', {})
+                    }
+                except Exception as e:
+                    logger.debug(f"Could not get feedback stats: {e}")
+            stats['feedback_integrator'] = feedback_stats
+
+            # Calculate overall learning health (now includes all 4 systems)
             total_data_points = (
                 pattern_stats.get('total_recommendations', 0) +
                 calibration_stats.get('total_samples', 0) +
-                threshold_stats.get('total_samples', 0)
+                threshold_stats.get('total_samples', 0) +
+                feedback_stats.get('total_ratings', 0)
             )
 
             stats['overall'] = {
@@ -358,12 +385,13 @@ class RecommendationEngine:
                 'systems_with_data': sum([
                     1 if pattern_stats.get('total_recommendations', 0) > 0 else 0,
                     1 if calibration_stats.get('total_samples', 0) > 0 else 0,
-                    1 if threshold_stats.get('total_samples', 0) > 0 else 0
+                    1 if threshold_stats.get('total_samples', 0) > 0 else 0,
+                    1 if feedback_stats.get('total_ratings', 0) > 0 else 0
                 ])
             }
 
             logger.debug(f"Unified statistics: {stats['overall']['total_data_points']} data points, "
-                        f"{stats['overall']['systems_with_data']}/3 systems active")
+                        f"{stats['overall']['systems_with_data']}/4 systems active")
 
             return stats
 

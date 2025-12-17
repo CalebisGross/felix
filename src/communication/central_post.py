@@ -520,7 +520,8 @@ class CentralPost:
                  knowledge_store: Optional["KnowledgeStore"] = None,
                  config: Optional[Any] = None,
                  gui_mode: bool = False,
-                 prompt_manager: Optional["PromptManager"] = None):
+                 prompt_manager: Optional["PromptManager"] = None,
+                 performance_tracker: Optional[Any] = None):
         """
         Initialize central post with configuration parameters.
 
@@ -538,6 +539,7 @@ class CentralPost:
             config: Optional FelixConfig for system-wide settings (auto-approval, etc.)
             gui_mode: Whether running in GUI mode (prevents CLI approval prompts)
             prompt_manager: Optional prompt manager for synthesis prompts
+            performance_tracker: Optional AgentPerformanceTracker for spawning decisions
         """
         self.max_agents = max_agents
         self.enable_metrics = enable_metrics
@@ -547,6 +549,7 @@ class CentralPost:
         self.config = config  # Store config for passing to subsystems
         self.gui_mode = gui_mode  # Store GUI mode flag for passing to subsystems
         self.prompt_manager = prompt_manager  # For synthesis prompts
+        self.performance_tracker = performance_tracker  # For agent spawning decisions
 
         # Project root directory for command execution
         # Commands with relative paths will execute from this directory
@@ -610,6 +613,7 @@ class CentralPost:
         self._search_cooldown: float = web_search_cooldown
         self._current_task_description: Optional[str] = None  # Track current workflow task
         self._current_workflow_id: Optional[str] = None  # Track current workflow ID for approval scoping
+        self._workflow_start_time: Optional[float] = None  # Track when current workflow started (for session isolation)
         self._search_count: int = 0  # Track number of searches for current task
 
         # System autonomy infrastructure
@@ -922,11 +926,24 @@ class CentralPost:
 
     def set_current_workflow(self, workflow_id: Optional[str]) -> None:
         """
-        Set the current workflow ID for approval rule scoping.
+        Set the current workflow ID for approval rule scoping and session isolation.
+
+        This method clears session-scoped data to prevent context leakage between workflows.
+        Permanent knowledge (from Knowledge Brain) is preserved, but session messages are cleared.
 
         Args:
             workflow_id: ID of the current workflow (e.g., "workflow_001") or None to clear
         """
+        # Clear session-scoped messages for session isolation
+        # This prevents old workflow context from leaking into new workflows
+        if workflow_id is not None:
+            old_message_count = len(self._processed_messages)
+            self._processed_messages.clear()
+            self._workflow_start_time = time.time()
+            logger.info(f"Session isolation: cleared {old_message_count} messages from previous workflow")
+        else:
+            self._workflow_start_time = None
+
         self._current_workflow_id = workflow_id
         logger.info(f"Current workflow ID set: {workflow_id}")
 
@@ -940,6 +957,7 @@ class CentralPost:
             self.approval_manager.clear_workflow_rules(self._current_workflow_id)
             logger.info(f"Cleared workflow approval rules for: {self._current_workflow_id}")
             self._current_workflow_id = None
+            self._workflow_start_time = None
 
     def process_next_message(self) -> Optional[Message]:
         """
@@ -2870,7 +2888,10 @@ class AgentFactory:
                  agent_registry: Optional["AgentPluginRegistry"] = None,
                  plugin_directories: Optional[List[str]] = None,
                  prompt_manager: Optional["PromptManager"] = None,
-                 prompt_optimizer: Optional["PromptOptimizer"] = None):
+                 prompt_optimizer: Optional["PromptOptimizer"] = None,
+                 task_memory: Optional[Any] = None,
+                 performance_tracker: Optional[Any] = None,
+                 spawn_cooldown_seconds: float = 2.0):
         """
         Initialize the agent factory.
 
@@ -2888,6 +2909,9 @@ class AgentFactory:
             plugin_directories: Optional list of external plugin directories to load
             prompt_manager: Optional prompt manager for custom prompt templates
             prompt_optimizer: Optional prompt optimizer for learning and optimization
+            task_memory: Optional task memory for learning from past executions
+            performance_tracker: Optional performance tracker for agent spawning decisions
+            spawn_cooldown_seconds: Seconds between agent spawns (prevents spawn storms)
         """
         self.helix = helix
         self.llm_client = llm_client
@@ -2899,6 +2923,9 @@ class AgentFactory:
         self.max_web_queries = max_web_queries
         self.prompt_manager = prompt_manager
         self.prompt_optimizer = prompt_optimizer
+        self.task_memory = task_memory
+        self.performance_tracker = performance_tracker
+        self.spawn_cooldown_seconds = spawn_cooldown_seconds
 
         # Initialize agent plugin registry
         if agent_registry is not None:
@@ -2925,7 +2952,10 @@ class AgentFactory:
                 agent_factory=self,
                 confidence_threshold=0.8,
                 max_agents=max_agents,
-                token_budget_limit=token_budget_limit
+                token_budget_limit=token_budget_limit,
+                task_memory=self.task_memory,
+                performance_tracker=self.performance_tracker,
+                spawn_cooldown_seconds=self.spawn_cooldown_seconds
             )
         else:
             self.dynamic_spawner = None
