@@ -1,0 +1,271 @@
+.
+├── CLAUDE.md
+├── codebase_structure.txt
+├── config
+│   ├── chat_system_prompt.md
+│   ├── _index.md
+│   ├── llm.yaml
+│   ├── llm.yaml.example
+│   ├── prompts.yaml
+│   ├── task_complexity_patterns.yaml
+│   ├── tool_requirements_patterns.yaml
+│   └── trust_rules.yaml
+├── coverage.xml
+├── data
+│   └── default_tfidf_corpus.txt
+├── docker-compose.yml
+├── Dockerfile
+├── felix_agent_performance.db
+├── felix_cli_sessions.db
+├── felix_gui_config.json
+├── felix_gui.log
+├── felix_gui_sessions.db
+├── felix_knowledge.db
+├── felix_knowledge.db.backup_20251118_140927
+├── felix_live_agents.db
+├── felix_memory.db
+├── felix_sessions.db
+├── felix_system_actions.db
+├── felix_task_memory.db
+├── felix_workflow_history.db
+├── index.md
+├── knowledge_sources
+│   └── nasb.txt
+├── LICENSE
+├── MASTERINDEX.md
+├── prompts
+│   ├── felix_prompts.db
+│   └── _index.md
+├── pyproject.toml
+├── pytest.ini
+├── QUICKSTART.md
+├── README.md
+├── requirements-api.txt
+├── requirements-cli-enhanced.txt
+├── requirements-free-threaded.txt
+├── requirements_streamlit.txt
+├── requirements.txt
+├── run_both_guis.sh
+├── scripts
+│   ├── _index.md
+│   ├── knowledge_reset.py
+│   ├── migrate_databases.py
+│   └── migrate_tool_instructions.py
+├── SESSION_MANAGER_API.md
+├── setup.py
+├── src
+│   ├── agents
+│   │   ├── agent_plugin_registry.py
+│   │   ├── agent.py
+│   │   ├── base_specialized_agent.py
+│   │   ├── builtin
+│   │   ├── dynamic_spawning.py
+│   │   ├── felix_agent.py
+│   │   ├── _index.md
+│   │   ├── __init__.py
+│   │   ├── llm_agent.py
+│   │   ├── prompt_optimization.py
+│   │   ├── __pycache__
+│   │   ├── specialized_agents.py
+│   │   ├── standalone_agent.py
+│   │   └── system_agent.py
+│   ├── api
+│   │   ├── dependencies.py
+│   │   ├── _index.md
+│   │   ├── __init__.py
+│   │   ├── main.py
+│   │   ├── middleware
+│   │   ├── models.py
+│   │   ├── routers
+│   │   └── websockets
+│   ├── cli_chat
+│   │   ├── chat.py
+│   │   ├── cli_workflow_orchestrator.py
+│   │   ├── command_handler.py
+│   │   ├── completers.py
+│   │   ├── custom_commands.py
+│   │   ├── formatters.py
+│   │   ├── _index.md
+│   │   ├── __init__.py
+│   │   ├── prompts
+│   │   ├── __pycache__
+│   │   ├── session_manager.py
+│   │   └── tools
+│   ├── cli.py
+│   ├── communication
+│   │   ├── central_post.py
+│   │   ├── _index.md
+│   │   ├── __init__.py
+│   │   ├── memory_facade.py
+│   │   ├── mesh.py
+│   │   ├── message_types.py
+│   │   ├── performance_monitor.py
+│   │   ├── __pycache__
+│   │   ├── spoke.py
+│   │   ├── streaming_coordinator.py
+│   │   ├── synthesis_engine.py
+│   │   ├── system_command_manager.py
+│   │   └── web_search_coordinator.py
+│   ├── core
+│   │   ├── felixignore.py
+│   │   ├── felix_system.py
+│   │   ├── helix_geometry.py
+│   │   ├── _index.md
+│   │   ├── __init__.py
+│   │   └── __pycache__
+│   ├── execution
+│   │   ├── approval_manager.py
+│   │   ├── command_history.py
+│   │   ├── _index.md
+│   │   ├── __init__.py
+│   │   ├── __pycache__
+│   │   ├── system_executor.py
+│   │   └── trust_manager.py
+│   ├── feedback
+│   │   ├── feedback_integrator.py
+│   │   ├── feedback_manager.py
+│   │   ├── _index.md
+│   │   ├── __init__.py
+│   │   └── __pycache__
+│   ├── gui
+│   │   ├── adapters
+│   │   ├── context
+│   │   ├── core
+│   │   ├── dialogs
+│   │   ├── __init__.py
+│   │   ├── __main__.py
+│   │   ├── main_window.py
+│   │   ├── models
+│   │   ├── panels
+│   │   ├── __pycache__
+│   │   └── widgets
+│   ├── gui_ctk
+│   │   ├── app.py
+│   │   ├── components
+│   │   ├── dialogs
+│   │   ├── __init__.py
+│   │   ├── knowledge_brain
+│   │   ├── __main__.py
+│   │   ├── __pycache__
+│   │   ├── responsive.py
+│   │   ├── styles.py
+│   │   ├── tabs
+│   │   ├── theme_manager.py
+│   │   └── utils.py
+│   ├── __init__.py
+│   ├── knowledge
+│   │   ├── backup_manager_extended.py
+│   │   ├── basic_extraction.py
+│   │   ├── comprehension.py
+│   │   ├── coverage_analyzer.py
+│   │   ├── directory_index.py
+│   │   ├── document_ingest.py
+│   │   ├── document_outline.py
+│   │   ├── embeddings.py
+│   │   ├── gap_directed_learning.py
+│   │   ├── gap_tracker.py
+│   │   ├── graph_builder.py
+│   │   ├── _index.md
+│   │   ├── __init__.py
+│   │   ├── knowledge_cleanup.py
+│   │   ├── knowledge_daemon.py
+│   │   ├── __pycache__
+│   │   ├── quality_checker.py
+│   │   ├── retrieval.py
+│   │   ├── strategic_comprehension.py
+│   │   ├── system_reset.py
+│   │   └── workflow_integration.py
+│   ├── learning
+│   │   ├── confidence_calibrator.py
+│   │   ├── db_utils.py
+│   │   ├── _index.md
+│   │   ├── __init__.py
+│   │   ├── pattern_learner.py
+│   │   ├── __pycache__
+│   │   ├── recommendation_engine.py
+│   │   └── threshold_learner.py
+│   ├── llm
+│   │   ├── base_provider.py
+│   │   ├── circuit_breaker.py
+│   │   ├── _index.md
+│   │   ├── __init__.py
+│   │   ├── llm_router.py
+│   │   ├── lm_studio_client.py
+│   │   ├── multi_server_client.py
+│   │   ├── provider_config.py
+│   │   ├── providers
+│   │   ├── __pycache__
+│   │   ├── router_adapter.py
+│   │   ├── token_budget.py
+│   │   └── web_search_client.py
+│   ├── memory
+│   │   ├── agent_performance_tracker.py
+│   │   ├── audit_log.py
+│   │   ├── context_compression.py
+│   │   ├── _index.md
+│   │   ├── __init__.py
+│   │   ├── knowledge_store.py
+│   │   ├── __pycache__
+│   │   ├── task_memory.py
+│   │   └── workflow_history.py
+│   ├── migration
+│   │   ├── add_audit_log_table.py
+│   │   ├── add_cascade_delete.py
+│   │   ├── add_fts5_triggers.py
+│   │   ├── add_knowledge_brain.py
+│   │   ├── add_knowledge_gaps_table.py
+│   │   ├── add_knowledge_relationships_table.py
+│   │   ├── add_knowledge_validation.py
+│   │   ├── add_learning_tables.py
+│   │   ├── add_watch_directories_table.py
+│   │   ├── backup_manager.py
+│   │   ├── base_migration.py
+│   │   ├── create_agent_performance.py
+│   │   ├── create_feedback_system.py
+│   │   ├── create_system_actions.py
+│   │   ├── fix_fts_triggers.py
+│   │   ├── fix_learning_schema_v2.py
+│   │   ├── _index.md
+│   │   ├── __init__.py
+│   │   ├── knowledge_migrations.py
+│   │   ├── __pycache__
+│   │   ├── task_migrations.py
+│   │   ├── version_manager.py
+│   │   └── workflow_migrations.py
+│   ├── pipeline
+│   │   ├── chunking.py
+│   │   ├── _index.md
+│   │   ├── __init__.py
+│   │   └── __pycache__
+│   ├── prompts
+│   │   ├── _index.md
+│   │   ├── __init__.py
+│   │   ├── prompt_manager.py
+│   │   ├── prompt_pipeline.py
+│   │   └── __pycache__
+│   ├── __pycache__
+│   │   └── __init__.cpython-312.pyc
+│   ├── utils
+│   │   ├── _index.md
+│   │   ├── __init__.py
+│   │   ├── markdown_formatter.py
+│   │   └── __pycache__
+│   └── workflows
+│       ├── concept_registry.py
+│       ├── context_builder.py
+│       ├── context_relevance.py
+│       ├── conversation_loader.py
+│       ├── failure_recovery.py
+│       ├── felix_inference.py
+│       ├── felix_workflow.py
+│       ├── _index.md
+│       ├── __init__.py
+│       ├── __pycache__
+│       ├── task_completion_detector.py
+│       └── truth_assessment.py
+├── start_kb_api.sh
+├── test_session_folders.py
+├── USER_MANUAL.md
+└── workflow_results_20251020_204632.txt
+
+61 directories, 208 files

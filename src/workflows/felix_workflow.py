@@ -349,10 +349,15 @@ def run_felix_workflow(felix_system, task_input: str,
         except Exception as e:
             logger.warning(f"Coverage analysis failed (continuing without): {e}")
 
-        # Phase 3.2: Initialize failure recovery manager
-        from src.workflows.failure_recovery import FailureRecoveryManager, FailureType
-        failure_recovery = FailureRecoveryManager()
-        logger.info("✓ Failure recovery system initialized")
+        # Phase 3.2: Initialize failure recovery manager with circuit breaker
+        from src.workflows.failure_recovery import (
+            FailureRecoveryManager, FailureType, WorkflowAbortedException
+        )
+        failure_recovery = FailureRecoveryManager(
+            circuit_breaker_threshold=3,
+            escalation_callback=None  # TODO: Wire up GUI escalation callback
+        )
+        logger.info("✓ Failure recovery system initialized with circuit breaker")
 
         # Check web search availability (Fix 5)
         logger.info("=" * 60)
@@ -690,38 +695,73 @@ def run_felix_workflow(felix_system, task_input: str,
                             # Check for low confidence that might need recovery
                             if result.confidence < 0.3:
                                 logger.warning(f"⚠️ Agent {agent.agent_id} produced low confidence result: {result.confidence:.2f}")
-                                failure_record = failure_recovery.record_failure(
-                                    FailureType.LOW_CONFIDENCE,
-                                    agent.agent_id,
-                                    f"Confidence {result.confidence:.2f} below threshold 0.3",
-                                    context={'result': result, 'agent_type': agent.agent_type}
+                                try:
+                                    failure_record = failure_recovery.record_failure(
+                                        FailureType.LOW_CONFIDENCE,
+                                        agent.agent_id,
+                                        f"Confidence {result.confidence:.2f} below threshold 0.3",
+                                        context={'result': result, 'agent_type': agent.agent_type}
+                                    )
+                                except WorkflowAbortedException:
+                                    # User aborted via circuit breaker
+                                    logger.error("🛑 Workflow aborted by user due to cascading failures")
+                                    results["status"] = "aborted"
+                                    results["error"] = "User aborted after cascading failures"
+                                    return results
+
+                                # Recovery strategy: Actually spawn critic for validation
+                                recovery_result = failure_recovery.attempt_recovery(
+                                    failure_record,
+                                    agent_factory=agent_factory,
+                                    central_post=central_post,
+                                    helix=felix_system.helix,
+                                    llm_client=felix_system.lm_client
                                 )
-                                # Recovery strategy: Spawn critic for validation
-                                recovery_result = failure_recovery.attempt_recovery(failure_record)
-                                if recovery_result['success'] and recovery_result.get('adjusted_parameters', {}).get('spawn_critic'):
+
+                                if recovery_result['success']:
                                     logger.info(f"  🔄 Recovery: {recovery_result['message']}")
-                                    # Let dynamic spawning handle critic creation
+
+                                    # If a new agent was spawned, add it to active agents
+                                    spawned_agent = recovery_result.get('spawned_agent_instance')
+                                    if spawned_agent:
+                                        active_agents.append(spawned_agent)
+                                        logger.info(f"  ✓ Added spawned critic {spawned_agent.agent_id} to active agents")
+                                else:
+                                    logger.warning(f"  ⚠️ Recovery failed: {recovery_result['message']}")
 
                         except Exception as e:
                             logger.error(f"✗ Agent {agent.agent_id} processing failed: {e}")
 
-                            # Record failure
-                            failure_record = failure_recovery.record_failure(
-                                FailureType.AGENT_ERROR,
-                                agent.agent_id,
-                                str(e),
-                                context={
-                                    'agent_type': agent.agent_type,
-                                    'agent_params': {
-                                        'temperature': getattr(agent, 'temperature', 0.7),
-                                        'max_tokens': agent.max_tokens
+                            # Record failure (may trigger circuit breaker)
+                            try:
+                                failure_record = failure_recovery.record_failure(
+                                    FailureType.AGENT_ERROR,
+                                    agent.agent_id,
+                                    str(e),
+                                    context={
+                                        'agent_type': agent.agent_type,
+                                        'agent_params': {
+                                            'temperature': getattr(agent, 'temperature', 0.7),
+                                            'max_tokens': agent.max_tokens
+                                        }
                                     }
-                                }
-                            )
+                                )
+                            except WorkflowAbortedException:
+                                # User aborted via circuit breaker
+                                logger.error("🛑 Workflow aborted by user due to cascading failures")
+                                results["status"] = "aborted"
+                                results["error"] = "User aborted after cascading failures"
+                                return results
 
                             # Attempt recovery if not too many failures
                             if not failure_recovery.should_abandon_recovery(agent.agent_id):
-                                recovery_result = failure_recovery.attempt_recovery(failure_record)
+                                recovery_result = failure_recovery.attempt_recovery(
+                                    failure_record,
+                                    agent_factory=agent_factory,
+                                    central_post=central_post,
+                                    helix=felix_system.helix,
+                                    llm_client=felix_system.lm_client
+                                )
                                 if recovery_result['success']:
                                     logger.info(f"  🔄 Recovery: {recovery_result['message']}")
 
@@ -1472,7 +1512,8 @@ def run_felix_workflow(felix_system, task_input: str,
                                 reasoning_evals=reasoning_evals if reasoning_evals else None,
                                 coverage_report=coverage_report,
                                 successful_agents=results.get("successful_agents", []),
-                                failed_agents=results.get("failed_agents", [])
+                                failed_agents=results.get("failed_agents", []),
+                                streaming_callback=streaming_callback
                             )
                             results["centralpost_synthesis"] = synthesis_result
                             logger.info(f"✓ CentralPost synthesis complete!")
@@ -1543,7 +1584,8 @@ def run_felix_workflow(felix_system, task_input: str,
                     reasoning_evals=reasoning_evals if reasoning_evals else None,
                     coverage_report=coverage_report,
                     successful_agents=results.get("successful_agents", []),
-                    failed_agents=results.get("failed_agents", [])
+                    failed_agents=results.get("failed_agents", []),
+                    streaming_callback=streaming_callback
                 )
                 results["centralpost_synthesis"] = synthesis_result
                 logger.info(f"✓ Final CentralPost synthesis complete")

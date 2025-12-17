@@ -19,6 +19,8 @@ and maintainability while preserving all functionality.
 import time
 import re
 import os
+import json
+import sqlite3
 import logging
 import yaml
 from typing import Dict, List, Any, Optional, Tuple, Callable
@@ -153,6 +155,127 @@ class SynthesisEngine:
                 r'\bapt[-\s]get\b',
             ]
 
+    def _log_synthesis_audit(
+        self,
+        workflow_id: Optional[str],
+        task_description: str,
+        task_complexity: str,
+        messages: List[Message],
+        system_prompt: str,
+        user_prompt: str,
+        result: Dict[str, Any],
+        validation_score: Optional[float] = None,
+        validation_flags: Optional[List[str]] = None,
+        reasoning_weights: Optional[Dict[str, float]] = None
+    ) -> None:
+        """
+        Log full synthesis audit trail to database.
+
+        Records all synthesis decisions with full context for auditability,
+        including prompts, per-agent contributions, confidence calculations,
+        and validation results.
+
+        Args:
+            workflow_id: ID of the workflow that triggered synthesis
+            task_description: Original task
+            task_complexity: SIMPLE_FACTUAL, MEDIUM, or COMPLEX
+            messages: Agent messages used in synthesis
+            system_prompt: Full system prompt sent to LLM
+            user_prompt: Full user prompt with agent outputs
+            result: Synthesis result dictionary
+            validation_score: Optional validation score (0.0-1.0)
+            validation_flags: Optional list of validation issues
+            reasoning_weights: Optional per-agent reasoning weights
+        """
+        try:
+            # Use project root database location
+            project_root = Path(__file__).parent.parent.parent
+            db_path = project_root / "felix_knowledge.db"
+
+            conn = sqlite3.connect(str(db_path))
+            cursor = conn.cursor()
+
+            # Check if synthesis_audit table exists (migration may not have run)
+            cursor.execute("""
+                SELECT name FROM sqlite_master
+                WHERE type='table' AND name='synthesis_audit'
+            """)
+            if not cursor.fetchone():
+                logger.debug("synthesis_audit table not found, skipping audit logging")
+                conn.close()
+                return
+
+            # Extract per-agent data for audit
+            agent_outputs = []
+            raw_confidences = []
+            for msg in messages:
+                if msg.message_type == MessageType.STATUS_UPDATE:
+                    agent_id = msg.sender_id
+                    agent_type = msg.content.get('agent_type', 'unknown')
+                    confidence = msg.content.get('confidence', 0.0)
+                    content = msg.content.get('content', '')
+
+                    agent_outputs.append({
+                        'agent_id': agent_id,
+                        'type': agent_type,
+                        'confidence': confidence,
+                        'content_preview': content[:200] if content else ''
+                    })
+                    if confidence > 0:
+                        raw_confidences.append(confidence)
+
+            # Calculate confidence standard deviation
+            if len(raw_confidences) >= 2:
+                avg = sum(raw_confidences) / len(raw_confidences)
+                variance = sum((c - avg) ** 2 for c in raw_confidences) / len(raw_confidences)
+                confidence_std = variance ** 0.5
+            else:
+                confidence_std = 0.0
+
+            # Prepare degradation reasons
+            degraded_reasons = result.get('degraded_reasons', [])
+
+            cursor.execute("""
+                INSERT INTO synthesis_audit (
+                    workflow_id, timestamp, task_description, task_complexity,
+                    agent_count, agent_outputs_json, reasoning_weights_json,
+                    raw_confidences_json, weighted_avg, confidence_std, synthesis_confidence,
+                    validation_called, validation_score, validation_flags_json,
+                    system_prompt, user_prompt, synthesis_content,
+                    tokens_used, synthesis_time, used_fallback, degraded, degraded_reasons_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                workflow_id,
+                time.time(),
+                task_description,
+                task_complexity,
+                len(messages),
+                json.dumps(agent_outputs),
+                json.dumps(reasoning_weights) if reasoning_weights else None,
+                json.dumps(raw_confidences),
+                result.get('avg_agent_confidence', 0.0),
+                confidence_std,
+                result.get('confidence', 0.0),
+                1 if validation_score is not None else 0,
+                validation_score,
+                json.dumps(validation_flags) if validation_flags else None,
+                system_prompt,
+                user_prompt,
+                result.get('synthesis_content', ''),
+                result.get('tokens_used', 0),
+                result.get('synthesis_time', 0.0),
+                1 if result.get('used_fallback', False) else 0,
+                1 if result.get('degraded', False) else 0,
+                json.dumps(degraded_reasons) if degraded_reasons else None
+            ))
+
+            conn.commit()
+            conn.close()
+            logger.debug(f"Synthesis audit logged for workflow {workflow_id}")
+
+        except Exception as e:
+            logger.warning(f"Failed to log synthesis audit: {e}")
+            # Don't let audit failures break synthesis
 
     def classify_task_complexity(self, task_description: str) -> str:
         """
@@ -320,7 +443,10 @@ class SynthesisEngine:
                                  coverage_report: Optional[Any] = None,
                                  successful_agents: Optional[List[str]] = None,
                                  failed_agents: Optional[List[str]] = None,
-                                 streaming_callback: Optional[Callable] = None) -> Dict[str, Any]:
+                                 streaming_callback: Optional[Callable] = None,
+                                 workflow_id: Optional[str] = None,
+                                 approval_callback: Optional[Callable[[Dict], Dict]] = None,
+                                 approval_threshold: float = 0.6) -> Dict[str, Any]:
         """
         Synthesize final output from all agent communications.
 
@@ -345,6 +471,14 @@ class SynthesisEngine:
             streaming_callback: Optional callback for streaming synthesis output.
                 If provided, synthesis will stream chunks via complete_streaming().
                 Callback signature: callback(chunk) where chunk has .content attribute.
+            workflow_id: Optional workflow ID for audit trail correlation.
+            approval_callback: Optional callback for user approval of low-confidence
+                synthesis. If provided and confidence < approval_threshold, this
+                callback is invoked with synthesis review data. The callback should
+                return a dict with 'action' key ('accept', 'reject', or 'regenerate')
+                and optional 'strategy' and 'user_input' for regeneration.
+            approval_threshold: Confidence threshold below which approval is required.
+                Default 0.6. Only applies if approval_callback is provided.
 
         Returns:
             Dict containing:
@@ -517,9 +651,10 @@ Your output should reflect JUSTIFIED confidence, not reflexive confidence. If th
                     logger.info("Synthesis using streaming mode")
 
                     # Wrap callback to convert StreamingChunk to plain text
+                    # Pass agent name for full mode compatibility (expects 2 args)
                     def text_callback(chunk):
                         chunk_text = chunk.content if hasattr(chunk, 'content') else str(chunk)
-                        streaming_callback(chunk_text)
+                        streaming_callback("synthesis_engine", chunk_text)
 
                     llm_response = self.llm_client.complete_streaming(
                         agent_id="synthesis_engine",
@@ -600,9 +735,23 @@ Your output should reflect JUSTIFIED confidence, not reflexive confidence. If th
                 confidence=synthesis_confidence
             )
 
+        # Call validation functions (imported at line 35, now actually used!)
+        validation_score = None
+        validation_flags = None
+        try:
+            validation_score = calculate_validation_score(final_content, task_description)
+            validation_flags = get_validation_flags(final_content)
+
+            logger.info(f"  Validation score: {validation_score:.2f}")
+            if validation_flags:
+                logger.warning(f"  Validation flags: {validation_flags}")
+        except Exception as e:
+            logger.warning(f"  Validation check failed: {e}")
+
         logger.info("=" * 60)
 
-        return {
+        # Build result dict
+        result = {
             "synthesis_content": final_content,
             "confidence": synthesis_confidence,  # Pure agent confidence (no validation weighting)
             "meta_confidence": meta_confidence_result['meta_confidence'],  # Phase 7: Coverage-adjusted
@@ -625,7 +774,104 @@ Your output should reflect JUSTIFIED confidence, not reflexive confidence. If th
             "degraded_reasons": degraded_reasons,
             "successful_agents": successful_agents or [],
             "failed_agents": failed_agents or [],
+            # Validation results (new - addressing audit gap)
+            "validation_score": validation_score,
+            "validation_flags": validation_flags,
         }
+
+        # Confidence gating with user approval (addressing human-in-the-loop gap)
+        if approval_callback and synthesis_confidence < approval_threshold:
+            logger.info(f"  Confidence {synthesis_confidence:.2f} below threshold {approval_threshold:.2f}")
+            logger.info("  Requesting user approval for synthesis...")
+
+            # Build review data for approval callback
+            review_data = {
+                'type': 'synthesis_review',
+                'confidence': synthesis_confidence,
+                'meta_confidence': meta_confidence_result['meta_confidence'],
+                'content_preview': final_content[:500] if len(final_content) > 500 else final_content,
+                'full_content': final_content,
+                'degraded': is_degraded,
+                'degraded_reason': degraded_reason,
+                'validation_score': validation_score,
+                'validation_flags': validation_flags or [],
+                'agent_count': len(messages),
+                'task_description': task_description,
+                'options': [
+                    {'id': 'accept', 'label': 'Accept as-is'},
+                    {'id': 'regenerate_focused', 'label': 'Regenerate (more focused)',
+                     'strategy': 'parameter_adjust'},
+                    {'id': 'regenerate_context', 'label': 'Add context and regenerate',
+                     'strategy': 'context_injection', 'requires_input': True},
+                    {'id': 'regenerate_agents', 'label': 'Spawn more agents',
+                     'strategy': 'spawn_more_agents'},
+                    {'id': 'regenerate_search', 'label': 'Search web and regenerate',
+                     'strategy': 'web_search_boost'},
+                    {'id': 'regenerate_knowledge', 'label': 'Expand knowledge search',
+                     'strategy': 'knowledge_expand'},
+                    {'id': 'reject', 'label': 'Reject synthesis'}
+                ]
+            }
+
+            # Invoke approval callback and wait for user decision
+            try:
+                decision = approval_callback(review_data)
+
+                if decision.get('action') == 'accept':
+                    logger.info("  User accepted synthesis as-is")
+                    result['user_approved'] = True
+
+                elif decision.get('action') == 'reject':
+                    logger.info("  User rejected synthesis")
+                    result['synthesis_content'] = None
+                    result['user_declined'] = True
+                    result['decline_reason'] = decision.get('reason', 'User rejected synthesis')
+                    # Still log the audit for the rejected synthesis
+                    result['user_approved'] = False
+
+                elif decision.get('action', '').startswith('regenerate'):
+                    logger.info(f"  User requested regeneration: {decision.get('strategy')}")
+                    result['regeneration_requested'] = True
+                    result['regeneration_strategy'] = decision.get('strategy')
+                    result['regeneration_user_input'] = decision.get('user_input')
+                    result['user_approved'] = False
+                    # Note: Caller should handle regeneration using RegenerationExecutor
+
+                else:
+                    logger.warning(f"  Unknown approval decision: {decision}")
+                    result['user_approved'] = True  # Default to accept
+
+            except Exception as e:
+                logger.error(f"  Approval callback failed: {e}")
+                result['approval_error'] = str(e)
+                result['user_approved'] = True  # Continue on callback failure
+        else:
+            # No approval needed (confidence above threshold or no callback)
+            result['user_approved'] = True
+
+        # Log full synthesis audit trail
+        # Extract reasoning weights from reasoning_evals if provided
+        reasoning_weights = None
+        if reasoning_evals:
+            reasoning_weights = {
+                agent_id: eval_data.get('reasoning_quality_score', 1.0)
+                for agent_id, eval_data in reasoning_evals.items()
+            }
+
+        self._log_synthesis_audit(
+            workflow_id=workflow_id,
+            task_description=task_description,
+            task_complexity=task_complexity,
+            messages=messages,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            result=result,
+            validation_score=validation_score,
+            validation_flags=validation_flags,
+            reasoning_weights=reasoning_weights
+        )
+
+        return result
 
     def _create_fallback_synthesis(self,
                                     task_description: str,

@@ -1,34 +1,54 @@
-from .main import MainApp
-from .felix_system import FelixSystem, FelixConfig, AgentManager
-from .dashboard import DashboardFrame
-from .workflows import WorkflowsFrame
-from .memory import MemoryFrame
-from .agents import AgentsFrame
-from .utils import ThreadManager, DBHelper, logger
-from .logging_handler import (
-    setup_gui_logging,
-    TkinterTextHandler,
-    QueueHandler,
-    add_text_widget_to_logger
-)
+"""Felix PySide6 GUI.
 
-__all__ = [
-    'MainApp',
-    'FelixSystem',
-    'FelixConfig',
-    'AgentManager',
-    'DashboardFrame',
-    'WorkflowsFrame',
-    'MemoryFrame',
-    'AgentsFrame',
-    'ThreadManager',
-    'DBHelper',
-    'logger',
-    'setup_gui_logging',
-    'TkinterTextHandler',
-    'QueueHandler',
-    'add_text_widget_to_logger'
-]
+A modern, responsive GUI for the Felix multi-agent AI framework.
 
-__version__ = '1.0.0'
-__author__ = 'Felix Framework'
+Usage:
+    python -m src.gui
+
+Or via entry point:
+    felix-gui
+"""
+
+import sys
+import logging
+
+from PySide6.QtWidgets import QApplication
+
+from .core.theme import apply_dark_theme
+from .main_window import MainWindow
+
+__version__ = "1.0.0"
+
+logger = logging.getLogger(__name__)
+
+
+def main():
+    """Main entry point for the Felix GUI."""
+    # Set up logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%H:%M:%S"
+    )
+
+    logger.info("Starting Felix GUI...")
+
+    # Create application
+    app = QApplication(sys.argv)
+    app.setApplicationName("Felix")
+    app.setApplicationVersion(__version__)
+
+    # Apply dark theme
+    apply_dark_theme(app)
+
+    # Create and show main window
+    window = MainWindow()
+    window.show()
+
+    logger.info("Felix GUI started")
+
+    # Run event loop
+    sys.exit(app.exec())
+
+
+__all__ = ["main", "MainWindow", "__version__"]

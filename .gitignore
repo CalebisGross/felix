@@ -80,3 +80,6 @@ knowledge_sources/*
 # OS
 .DS_Store
 Thumbs.db
+
+# Archives
+archive/

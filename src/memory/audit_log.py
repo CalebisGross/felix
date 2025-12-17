@@ -391,6 +391,334 @@ class AuditLogger:
             logger.error(f"Failed to export audit log: {e}")
             return False
 
+    # ==================================================================
+    # Synthesis Audit Operations (extended for synthesis transparency)
+    # ==================================================================
+
+    def log_synthesis_operation(
+        self,
+        workflow_id: Optional[str] = None,
+        task_description: str = "",
+        task_complexity: str = "COMPLEX",
+        agent_count: int = 0,
+        synthesis_confidence: float = 0.0,
+        validation_score: Optional[float] = None,
+        validation_flags: Optional[List[str]] = None,
+        used_fallback: bool = False,
+        degraded: bool = False,
+        degraded_reasons: Optional[List[str]] = None,
+        user_approved: bool = True,
+        regeneration_requested: bool = False,
+        regeneration_strategy: Optional[str] = None
+    ) -> bool:
+        """
+        Log a synthesis operation to the synthesis_audit table.
+
+        This provides a simpler interface than _log_synthesis_audit() in
+        SynthesisEngine, for cases where you don't have all the detailed
+        context (prompts, raw outputs) but want to log a synthesis event.
+
+        Args:
+            workflow_id: ID of the workflow
+            task_description: Original task
+            task_complexity: SIMPLE_FACTUAL, MEDIUM, or COMPLEX
+            agent_count: Number of agents involved
+            synthesis_confidence: Final confidence score
+            validation_score: Validation score (0.0-1.0)
+            validation_flags: List of validation issues
+            used_fallback: Whether fallback synthesis was used
+            degraded: Whether synthesis was degraded
+            degraded_reasons: List of degradation reasons
+            user_approved: Whether user approved the synthesis
+            regeneration_requested: Whether regeneration was requested
+            regeneration_strategy: Strategy requested for regeneration
+
+        Returns:
+            True if logged successfully, False otherwise
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            # Check if synthesis_audit table exists
+            cursor.execute("""
+                SELECT name FROM sqlite_master
+                WHERE type='table' AND name='synthesis_audit'
+            """)
+            if not cursor.fetchone():
+                logger.debug("synthesis_audit table not found, skipping synthesis audit log")
+                conn.close()
+                return False
+
+            cursor.execute("""
+                INSERT INTO synthesis_audit (
+                    workflow_id, timestamp, task_description, task_complexity,
+                    agent_count, synthesis_confidence,
+                    validation_called, validation_score, validation_flags_json,
+                    used_fallback, degraded, degraded_reasons_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                workflow_id,
+                datetime.now().timestamp(),
+                task_description,
+                task_complexity,
+                agent_count,
+                synthesis_confidence,
+                1 if validation_score is not None else 0,
+                validation_score,
+                json.dumps(validation_flags) if validation_flags else None,
+                1 if used_fallback else 0,
+                1 if degraded else 0,
+                json.dumps(degraded_reasons) if degraded_reasons else None
+            ))
+
+            conn.commit()
+            conn.close()
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to log synthesis operation: {e}")
+            if 'conn' in locals():
+                conn.close()
+            return False
+
+    def get_synthesis_history(
+        self,
+        workflow_id: Optional[str] = None,
+        task_complexity: Optional[str] = None,
+        degraded_only: bool = False,
+        low_confidence_only: bool = False,
+        confidence_threshold: float = 0.5,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        limit: int = 100,
+        offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        """
+        Query synthesis audit history with optional filters.
+
+        Args:
+            workflow_id: Filter by workflow ID
+            task_complexity: Filter by complexity (SIMPLE_FACTUAL, MEDIUM, COMPLEX)
+            degraded_only: Only return degraded syntheses
+            low_confidence_only: Only return low-confidence syntheses
+            confidence_threshold: Threshold for low_confidence_only filter
+            start_date: Filter by start date (inclusive)
+            end_date: Filter by end date (inclusive)
+            limit: Maximum records to return
+            offset: Number of records to skip (for pagination)
+
+        Returns:
+            List of synthesis audit entries as dictionaries
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            # Check if synthesis_audit table exists
+            cursor.execute("""
+                SELECT name FROM sqlite_master
+                WHERE type='table' AND name='synthesis_audit'
+            """)
+            if not cursor.fetchone():
+                logger.warning("synthesis_audit table not found")
+                conn.close()
+                return []
+
+            # Build query with filters
+            query = "SELECT * FROM synthesis_audit WHERE 1=1"
+            params = []
+
+            if workflow_id:
+                query += " AND workflow_id = ?"
+                params.append(workflow_id)
+
+            if task_complexity:
+                query += " AND task_complexity = ?"
+                params.append(task_complexity)
+
+            if degraded_only:
+                query += " AND degraded = 1"
+
+            if low_confidence_only:
+                query += " AND synthesis_confidence < ?"
+                params.append(confidence_threshold)
+
+            if start_date:
+                query += " AND timestamp >= ?"
+                params.append(start_date.timestamp())
+
+            if end_date:
+                query += " AND timestamp <= ?"
+                params.append(end_date.timestamp())
+
+            query += " ORDER BY timestamp DESC LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+
+            # Convert to dictionaries
+            entries = []
+            for row in rows:
+                entry = {
+                    'audit_id': row['audit_id'],
+                    'workflow_id': row['workflow_id'],
+                    'timestamp': datetime.fromtimestamp(row['timestamp']),
+                    'task_description': row['task_description'],
+                    'task_complexity': row['task_complexity'],
+                    'agent_count': row['agent_count'],
+                    'synthesis_confidence': row['synthesis_confidence'],
+                    'validation_called': bool(row['validation_called']),
+                    'validation_score': row['validation_score'],
+                    'validation_flags': json.loads(row['validation_flags_json']) if row['validation_flags_json'] else None,
+                    'used_fallback': bool(row['used_fallback']),
+                    'degraded': bool(row['degraded']),
+                    'degraded_reasons': json.loads(row['degraded_reasons_json']) if row['degraded_reasons_json'] else None,
+                    'tokens_used': row['tokens_used'],
+                    'synthesis_time': row['synthesis_time'],
+                }
+                entries.append(entry)
+
+            conn.close()
+            return entries
+
+        except Exception as e:
+            logger.error(f"Failed to query synthesis history: {e}")
+            if 'conn' in locals():
+                conn.close()
+            return []
+
+    def get_synthesis_statistics(self) -> Dict[str, Any]:
+        """
+        Get synthesis audit statistics.
+
+        Returns:
+            Dictionary with statistics:
+            - total_syntheses: Total number of syntheses
+            - avg_confidence: Average synthesis confidence
+            - degraded_count: Number of degraded syntheses
+            - fallback_count: Number of fallback syntheses
+            - by_complexity: Breakdown by task complexity
+            - confidence_distribution: Distribution of confidence scores
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            # Check if synthesis_audit table exists
+            cursor.execute("""
+                SELECT name FROM sqlite_master
+                WHERE type='table' AND name='synthesis_audit'
+            """)
+            if not cursor.fetchone():
+                logger.warning("synthesis_audit table not found")
+                conn.close()
+                return {
+                    'total_syntheses': 0,
+                    'avg_confidence': 0.0,
+                    'degraded_count': 0,
+                    'fallback_count': 0,
+                    'by_complexity': {},
+                    'confidence_distribution': {}
+                }
+
+            # Total and averages
+            cursor.execute("""
+                SELECT
+                    COUNT(*) as total,
+                    AVG(synthesis_confidence) as avg_conf,
+                    SUM(CASE WHEN degraded = 1 THEN 1 ELSE 0 END) as degraded,
+                    SUM(CASE WHEN used_fallback = 1 THEN 1 ELSE 0 END) as fallback
+                FROM synthesis_audit
+                WHERE task_description != 'SYSTEM_MIGRATION'
+            """)
+            row = cursor.fetchone()
+            total = row[0] or 0
+            avg_conf = row[1] or 0.0
+            degraded = row[2] or 0
+            fallback = row[3] or 0
+
+            # By complexity
+            cursor.execute("""
+                SELECT task_complexity, COUNT(*) as count
+                FROM synthesis_audit
+                WHERE task_description != 'SYSTEM_MIGRATION'
+                GROUP BY task_complexity
+            """)
+            by_complexity = {r[0]: r[1] for r in cursor.fetchall()}
+
+            # Confidence distribution (buckets)
+            cursor.execute("""
+                SELECT
+                    CASE
+                        WHEN synthesis_confidence < 0.3 THEN 'very_low'
+                        WHEN synthesis_confidence < 0.5 THEN 'low'
+                        WHEN synthesis_confidence < 0.7 THEN 'moderate'
+                        WHEN synthesis_confidence < 0.9 THEN 'good'
+                        ELSE 'excellent'
+                    END as bucket,
+                    COUNT(*) as count
+                FROM synthesis_audit
+                WHERE task_description != 'SYSTEM_MIGRATION'
+                GROUP BY bucket
+            """)
+            confidence_dist = {r[0]: r[1] for r in cursor.fetchall()}
+
+            conn.close()
+
+            return {
+                'total_syntheses': total,
+                'avg_confidence': round(avg_conf, 3),
+                'degraded_count': degraded,
+                'degraded_rate': round(degraded / total, 3) if total > 0 else 0.0,
+                'fallback_count': fallback,
+                'fallback_rate': round(fallback / total, 3) if total > 0 else 0.0,
+                'by_complexity': by_complexity,
+                'confidence_distribution': confidence_dist
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get synthesis statistics: {e}")
+            if 'conn' in locals():
+                conn.close()
+            return {
+                'total_syntheses': 0,
+                'avg_confidence': 0.0,
+                'degraded_count': 0,
+                'fallback_count': 0,
+                'by_complexity': {},
+                'confidence_distribution': {}
+            }
+
+    def get_recent_low_confidence_syntheses(
+        self,
+        hours: int = 24,
+        threshold: float = 0.5,
+        limit: int = 20
+    ) -> List[Dict[str, Any]]:
+        """
+        Get recent low-confidence syntheses for review.
+
+        Useful for identifying patterns in synthesis quality issues.
+
+        Args:
+            hours: Number of hours to look back
+            threshold: Confidence threshold (return syntheses below this)
+            limit: Maximum records to return
+
+        Returns:
+            List of low-confidence synthesis entries
+        """
+        start_date = datetime.now() - timedelta(hours=hours)
+        return self.get_synthesis_history(
+            low_confidence_only=True,
+            confidence_threshold=threshold,
+            start_date=start_date,
+            limit=limit
+        )
+
 
 def audit_logged(operation: str, user_agent: str = "KnowledgeStore"):
     """
