@@ -19,6 +19,7 @@ Usage:
 
 import logging
 import threading
+from datetime import datetime
 from typing import Optional, Dict, Any, List, Callable
 
 from src.agents.felix_agent import FelixAgent, FelixResponse
@@ -85,6 +86,8 @@ def run_felix(
     logger.info(f"run_felix called: mode={mode}, knowledge={knowledge_enabled}")
     logger.debug(f"Input: {user_input[:100]}...")
 
+    start_time = datetime.now()
+
     try:
         # Create FelixAgent instance
         felix_agent = FelixAgent(felix_system)
@@ -99,6 +102,8 @@ def run_felix(
             cancel_event=cancel_event
         )
 
+        end_time = datetime.now()
+
         # Convert response to dict
         result = {
             'content': response.content,
@@ -109,6 +114,11 @@ def run_felix(
             'knowledge_sources': response.knowledge_sources,
             'execution_time': response.execution_time,
             'error': response.error,
+            # Fields for workflow history persistence
+            'task_input': user_input,
+            'status': 'completed' if not response.error else 'failed',
+            'start_time': start_time.isoformat(),
+            'end_time': end_time.isoformat(),
             # Backward compatibility with old workflow results
             'centralpost_synthesis': {
                 'synthesis_content': response.content,
@@ -128,6 +138,7 @@ def run_felix(
 
     except Exception as e:
         logger.error(f"run_felix error: {e}", exc_info=True)
+        end_time = datetime.now()
         return {
             'content': f"Error: {str(e)}",
             'mode_used': 'error',
@@ -137,6 +148,11 @@ def run_felix(
             'knowledge_sources': None,
             'execution_time': 0.0,
             'error': str(e),
+            # Fields for workflow history persistence
+            'task_input': user_input,
+            'status': 'failed',
+            'start_time': start_time.isoformat(),
+            'end_time': end_time.isoformat(),
             'centralpost_synthesis': {
                 'synthesis_content': f"Error: {str(e)}",
                 'confidence': 0.0,
