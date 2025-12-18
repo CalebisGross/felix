@@ -43,7 +43,7 @@ class EmbeddingResult:
 class TierRecoveryConfig:
     """Configuration for embedding tier recovery."""
     mode: str = "auto"  # "auto" or "manual"
-    check_interval: float = 60.0  # Seconds between automatic recovery checks
+    check_interval: float = 15.0  # Seconds between recovery checks (reduced from 60s for faster recovery)
     check_timeout: float = 5.0  # Timeout for availability checks
     max_recovery_attempts: int = 3  # Max consecutive failures before pausing
 

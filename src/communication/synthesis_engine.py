@@ -36,6 +36,9 @@ from src.communication.message_types import Message, MessageType
 # Import validation functions
 from src.workflows.truth_assessment import calculate_validation_score, get_validation_flags
 
+# Import token controller for streaming budget enforcement
+from src.llm.lm_studio_client import TokenAwareStreamController
+
 
 class SynthesisEngine:
     """
@@ -446,7 +449,8 @@ class SynthesisEngine:
                                  streaming_callback: Optional[Callable] = None,
                                  workflow_id: Optional[str] = None,
                                  approval_callback: Optional[Callable[[Dict], Dict]] = None,
-                                 approval_threshold: float = 0.6) -> Dict[str, Any]:
+                                 approval_threshold: float = 0.6,
+                                 extra_context: Optional[str] = None) -> Dict[str, Any]:
         """
         Synthesize final output from all agent communications.
 
@@ -599,13 +603,34 @@ class SynthesisEngine:
         # Build synthesis prompt
         user_prompt = self.build_synthesis_prompt(task_description, messages, task_complexity)
 
+        # Inject extra context if provided (from regeneration strategies)
+        if extra_context:
+            user_prompt += f"""
+
+---
+ADDITIONAL CONTEXT (from regeneration strategy):
+{extra_context}
+---
+
+Please incorporate this additional context when synthesizing your response."""
+
         # Truth-seeking system prompt
         system_prompt = """You are the Central Post of the Felix helical multi-agent system - a truth-seeking synthesis engine.
 
 Felix agents operate along a helical geometry:
-- Top of helix: Broad exploration (research agents)
-- Middle spiral: Focused analysis (analysis agents)
-- Bottom convergence: Critical validation (critic agents)
+- Top of helix (depth 0.0-0.3): Broad exploration (research agents)
+- Middle spiral (depth 0.3-0.7): Focused analysis (analysis agents)
+- Bottom convergence (depth 0.7-1.0): Critical validation (critic agents)
+
+Agent metadata format: Each agent output shows:
+- confidence: How certain the agent is (0.0-1.0)
+- depth: Position on helix (0.0=early exploration, 1.0=final synthesis)
+- Traits: research_domain, analysis_type, or review_focus depending on agent type
+
+Interpreting depth:
+- Low depth (0.0-0.3): Agent was in exploration mode - broad but may lack depth
+- Mid depth (0.3-0.7): Agent was focusing and analyzing - balanced perspective
+- High depth (0.7-1.0): Agent was synthesizing/validating - precise but narrow scope
 
 Your role is NOT to simply concatenate or summarize agent outputs. Your role is to REASON about them, VALIDATE them, and SYNTHESIZE TRUTH.
 
@@ -650,6 +675,12 @@ Your output should reflect JUSTIFIED confidence, not reflexive confidence. If th
                 if streaming_callback and hasattr(self.llm_client, 'complete_streaming'):
                     logger.info("Synthesis using streaming mode")
 
+                    # Create token controller to enforce budget during streaming
+                    token_controller = TokenAwareStreamController(
+                        token_budget=max_tokens,
+                        soft_limit_ratio=0.85  # Start wrapping up at 85% of budget
+                    )
+
                     # Wrap callback to convert StreamingChunk to plain text
                     # Pass agent name for full mode compatibility (expects 2 args)
                     def text_callback(chunk):
@@ -663,7 +694,8 @@ Your output should reflect JUSTIFIED confidence, not reflexive confidence. If th
                         temperature=temperature,
                         max_tokens=max_tokens,
                         callback=text_callback,
-                        batch_interval=0.1
+                        batch_interval=0.1,
+                        token_controller=token_controller
                     )
 
                     # FALLBACK: If streaming returned empty content, try non-streaming
@@ -865,10 +897,12 @@ Your output should reflect JUSTIFIED confidence, not reflexive confidence. If th
                     # Still log the audit for the rejected synthesis
                     result['user_approved'] = False
 
-                elif decision.get('action', '').startswith('regenerate'):
-                    logger.info(f"  User requested regeneration: {decision.get('strategy')}")
+                elif decision.get('action', '').startswith('regenerate') or decision.get('strategy'):
+                    # Handle regeneration - check both action prefix and strategy field
+                    strategy = decision.get('strategy') or decision.get('action')
+                    logger.info(f"  User requested regeneration: {strategy}")
                     result['regeneration_requested'] = True
-                    result['regeneration_strategy'] = decision.get('strategy')
+                    result['regeneration_strategy'] = strategy
                     result['regeneration_user_input'] = decision.get('user_input')
                     result['user_approved'] = False
                     # Note: Caller should handle regeneration using RegenerationExecutor
@@ -882,7 +916,14 @@ Your output should reflect JUSTIFIED confidence, not reflexive confidence. If th
                 result['approval_error'] = str(e)
                 result['user_approved'] = True  # Continue on callback failure
         else:
-            # No approval needed (confidence above threshold or no callback)
+            # No approval callback triggered
+            # Issue #4.6: Warn if low-confidence synthesis auto-accepted without callback
+            if synthesis_confidence < approval_threshold:
+                logger.warning(
+                    f"  Low-confidence synthesis ({synthesis_confidence:.2f} < {approval_threshold:.2f}) "
+                    f"auto-accepted (no approval_callback provided)"
+                )
+                result['auto_accepted_low_confidence'] = True
             result['user_approved'] = True
 
         # Log full synthesis audit trail
@@ -1120,11 +1161,11 @@ Your output should reflect JUSTIFIED confidence, not reflexive confidence. If th
             task_complexity: Task complexity ("SIMPLE_FACTUAL", "MEDIUM", or "COMPLEX")
 
         Returns:
-            Token budget (200-3000)
+            Token budget (800-3000)
         """
-        # Simple factual queries need minimal synthesis
+        # Simple factual queries - allow comprehensive responses
         if task_complexity == "SIMPLE_FACTUAL":
-            return 200  # Just answer the question directly
+            return 2000  # Allow detailed responses for factual queries
 
         # Medium complexity gets moderate token budget
         if task_complexity == "MEDIUM":
@@ -1376,9 +1417,23 @@ Your output should reflect JUSTIFIED confidence, not reflexive confidence. If th
                 content = msg.content.get('content', '')
                 confidence = msg.content.get('confidence', 0.0)
 
-                prompt_parts.append(
-                    f"{i}. {agent_type.upper()} Agent (confidence: {confidence:.2f}):"
-                )
+                # Extract enhanced metadata (Issue #55/5.8)
+                position_info = msg.content.get('position_info', {})
+                depth_ratio = position_info.get('depth_ratio', 0.0)
+                agent_traits = msg.content.get('agent_traits', {})
+
+                # Build enhanced agent header with position and traits
+                header_parts = [f"{i}. {agent_type.upper()} Agent"]
+                metadata_parts = [f"confidence: {confidence:.2f}", f"depth: {depth_ratio:.2f}"]
+
+                # Add agent-specific trait if available
+                if agent_traits:
+                    # Format traits as key=value pairs
+                    trait_str = ", ".join(f"{k}={v}" for k, v in agent_traits.items())
+                    metadata_parts.append(trait_str)
+
+                header = f"{header_parts[0]} ({', '.join(metadata_parts)}):"
+                prompt_parts.append(header)
                 prompt_parts.append(content)
                 prompt_parts.append("")
 

@@ -475,6 +475,7 @@ def run_felix_workflow(felix_system, task_input: str,
             "task_input": original_task_input if parent_workflow_id else task_input,  # Store original for history
             "parent_workflow_id": parent_workflow_id,  # Track parent for conversation threading
             "agents_spawned": [],
+            "agent_metadata": {},  # agent_id -> {"agent_type": str, "spawn_time": float} (Issue #56.8)
             "messages_processed": [],
             "llm_responses": [],
             "knowledge_entries": [],
@@ -617,6 +618,10 @@ def run_felix_workflow(felix_system, task_input: str,
             }
 
         results["agents_spawned"].append(research_agent.agent_id)
+        results["agent_metadata"][research_agent.agent_id] = {
+            "agent_type": research_agent.agent_type,
+            "spawn_time": time.time()
+        }
         spawned_agent_ids.append(research_agent.agent_id)  # Track for cleanup
         logger.info(f"Created research agent: {research_agent.agent_id} (spawn_time=0.0)")
 
@@ -762,6 +767,13 @@ def run_felix_workflow(felix_system, task_input: str,
 
                         except Exception as e:
                             logger.error(f"✗ Agent {agent.agent_id} processing failed: {e}")
+
+                            # Issue #4.4: Clean up any orphaned streaming state
+                            if central_post and hasattr(central_post, 'streaming_coordinator'):
+                                if central_post.streaming_coordinator.cancel_stream(
+                                    agent.agent_id, reason="agent_exception"
+                                ):
+                                    logger.debug(f"  Cleaned up streaming state for failed agent {agent.agent_id}")
 
                             # Record failure (may trigger circuit breaker)
                             try:
@@ -1366,6 +1378,10 @@ def run_felix_workflow(felix_system, task_input: str,
                     if registration_successful:
                         active_agents.append(analysis_agent)
                         results["agents_spawned"].append(analysis_agent.agent_id)
+                        results["agent_metadata"][analysis_agent.agent_id] = {
+                            "agent_type": analysis_agent.agent_type,
+                            "spawn_time": time.time()
+                        }
                         spawned_agent_ids.append(analysis_agent.agent_id)  # Track for cleanup
                         logger.info(f"  → Spawned {analysis_agent.agent_type}: {analysis_agent.agent_id}")
 
@@ -1401,6 +1417,10 @@ def run_felix_workflow(felix_system, task_input: str,
                         if registration_successful:
                             active_agents.append(critic_agent)
                             results["agents_spawned"].append(critic_agent.agent_id)
+                            results["agent_metadata"][critic_agent.agent_id] = {
+                                "agent_type": critic_agent.agent_type,
+                                "spawn_time": time.time()
+                            }
                             spawned_agent_ids.append(critic_agent.agent_id)  # Track for cleanup
                             logger.info(f"  → Spawned {critic_agent.agent_type}: {critic_agent.agent_id}")
                         else:
@@ -1457,6 +1477,10 @@ def run_felix_workflow(felix_system, task_input: str,
                         if registration_successful:
                             active_agents.append(new_agent)
                             results["agents_spawned"].append(new_agent.agent_id)
+                            results["agent_metadata"][new_agent.agent_id] = {
+                                "agent_type": new_agent.agent_type,
+                                "spawn_time": time.time()
+                            }
                             spawned_agent_ids.append(new_agent.agent_id)  # Track for cleanup
                             logger.info(f"  → {new_agent.agent_type} agent: {new_agent.agent_id}")
 

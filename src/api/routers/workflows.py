@@ -23,7 +23,7 @@ from src.api.models import (
     AgentInfo,
     SynthesisResult
 )
-from src.gui.felix_system import FelixSystem
+from src.core.felix_system import FelixSystem
 
 logger = logging.getLogger(__name__)
 
@@ -135,20 +135,26 @@ def run_workflow_sync(
 
         # Process result
         agents_spawned = []
+        agent_metadata = result.get("agent_metadata", {})  # Issue #56.8: Get agent metadata
         if "agents_spawned" in result:
             for agent_id in result["agents_spawned"]:
+                # Get actual agent type and spawn time from metadata (Issue #56.8)
+                meta = agent_metadata.get(agent_id, {})
+                agent_type = meta.get("agent_type", "unknown")
+                spawn_time = meta.get("spawn_time", 0.0)
+
                 agent_info = AgentInfo(
                     agent_id=agent_id,
-                    agent_type="unknown",  # TODO: Get actual agent type
-                    spawn_time=0.0  # TODO: Get actual spawn time
+                    agent_type=agent_type,
+                    spawn_time=spawn_time
                 )
                 agents_spawned.append(agent_info)
 
                 # Send agent spawned event
                 _send_event_sync(workflow_id, "agent_spawned", {
                     "agent_id": agent_id,
-                    "agent_type": "unknown",
-                    "spawn_time": 0.0,
+                    "agent_type": agent_type,
+                    "spawn_time": spawn_time,
                     "timestamp": datetime.now().isoformat()
                 })
 

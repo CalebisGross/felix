@@ -48,7 +48,7 @@ import importlib
 import importlib.util
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple, TYPE_CHECKING
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 
 from src.agents.base_specialized_agent import (
     SpecializedAgentPlugin,
@@ -65,6 +65,29 @@ if TYPE_CHECKING:
     from src.llm.token_budget import TokenBudgetManager
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class PluginLoadResult:
+    """
+    Result of a plugin loading operation.
+
+    Provides detailed feedback about what succeeded and what failed,
+    allowing callers to distinguish "no plugins" from "all failed".
+    """
+    loaded: int
+    failed: int
+    errors: List[str]
+
+    @property
+    def success(self) -> bool:
+        """Returns True if at least one plugin loaded successfully."""
+        return self.loaded > 0
+
+    @property
+    def all_failed(self) -> bool:
+        """Returns True if there were plugins to load but all failed."""
+        return self.failed > 0 and self.loaded == 0
 
 
 class AgentPluginRegistry:
@@ -124,11 +147,16 @@ class AgentPluginRegistry:
             return 0
 
         logger.info(f"Discovering builtin plugins in {builtin_dir}")
-        count = self._scan_directory(builtin_dir, is_builtin=True)
-        self._stats["builtin_count"] = count
+        result = self._scan_directory(builtin_dir, is_builtin=True)
+        self._stats["builtin_count"] = result.loaded
 
-        logger.info(f"Loaded {count} builtin agent plugins")
-        return count
+        if result.all_failed:
+            logger.error(f"All builtin plugins failed to load: {result.errors}")
+        elif result.failed > 0:
+            logger.warning(f"Some builtin plugins failed: {result.failed} failed, {result.loaded} loaded")
+
+        logger.info(f"Loaded {result.loaded} builtin agent plugins")
+        return result.loaded
 
     def add_plugin_directory(self, directory: str) -> int:
         """
@@ -165,13 +193,18 @@ class AgentPluginRegistry:
         self._external_dirs.append(plugin_dir)
         logger.info(f"Scanning external plugin directory: {plugin_dir}")
 
-        count = self._scan_directory(plugin_dir, is_builtin=False)
-        self._stats["external_count"] += count
+        result = self._scan_directory(plugin_dir, is_builtin=False)
+        self._stats["external_count"] += result.loaded
 
-        logger.info(f"Loaded {count} external plugins from {plugin_dir}")
-        return count
+        if result.all_failed:
+            logger.error(f"All plugins failed to load from {plugin_dir}: {result.errors}")
+        elif result.failed > 0:
+            logger.warning(f"Some plugins failed in {plugin_dir}: {result.failed} failed, {result.loaded} loaded")
 
-    def _scan_directory(self, directory: Path, is_builtin: bool = False) -> int:
+        logger.info(f"Loaded {result.loaded} external plugins from {plugin_dir}")
+        return result.loaded
+
+    def _scan_directory(self, directory: Path, is_builtin: bool = False) -> PluginLoadResult:
         """
         Scan a directory for plugin modules and load them.
 
@@ -180,9 +213,11 @@ class AgentPluginRegistry:
             is_builtin: Whether this is the builtin plugins directory
 
         Returns:
-            Number of plugins successfully loaded
+            PluginLoadResult with loaded count, failed count, and error messages
         """
         loaded_count = 0
+        failed_count = 0
+        errors: List[str] = []
 
         # Find all .py files in directory
         for py_file in directory.glob("*.py"):
@@ -193,10 +228,13 @@ class AgentPluginRegistry:
                 plugins = self._load_plugins_from_file(py_file, is_builtin)
                 loaded_count += len(plugins)
             except Exception as e:
-                logger.error(f"Failed to load plugins from {py_file}: {e}")
+                error_msg = f"Failed to load plugins from {py_file}: {e}"
+                logger.error(error_msg)
+                errors.append(error_msg)
+                failed_count += 1
                 self._stats["plugins_failed"] += 1
 
-        return loaded_count
+        return PluginLoadResult(loaded=loaded_count, failed=failed_count, errors=errors)
 
     def _load_plugins_from_file(self, file_path: Path, is_builtin: bool) -> List[str]:
         """
@@ -505,35 +543,62 @@ class AgentPluginRegistry:
             "agent_types": self.list_agent_types()
         }
 
-    def reload_external_plugins(self) -> int:
+    def reload_external_plugins(self) -> PluginLoadResult:
         """
         Reload all plugins from external directories.
 
         This enables hot-reloading of custom plugins without restarting Felix.
-        Builtin plugins are not reloaded.
+        Builtin plugins are not reloaded. Stats are properly reset before reloading.
 
         Returns:
-            Number of external plugins reloaded
+            PluginLoadResult with loaded count, failed count, and any errors
         """
-        # Clear external plugins
+        # Count external plugins being removed
         external_types = [
             agent_type for agent_type, source in self._plugin_sources.items()
             if not source.startswith("builtin")
         ]
+        removed_count = len(external_types)
 
+        # Clear external plugins
         for agent_type in external_types:
             del self._plugins[agent_type]
             del self._metadata_cache[agent_type]
             del self._plugin_sources[agent_type]
 
-        # Rescan external directories
-        total_reloaded = 0
-        for directory in self._external_dirs:
-            count = self._scan_directory(directory, is_builtin=False)
-            total_reloaded += count
+        # Reset external stats before reloading (Issue 5.5 fix)
+        self._stats["external_count"] = 0
+        self._stats["plugins_loaded"] -= removed_count
+        # Note: We don't reset plugins_failed as that's cumulative across all loads
 
-        logger.info(f"Reloaded {total_reloaded} external plugins")
-        return total_reloaded
+        # Rescan external directories
+        total_loaded = 0
+        total_failed = 0
+        all_errors: List[str] = []
+
+        for directory in self._external_dirs:
+            result = self._scan_directory(directory, is_builtin=False)
+            total_loaded += result.loaded
+            total_failed += result.failed
+            all_errors.extend(result.errors)
+            self._stats["external_count"] += result.loaded
+
+        combined_result = PluginLoadResult(
+            loaded=total_loaded,
+            failed=total_failed,
+            errors=all_errors
+        )
+
+        if combined_result.all_failed:
+            logger.error(f"All external plugins failed to reload: {all_errors}")
+        elif combined_result.failed > 0:
+            logger.warning(
+                f"Some external plugins failed to reload: "
+                f"{total_failed} failed, {total_loaded} loaded"
+            )
+
+        logger.info(f"Reloaded {total_loaded} external plugins")
+        return combined_result
 
 
 # Global registry instance (singleton pattern)

@@ -61,6 +61,7 @@ felix_synthesis_*.md
 temp/
 sales/
 backups/
+docs/
 
 # Knowledge sources (user data directory)
 knowledge_sources/*

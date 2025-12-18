@@ -27,8 +27,14 @@ from dataclasses import dataclass
 
 # Felix framework imports for full integration
 from src.communication.message_types import Message, MessageType
+from src.communication.central_post import AgentLifecycleEvent
 from src.memory.task_memory import TaskComplexity, TaskOutcome
 from src.memory.knowledge_store import KnowledgeQuery, ConfidenceLevel
+from src.workflows.regeneration_strategies import (
+    RegenerationExecutor,
+    RegenerationRequest,
+    RegenerationStrategy
+)
 
 logger = logging.getLogger(__name__)
 
@@ -81,9 +87,10 @@ class FelixAgent:
         self.knowledge_store = getattr(felix_system, 'knowledge_store', None)
         self.task_memory = getattr(felix_system, 'task_memory', None)
         self.system_command_manager = getattr(felix_system, 'system_command_manager', None)
+        self.prompt_manager = getattr(felix_system, 'prompt_manager', None)
         self.config = felix_system.config
 
-        # Load Felix identity
+        # Load Felix identity (via PromptManager for DB override support)
         self.identity_prompt = self._load_identity()
 
         logger.info("FelixAgent initialized - Felix identity layer active")
@@ -92,33 +99,153 @@ class FelixAgent:
         """
         Load Felix's identity from the system prompt configuration.
 
+        Priority:
+        1. PromptManager (supports DB overrides)
+        2. Direct file read (fallback)
+        3. Minimal identity (final fallback)
+
         Returns:
             str: Felix's system prompt defining identity and behavior
         """
-        # Look for system prompt in config directory
+        current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # 1. Try PromptManager (supports DB overrides - Issue #55/5.9)
+        if self.prompt_manager:
+            try:
+                identity = self.prompt_manager.get_system_chat_identity(
+                    variables={"currentDateTime": current_datetime}
+                )
+                if identity:
+                    logger.debug("Loaded Felix identity via PromptManager")
+                    return identity
+            except Exception as e:
+                logger.warning(f"PromptManager failed, falling back to direct file: {e}")
+
+        # 2. Direct file read fallback
         project_root = Path(__file__).parent.parent.parent
         prompt_path = project_root / "config" / "chat_system_prompt.md"
 
         if prompt_path.exists():
             try:
                 content = prompt_path.read_text(encoding='utf-8')
-                # Replace datetime placeholder
-                current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 content = content.replace("{{currentDateTime}}", current_datetime)
                 logger.debug(f"Loaded Felix identity from {prompt_path}")
                 return content
             except Exception as e:
                 logger.warning(f"Failed to load Felix identity: {e}")
 
-        # Fallback minimal identity
+        # 3. Fallback minimal identity
         return """You are Felix, an air-gapped multi-agent AI framework.
 You are NOT ChatGPT, GPT-4, Claude, or any cloud-based AI.
 You are Felix - a local, private, air-gapped AI assistant.
 Always identify yourself as Felix when asked about your identity."""
 
-    def classify_complexity(self, message: str) -> str:
+    def _calculate_depth_ratio(
+        self,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+        iteration: int = 0,
+        max_iterations: int = 5
+    ) -> float:
+        """
+        Calculate a virtual helix depth ratio based on context.
+
+        The depth ratio represents where we are in the processing cycle:
+        - 0.0-0.3: Exploration phase (early, broad discovery)
+        - 0.3-0.7: Analysis phase (processing, organizing)
+        - 0.7-1.0: Synthesis phase (late, focused output)
+
+        Args:
+            conversation_history: Previous messages for context
+            iteration: Current iteration in command loop (0-based)
+            max_iterations: Maximum iterations allowed
+
+        Returns:
+            float: Depth ratio between 0.0 and 1.0
+        """
+        # Base depth from conversation length
+        # Longer conversations = deeper in synthesis
+        history_depth = 0.0
+        if conversation_history:
+            # Each message moves us ~0.05 deeper, max 0.5 from history
+            history_depth = min(0.5, len(conversation_history) * 0.05)
+
+        # Iteration depth - later iterations are more synthesis-focused
+        # Maps iteration 0-4 to 0.0-0.4
+        iteration_depth = (iteration / max_iterations) * 0.4
+
+        # Combined depth ratio, capped at 1.0
+        depth_ratio = min(1.0, history_depth + iteration_depth)
+
+        return depth_ratio
+
+    def _get_position_aware_temperature(self, depth_ratio: float) -> float:
+        """
+        Calculate temperature based on helix depth ratio.
+
+        Top of helix (exploration) = high temperature (creative)
+        Bottom of helix (synthesis) = low temperature (focused)
+
+        Args:
+            depth_ratio: Helix position from 0.0 (top) to 1.0 (bottom)
+
+        Returns:
+            float: Temperature value (0.2 to 0.9)
+        """
+        # Linear interpolation: depth 0.0 -> temp 0.9, depth 1.0 -> temp 0.2
+        # This gives exploration more creativity and synthesis more focus
+        max_temp = 0.9
+        min_temp = 0.2
+        temperature = max_temp - (depth_ratio * (max_temp - min_temp))
+        return temperature
+
+    def classify_complexity(
+        self,
+        message: str,
+        conversation_history: Optional[List[Dict[str, str]]] = None
+    ) -> str:
         """
         Classify message complexity using SynthesisEngine patterns.
+
+        Now incorporates helix position awareness:
+        - Early in conversation (exploration) may classify differently
+        - Later in conversation (synthesis) biases toward focused responses
+
+        Args:
+            message: User's input message
+            conversation_history: Optional conversation context for position awareness
+
+        Returns:
+            str: "SIMPLE_FACTUAL", "MEDIUM", or "COMPLEX"
+        """
+        # Use SynthesisEngine's classification if available
+        if hasattr(self.central_post, 'synthesis_engine'):
+            base_complexity = self.central_post.synthesis_engine.classify_task_complexity(message)
+        else:
+            base_complexity = self._classify_by_patterns(message)
+
+        # Apply helix position bias
+        depth_ratio = self._calculate_depth_ratio(conversation_history)
+
+        # Position-aware adjustments:
+        # - Early (exploration, depth < 0.3): May upgrade complexity for thorough exploration
+        # - Late (synthesis, depth > 0.7): May simplify to focus on concise output
+        if depth_ratio < 0.3:
+            # Exploration phase: if SIMPLE_FACTUAL, keep it; otherwise lean toward exploration
+            # Don't downgrade complexity in exploration - we want thorough discovery
+            pass
+        elif depth_ratio > 0.7:
+            # Synthesis phase: bias toward simpler, more direct responses
+            # Complex tasks late in conversation likely need focused synthesis, not more exploration
+            if base_complexity == "MEDIUM":
+                # Late-stage medium tasks can often be handled directly
+                logger.debug(f"Synthesis phase (depth={depth_ratio:.2f}): keeping MEDIUM for focused response")
+
+        logger.debug(f"Complexity classification: {base_complexity} (depth_ratio={depth_ratio:.2f})")
+        return base_complexity
+
+    def _classify_by_patterns(self, message: str) -> str:
+        """
+        Classify message complexity using pattern matching.
 
         Args:
             message: User's input message
@@ -126,11 +253,6 @@ Always identify yourself as Felix when asked about your identity."""
         Returns:
             str: "SIMPLE_FACTUAL", "MEDIUM", or "COMPLEX"
         """
-        # Use SynthesisEngine's classification if available
-        if hasattr(self.central_post, 'synthesis_engine'):
-            return self.central_post.synthesis_engine.classify_task_complexity(message)
-
-        # Fallback pattern matching
         message_lower = message.lower()
 
         # Simple factual patterns
@@ -199,9 +321,9 @@ Always identify yourself as Felix when asked about your identity."""
         """
         start_time = time.time()
 
-        # Determine complexity
+        # Determine complexity (with helix position awareness)
         if mode == "auto":
-            complexity = self.classify_complexity(message)
+            complexity = self.classify_complexity(message, conversation_history)
         elif mode == "direct":
             complexity = "SIMPLE_FACTUAL"
         else:  # "full"
@@ -223,7 +345,9 @@ Always identify yourself as Felix when asked about your identity."""
                     knowledge_context=knowledge_context,
                     conversation_history=conversation_history,
                     streaming_callback=streaming_callback,
-                    cancel_event=cancel_event
+                    cancel_event=cancel_event,
+                    approval_callback=approval_callback,
+                    approval_threshold=approval_threshold
                 )
                 mode_used = "direct"
 
@@ -234,7 +358,9 @@ Always identify yourself as Felix when asked about your identity."""
                     knowledge_context=knowledge_context,
                     conversation_history=conversation_history,
                     streaming_callback=streaming_callback,
-                    cancel_event=cancel_event
+                    cancel_event=cancel_event,
+                    approval_callback=approval_callback,
+                    approval_threshold=approval_threshold
                 )
                 mode_used = "direct"
 
@@ -244,7 +370,9 @@ Always identify yourself as Felix when asked about your identity."""
                     knowledge_context=knowledge_context,
                     conversation_history=conversation_history,
                     streaming_callback=streaming_callback,
-                    cancel_event=cancel_event
+                    cancel_event=cancel_event,
+                    approval_callback=approval_callback,
+                    approval_threshold=approval_threshold
                 )
                 mode_used = "full"
 
@@ -336,7 +464,9 @@ Always identify yourself as Felix when asked about your identity."""
         knowledge_context: str = "",
         conversation_history: Optional[List[Dict[str, str]]] = None,
         streaming_callback: Optional[Callable] = None,
-        cancel_event: Optional[threading.Event] = None
+        cancel_event: Optional[threading.Event] = None,
+        approval_callback: Optional[Callable[[Dict], Dict]] = None,
+        approval_threshold: float = 0.6
     ) -> Dict[str, Any]:
         """
         Direct Felix inference - single-agent workflow through FULL Felix framework.
@@ -379,6 +509,12 @@ Always identify yourself as Felix when asked about your identity."""
                     'workflow_id': workflow_id
                 }
             )
+            # Emit SPAWNED lifecycle event
+            self.central_post.emit_lifecycle_event(
+                AgentLifecycleEvent.SPAWNED,
+                agent_id,
+                {'agent_type': 'direct', 'workflow_id': workflow_id}
+            )
             logger.info(f"Registered direct agent: {agent_id}")
         except Exception as e:
             logger.warning(f"Agent registration failed (continuing): {e}")
@@ -419,6 +555,16 @@ Always identify yourself as Felix when asked about your identity."""
 
                 logger.debug(f"Direct mode iteration {iteration + 1}/{max_iterations}")
 
+                # Calculate position-aware temperature based on helix depth
+                # Earlier iterations = exploration (higher temp), later = synthesis (lower temp)
+                depth_ratio = self._calculate_depth_ratio(
+                    conversation_history=conversation_history,
+                    iteration=iteration,
+                    max_iterations=max_iterations
+                )
+                temperature = self._get_position_aware_temperature(depth_ratio)
+                logger.debug(f"Position-aware temp: {temperature:.2f} (depth={depth_ratio:.2f})")
+
                 # Get LLM response with streaming for real-time feedback
                 # For simple queries, this IS the final output (no synthesis needed)
                 # For command queries, synthesis will integrate results after
@@ -426,7 +572,8 @@ Always identify yourself as Felix when asked about your identity."""
                     system_prompt=system_prompt,
                     user_prompt=current_prompt,
                     streaming_callback=streaming_callback,  # Stream raw Felix output
-                    cancel_event=cancel_event
+                    cancel_event=cancel_event,
+                    temperature=temperature
                 )
 
                 # Check for cancellation after LLM response
@@ -610,7 +757,7 @@ Only stop issuing commands when the task is genuinely complete or you need user 
                 logger.debug(f"Performance tracking failed: {e}")
 
             # =========================================================
-            # STEP 6: Synthesis - ONLY if commands were executed
+            # STEP 6: Synthesis with Regeneration Loop
             # Simple queries already streamed raw Felix output directly
             # Synthesis is only needed to integrate command execution results
             # =========================================================
@@ -620,26 +767,105 @@ Only stop issuing commands when the task is genuinely complete or you need user 
             if command_results:
                 # Commands were executed - use synthesis to integrate results
                 # Don't stream (content already shown), just update final response
-                try:
-                    synthesis_result = self.central_post.synthesize_agent_outputs(
-                        task_description=message,
-                        max_messages=5,
-                        task_complexity="SIMPLE_FACTUAL",
-                        streaming_callback=None  # Don't re-stream, content already shown
-                    )
-                    if synthesis_result:
+                max_regeneration_attempts = 3
+                regeneration_attempt = 0
+                synthesis_task = message
+                synthesis_context = {}  # Extra context from regeneration strategies
+
+                while regeneration_attempt < max_regeneration_attempts:
+                    try:
+                        synthesis_result = self.central_post.synthesize_agent_outputs(
+                            task_description=synthesis_task,
+                            max_messages=5,
+                            task_complexity="SIMPLE_FACTUAL",
+                            streaming_callback=None,  # Don't re-stream, content already shown
+                            approval_callback=approval_callback,
+                            approval_threshold=approval_threshold,
+                            extra_context=synthesis_context.get('extra_context')
+                        )
+
+                        if not synthesis_result:
+                            break
+
+                        # Check if regeneration was requested
+                        if synthesis_result.get('regeneration_requested'):
+                            regeneration_attempt += 1
+                            strategy = synthesis_result.get('regeneration_strategy')
+                            user_input = synthesis_result.get('regeneration_user_input', '')
+
+                            logger.info(f"Regeneration requested: {strategy} (attempt {regeneration_attempt})")
+
+                            # Execute regeneration strategy
+                            regen_result = self._execute_regeneration(
+                                strategy=strategy,
+                                user_input=user_input,
+                                original_task=message,
+                                original_context={
+                                    'confidence': synthesis_result.get('confidence', 0.5),
+                                    'temperature': 0.4,
+                                    'max_tokens': 2000
+                                },
+                                streaming_callback=streaming_callback
+                            )
+
+                            if regen_result and regen_result.get('success'):
+                                # Apply strategy results to next synthesis attempt
+                                details = regen_result.get('details', {})
+
+                                if details.get('enriched_task'):
+                                    synthesis_task = details['enriched_task']
+
+                                if details.get('search_results') or details.get('expanded_knowledge'):
+                                    # Inject external data as extra context
+                                    extra = details.get('search_results') or details.get('expanded_knowledge')
+                                    synthesis_context['extra_context'] = self._format_extra_context(extra)
+
+                                if details.get('adjusted_temperature') or details.get('adjusted_max_tokens'):
+                                    # Store for potential use (synthesis engine would need to accept these)
+                                    synthesis_context['temperature'] = details.get('adjusted_temperature')
+                                    synthesis_context['max_tokens'] = details.get('adjusted_max_tokens')
+
+                                logger.info(f"Regeneration strategy applied, re-synthesizing...")
+                                continue  # Loop to re-synthesize
+                            else:
+                                logger.warning(f"Regeneration failed: {regen_result.get('message', 'unknown')}")
+                                break  # Exit loop on failure
+
+                        # Check if user declined synthesis
+                        if synthesis_result.get('user_declined'):
+                            logger.info(f"User declined synthesis: {synthesis_result.get('decline_reason', 'no reason')}")
+                            # Keep original content, don't use synthesis
+                            break
+
+                        # No regeneration requested or user accepted - we're done
                         synthesized_content = synthesis_result.get('synthesis_content', '')
                         if synthesized_content:
                             content = synthesized_content
                             confidence = synthesis_result.get('confidence', confidence)
                         meta_confidence = synthesis_result.get('meta_confidence')
                         logger.info(f"SynthesisEngine integrated command results, confidence={confidence}")
-                except Exception as e:
-                    logger.warning(f"SynthesisEngine failed (using raw content): {e}")
+                        break  # Success - exit loop
+
+                    except Exception as e:
+                        logger.warning(f"SynthesisEngine failed (using raw content): {e}")
+                        break
+
             else:
                 # Simple response - raw Felix output already streamed directly
                 # No synthesis needed - this is the correct behavior
                 logger.debug("Simple response - raw Felix output already streamed (no synthesis needed)")
+
+            # Emit COMPLETED lifecycle event
+            self.central_post.emit_lifecycle_event(
+                AgentLifecycleEvent.COMPLETED,
+                agent_id,
+                {
+                    'agent_type': 'direct',
+                    'workflow_id': workflow_id,
+                    'duration': execution_time,
+                    'confidence': confidence
+                }
+            )
 
             return {
                 'content': content,
@@ -651,34 +877,97 @@ Only stop issuing commands when the task is genuinely complete or you need user 
 
         except Exception as e:
             error_occurred = str(e)
+            # Emit FAILED lifecycle event
+            self.central_post.emit_lifecycle_event(
+                AgentLifecycleEvent.FAILED,
+                agent_id,
+                {
+                    'agent_type': 'direct',
+                    'workflow_id': workflow_id,
+                    'error': str(e),
+                    'duration': time.time() - start_time
+                }
+            )
             logger.error(f"Direct mode error: {e}", exc_info=True)
             raise
 
         finally:
             # =========================================================
-            # STEP 7: Cleanup - Deregister agent
+            # STEP 7: Cleanup - Deregister agent with retry
             # =========================================================
+            self._deregister_with_retry(agent_id, workflow_id)
+
+    def _deregister_with_retry(
+        self,
+        agent_id: str,
+        workflow_id: str,
+        max_retries: int = 3
+    ) -> bool:
+        """
+        Deregister an agent with exponential backoff retry logic.
+
+        Prevents ghost agents from remaining in the registry after failures.
+
+        Args:
+            agent_id: Agent to deregister
+            workflow_id: Associated workflow ID
+            max_retries: Maximum number of retry attempts
+
+        Returns:
+            bool: True if deregistration succeeded, False otherwise
+        """
+        base_delay = 0.1  # 100ms initial delay
+        last_error = None
+
+        for attempt in range(max_retries):
             try:
                 self.central_post.agent_registry.deregister_agent(agent_id)
                 logger.debug(f"Deregistered direct agent: {agent_id}")
+                return True
             except Exception as e:
-                logger.warning(f"Agent deregistration failed: {e}")
+                last_error = e
+                delay = base_delay * (2 ** attempt)  # Exponential backoff: 0.1s, 0.2s, 0.4s
+                logger.warning(
+                    f"Agent deregistration failed (attempt {attempt + 1}/{max_retries}): {e}"
+                )
+                if attempt < max_retries - 1:
+                    time.sleep(delay)
+
+        # All retries failed - emit FAILED lifecycle event for visibility
+        logger.error(f"Agent deregistration failed after {max_retries} retries: {last_error}")
+        try:
+            self.central_post.emit_lifecycle_event(
+                AgentLifecycleEvent.FAILED,
+                agent_id,
+                {
+                    'agent_type': 'direct',
+                    'workflow_id': workflow_id,
+                    'error': f"Deregistration failed: {last_error}",
+                    'exit_status': 'ghost'
+                }
+            )
+        except Exception as emit_error:
+            logger.warning(f"Failed to emit lifecycle event: {emit_error}")
+
+        return False
 
     def _get_llm_response(
         self,
         system_prompt: str,
         user_prompt: str,
         streaming_callback: Optional[Callable] = None,
-        cancel_event: Optional[threading.Event] = None
+        cancel_event: Optional[threading.Event] = None,
+        temperature: float = 0.7
     ) -> str:
         """
-        Get LLM response with optional streaming.
+        Get LLM response with optional streaming and position-aware temperature.
 
         Args:
             system_prompt: System prompt with Felix identity
             user_prompt: User message/context
             streaming_callback: Optional callback for streaming
             cancel_event: Optional threading.Event to signal cancellation
+            temperature: LLM temperature (0.2-0.9, adjusted by helix position)
 
         Returns:
             str: Complete response content
@@ -698,7 +987,7 @@ Only stop issuing commands when the task is genuinely complete or you need user 
                     agent_id="felix_direct",
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
-                    temperature=0.7,
+                    temperature=temperature,
                     callback=on_chunk,
                     batch_interval=0.1,
                     cancel_event=cancel_event
@@ -711,7 +1000,7 @@ Only stop issuing commands when the task is genuinely complete or you need user 
                     agent_id="felix_direct",
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
-                    temperature=0.7
+                    temperature=temperature
                 )
                 content = response.content if hasattr(response, 'content') else str(response)
                 if streaming_callback:
@@ -754,13 +1043,130 @@ Only stop issuing commands when the task is genuinely complete or you need user 
 
         return "\n\n---\n\n".join(formatted)
 
+    def _execute_regeneration(
+        self,
+        strategy: str,
+        user_input: str,
+        original_task: str,
+        original_context: Dict[str, Any],
+        streaming_callback: Optional[Callable] = None
+    ) -> Dict[str, Any]:
+        """
+        Execute a regeneration strategy using RegenerationExecutor.
+
+        Args:
+            strategy: Strategy name (e.g., 'parameter_adjust', 'knowledge_expand')
+            user_input: User-provided context (for context_injection strategy)
+            original_task: Original task description
+            original_context: Context from original synthesis attempt
+            streaming_callback: Optional callback for progress updates
+
+        Returns:
+            Dict with 'success', 'message', 'details' from RegenerationResult
+        """
+        try:
+            # Map strategy string to enum
+            strategy_map = {
+                'parameter_adjust': RegenerationStrategy.PARAMETER_ADJUST,
+                'context_injection': RegenerationStrategy.CONTEXT_INJECTION,
+                'spawn_more_agents': RegenerationStrategy.SPAWN_MORE_AGENTS,
+                'web_search_boost': RegenerationStrategy.WEB_SEARCH_BOOST,
+                'knowledge_expand': RegenerationStrategy.KNOWLEDGE_EXPAND,
+            }
+
+            strategy_enum = strategy_map.get(strategy)
+            if not strategy_enum:
+                logger.warning(f"Unknown regeneration strategy: {strategy}")
+                return {'success': False, 'message': f"Unknown strategy: {strategy}"}
+
+            # Create regeneration request
+            request = RegenerationRequest(
+                strategy=strategy_enum,
+                user_context=user_input if user_input else None
+            )
+
+            # Create executor with available components
+            executor = RegenerationExecutor(
+                synthesis_engine=self.central_post.synthesis_engine if hasattr(self.central_post, 'synthesis_engine') else None,
+                central_post=self.central_post,
+                agent_factory=getattr(self.central_post, 'agent_factory', None),
+                knowledge_retriever=self.knowledge_store if hasattr(self, 'knowledge_store') else None,
+                web_search_coordinator=getattr(self.central_post, 'web_search_coordinator', None)
+            )
+
+            # Progress callback adapter
+            def progress_cb(msg: str):
+                if streaming_callback:
+                    streaming_callback(f"[Regeneration] {msg}")
+                logger.info(f"Regeneration progress: {msg}")
+
+            # Execute strategy
+            result = executor.execute(
+                request=request,
+                original_task=original_task,
+                original_context=original_context,
+                progress_callback=progress_cb
+            )
+
+            return {
+                'success': result.success,
+                'message': result.message,
+                'details': result.details,
+                'confidence_delta': result.confidence_delta,
+                'execution_time': result.execution_time
+            }
+
+        except Exception as e:
+            logger.error(f"Regeneration execution failed: {e}")
+            return {'success': False, 'message': str(e)}
+
+    def _format_extra_context(self, data: Any) -> str:
+        """
+        Format extra context data (search results, knowledge) for synthesis prompt.
+
+        Args:
+            data: List of search results or knowledge entries
+
+        Returns:
+            str: Formatted context string for injection into synthesis
+        """
+        if not data:
+            return ""
+
+        if isinstance(data, list):
+            formatted_items = []
+            for i, item in enumerate(data[:10], 1):  # Limit to 10 items
+                if isinstance(item, dict):
+                    # Handle search results or knowledge entries
+                    title = item.get('title', item.get('key', f'Item {i}'))
+                    content = item.get('content', item.get('snippet', item.get('value', str(item))))
+                    source = item.get('source', item.get('url', ''))
+
+                    entry = f"[{i}] {title}"
+                    if content:
+                        # Truncate long content
+                        content_preview = content[:500] + "..." if len(content) > 500 else content
+                        entry += f"\n{content_preview}"
+                    if source:
+                        entry += f"\nSource: {source}"
+
+                    formatted_items.append(entry)
+                else:
+                    formatted_items.append(f"[{i}] {str(item)[:500]}")
+
+            return "\n\n".join(formatted_items)
+
+        return str(data)[:2000]
+
     def _full_orchestration(
         self,
         message: str,
         knowledge_context: str = "",
         conversation_history: Optional[List[Dict[str, str]]] = None,
         streaming_callback: Optional[Callable] = None,
-        cancel_event: Optional[threading.Event] = None
+        cancel_event: Optional[threading.Event] = None,
+        approval_callback: Optional[Callable[[Dict], Dict]] = None,
+        approval_threshold: float = 0.6
     ) -> Dict[str, Any]:
         """
         Full multi-agent workflow orchestration.
@@ -775,6 +1181,8 @@ Only stop issuing commands when the task is genuinely complete or you need user 
             conversation_history: Previous messages
             streaming_callback: Callback for agent thinking steps
             cancel_event: Optional threading.Event to signal cancellation
+            approval_callback: Callback for user approval of low-confidence synthesis
+            approval_threshold: Confidence threshold below which approval is required
 
         Returns:
             Dict with 'content', 'confidence', 'thinking_steps'

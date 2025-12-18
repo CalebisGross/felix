@@ -282,6 +282,30 @@ class PromptPipeline:
         logger.warning("[PRIORITY] No prompts available - using emergency fallback")
         return f"You are a {agent_type} agent. Provide concise analysis.", 'emergency_fallback'
 
+    def _extract_agent_traits(self, agent: 'LLMAgent', position_info: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Extract agent personality traits for template rendering.
+
+        These traits customize agent prompts with their specialized focus areas.
+        Falls back to 'general' if trait not set on agent.
+
+        Args:
+            agent: Agent instance with potential trait attributes
+            position_info: Helix position information
+
+        Returns:
+            Dictionary of trait values for template substitution
+        """
+        traits = {
+            'agent_type': agent.agent_type,
+            'depth_ratio': position_info.get('depth_ratio', 0.0),
+        }
+        # Agent-specific personality traits (set during spawning)
+        traits['research_domain'] = getattr(agent, 'research_domain', None) or 'general'
+        traits['analysis_type'] = getattr(agent, 'analysis_type', None) or 'general'
+        traits['review_focus'] = getattr(agent, 'review_focus', None) or 'general'
+        return traits
+
     def _stage_load_base_prompt(self, task: 'LLMTask', agent: 'LLMAgent',
                                 position_info: Dict[str, Any]) -> str:
         """
@@ -344,6 +368,13 @@ class PromptPipeline:
         if not base_prompt:
             base_prompt = self._get_agent_fallback_prompt(agent, depth_ratio, task_complexity)
             logger.debug(f"[PROMPT_STAGE:{stage_name}] Using agent fallback prompt (complexity: {task_complexity})")
+
+        # RENDER TEMPLATE: Substitute agent personality traits
+        # This replaces {research_domain}, {analysis_type}, {review_focus} with actual values
+        if base_prompt and self.prompt_manager:
+            traits = self._extract_agent_traits(agent, position_info)
+            base_prompt = self.prompt_manager.render_template(base_prompt, **traits)
+            logger.debug(f"[PROMPT_STAGE:{stage_name}] Rendered traits: {list(traits.keys())}")
 
         stage_duration = (time.time() - stage_start) * 1000
         self.stages.append(PromptStageResult(

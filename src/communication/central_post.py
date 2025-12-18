@@ -19,10 +19,12 @@ Implementation supports rigorous performance testing and communication efficienc
 
 import time
 import uuid
+import json
 import random
 import logging
 import threading
 import sqlite3
+from enum import Enum
 from typing import Dict, List, Optional, Any, Tuple, TYPE_CHECKING, Callable
 from collections import deque
 from queue import Queue, Empty
@@ -60,6 +62,13 @@ if TYPE_CHECKING:
 
 # Set up logging
 logger = logging.getLogger(__name__)
+
+
+class AgentLifecycleEvent(Enum):
+    """Agent lifecycle event types for tracking and observability."""
+    SPAWNED = "spawned"
+    COMPLETED = "completed"
+    FAILED = "failed"
 
 
 class AgentRegistry:
@@ -401,6 +410,9 @@ class AgentRegistry:
         Args:
             agent_id: Agent to remove
         """
+        # Mark as completed in database FIRST (before removing from memory)
+        self.mark_agent_complete(agent_id)
+
         # Remove from all tracking structures
         if agent_id in self._agent_metadata:
             del self._agent_metadata[agent_id]
@@ -616,6 +628,10 @@ class CentralPost:
         self._workflow_start_time: Optional[float] = None  # Track when current workflow started (for session isolation)
         self._search_count: int = 0  # Track number of searches for current task
 
+        # Pending feedback for agents (agent_id -> list of feedback messages)
+        # Used by message handlers to queue synthesis feedback for agent retrieval
+        self._pending_agent_feedback: Dict[str, List[Dict[str, Any]]] = {}
+
         # System autonomy infrastructure
         self.system_executor = SystemExecutor()
         self.trust_manager = TrustManager()
@@ -686,9 +702,19 @@ class CentralPost:
             prompt_manager=self.prompt_manager
         )
 
+        # Verify synthesis engine initialization
+        if self.synthesis_engine is None:
+            logger.warning("SynthesisEngine creation returned None - synthesis will be unavailable")
+        elif llm_client is None:
+            logger.warning("SynthesisEngine created without LLM client - synthesis may fail")
+
         logger.info("✓ CentralPost initialized with 6 extracted components")
         logger.info("  System autonomy: SystemExecutor, TrustManager, CommandHistory, ApprovalManager")
         logger.info("  Components: PerformanceMonitor, MemoryFacade, StreamingCoordinator, SystemCommandManager, WebSearchCoordinator, SynthesisEngine")
+
+        # 7. Agent Lifecycle Event Tracking
+        self._lifecycle_callbacks: List[Callable[[AgentLifecycleEvent, str, Dict[str, Any]], None]] = []
+        self._lifecycle_db_path = str(self.project_root / "felix_system_actions.db")
 
     @property
     def active_connections(self) -> int:
@@ -840,20 +866,198 @@ class CentralPost:
         # Remove from agent awareness registry
         self.agent_registry.deregister_agent(agent_id)
 
+        # Clean up any pending feedback for this agent
+        if agent_id in self._pending_agent_feedback:
+            del self._pending_agent_feedback[agent_id]
+
         return True
     
     def is_agent_registered(self, agent_id: str) -> bool:
         """
         Check if an agent is currently registered.
-        
+
         Args:
             agent_id: ID of agent to check
-            
+
         Returns:
             True if agent is registered, False otherwise
         """
         return agent_id in self._registered_agents
-    
+
+    # ========================================================================
+    # AGENT LIFECYCLE EVENT TRACKING
+    # ========================================================================
+
+    def add_lifecycle_callback(
+        self,
+        callback: Callable[[AgentLifecycleEvent, str, Dict[str, Any]], None]
+    ) -> None:
+        """
+        Register a callback for agent lifecycle events.
+
+        Callbacks receive: (event_type, agent_id, metadata)
+        Used by GUI to update agent status displays in real-time.
+
+        Args:
+            callback: Function to call when lifecycle events occur
+        """
+        if callback not in self._lifecycle_callbacks:
+            self._lifecycle_callbacks.append(callback)
+            logger.debug(f"Added lifecycle callback: {callback.__name__ if hasattr(callback, '__name__') else 'anonymous'}")
+
+    def remove_lifecycle_callback(
+        self,
+        callback: Callable[[AgentLifecycleEvent, str, Dict[str, Any]], None]
+    ) -> None:
+        """
+        Remove a lifecycle event callback.
+
+        Args:
+            callback: Callback function to remove
+        """
+        if callback in self._lifecycle_callbacks:
+            self._lifecycle_callbacks.remove(callback)
+
+    def emit_lifecycle_event(
+        self,
+        event: AgentLifecycleEvent,
+        agent_id: str,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """
+        Emit an agent lifecycle event for tracking and observability.
+
+        This method:
+        1. Logs to felix_system_actions.db for audit trail
+        2. Notifies all registered callbacks (e.g., GUI signals)
+
+        Args:
+            event: The lifecycle event type (SPAWNED, COMPLETED, FAILED)
+            agent_id: The agent identifier
+            metadata: Optional additional context (agent_type, workflow_id, error, etc.)
+        """
+        metadata = metadata or {}
+        timestamp = time.time()
+
+        # Extract common fields from metadata
+        agent_type = metadata.get('agent_type', 'unknown')
+        workflow_id = metadata.get('workflow_id')
+        error_message = metadata.get('error')
+        duration = metadata.get('duration')
+        exit_status = metadata.get('exit_status', 'success' if event == AgentLifecycleEvent.COMPLETED else None)
+
+        # 1. Log to database for audit trail
+        try:
+            with sqlite3.connect(self._lifecycle_db_path) as conn:
+                # Check if table exists (graceful fallback if migration not run)
+                cursor = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='agent_lifecycle_events'"
+                )
+                if cursor.fetchone():
+                    conn.execute("""
+                        INSERT INTO agent_lifecycle_events
+                        (agent_id, agent_type, event_type, workflow_id, timestamp,
+                         duration, metadata_json, error_message, exit_status)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        agent_id,
+                        agent_type,
+                        event.value,
+                        workflow_id,
+                        timestamp,
+                        duration,
+                        json.dumps(metadata) if metadata else None,
+                        error_message,
+                        exit_status
+                    ))
+                    conn.commit()
+                    logger.debug(f"Logged lifecycle event: {event.value} for {agent_id}")
+                else:
+                    logger.debug("agent_lifecycle_events table not found, skipping audit log")
+        except Exception as e:
+            logger.warning(f"Failed to log lifecycle event to database: {e}")
+
+        # 2. Notify all registered callbacks (GUI, etc.)
+        for callback in self._lifecycle_callbacks:
+            try:
+                callback(event, agent_id, metadata)
+            except Exception as e:
+                logger.warning(f"Lifecycle callback error: {e}")
+
+        # 3. Log for observability
+        if event == AgentLifecycleEvent.SPAWNED:
+            logger.info(f"Agent spawned: {agent_id} (type={agent_type})")
+        elif event == AgentLifecycleEvent.COMPLETED:
+            duration_str = f" in {duration:.2f}s" if duration else ""
+            logger.info(f"Agent completed: {agent_id}{duration_str}")
+        elif event == AgentLifecycleEvent.FAILED:
+            logger.warning(f"Agent failed: {agent_id} - {error_message or 'unknown error'}")
+
+    def get_recent_lifecycle_events(
+        self,
+        limit: int = 50,
+        agent_id: Optional[str] = None,
+        event_type: Optional[AgentLifecycleEvent] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get recent agent lifecycle events from the audit log.
+
+        Args:
+            limit: Maximum number of events to return
+            agent_id: Optional filter by agent ID
+            event_type: Optional filter by event type
+
+        Returns:
+            List of lifecycle event dictionaries
+        """
+        try:
+            with sqlite3.connect(self._lifecycle_db_path) as conn:
+                conn.row_factory = sqlite3.Row
+
+                # Check if table exists
+                cursor = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='agent_lifecycle_events'"
+                )
+                if not cursor.fetchone():
+                    return []
+
+                # Build query
+                query = "SELECT * FROM agent_lifecycle_events WHERE 1=1"
+                params = []
+
+                if agent_id:
+                    query += " AND agent_id = ?"
+                    params.append(agent_id)
+
+                if event_type:
+                    query += " AND event_type = ?"
+                    params.append(event_type.value)
+
+                query += " ORDER BY timestamp DESC LIMIT ?"
+                params.append(limit)
+
+                cursor = conn.execute(query, params)
+                rows = cursor.fetchall()
+
+                return [
+                    {
+                        'event_id': row['event_id'],
+                        'agent_id': row['agent_id'],
+                        'agent_type': row['agent_type'],
+                        'event_type': row['event_type'],
+                        'workflow_id': row['workflow_id'],
+                        'timestamp': row['timestamp'],
+                        'duration': row['duration'],
+                        'metadata': json.loads(row['metadata_json']) if row['metadata_json'] else {},
+                        'error_message': row['error_message'],
+                        'exit_status': row['exit_status']
+                    }
+                    for row in rows
+                ]
+        except Exception as e:
+            logger.warning(f"Failed to get lifecycle events: {e}")
+            return []
+
     async def _ensure_async_queue(self) -> asyncio.Queue:
         """Ensure async message queue is initialized."""
         if self._async_message_queue is None:
@@ -914,15 +1118,19 @@ class CentralPost:
         """
         return not self._message_queue.empty()
 
-    def set_current_task(self, task_description: str) -> None:
+    def set_current_task(self, task_description: str, workflow_id: Optional[str] = None) -> None:
         """
         Set the current task description for web search context.
 
         Args:
             task_description: Description of the current workflow task
+            workflow_id: Optional workflow ID for context isolation
         """
         self._current_task_description = task_description
         self._search_count = 0  # Reset search counter for new task
+
+        # Delegate to WebSearchCoordinator for proper context tracking
+        self.web_search_coordinator.set_task_context(task_description, workflow_id)
 
     def set_current_workflow(self, workflow_id: Optional[str]) -> None:
         """
@@ -983,9 +1191,12 @@ class CentralPost:
             self._processed_messages.append(message)
             self._total_messages_processed += 1
 
-            # Track confidence for web search monitoring
+            # Delegate confidence tracking to WebSearchCoordinator
             if 'confidence' in message.content:
-                self._recent_confidences.append(message.content['confidence'])
+                self.web_search_coordinator.update_confidence(message.content['confidence'])
+
+            # Add message to WebSearchCoordinator for query context
+            self.web_search_coordinator.add_processed_message(message)
 
             # Check if web search is needed based on confidence
             self._check_confidence_and_search()
@@ -1025,9 +1236,19 @@ class CentralPost:
             # Track processed message
             self._processed_messages.append(message)
             self._total_messages_processed += 1
-            
+
+            # Delegate confidence tracking to WebSearchCoordinator
+            if 'confidence' in message.content:
+                self.web_search_coordinator.update_confidence(message.content['confidence'])
+
+            # Add message to WebSearchCoordinator for query context
+            self.web_search_coordinator.add_processed_message(message)
+
+            # Check if web search is needed based on confidence
+            self._check_confidence_and_search()
+
             return message
-            
+
         except Exception as e:
             logger.error(f"Async message processing failed: {e}")
             return None
@@ -1357,7 +1578,9 @@ class CentralPost:
                                  failed_agents: Optional[List[str]] = None,
                                  streaming_callback: Optional[Callable] = None,
                                  approval_callback: Optional[Callable[[Dict], Dict]] = None,
-                                 approval_threshold: float = 0.6) -> Dict[str, Any]:
+                                 approval_threshold: float = 0.6,
+                                 extra_context: Optional[str] = None,
+                                 workflow_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Synthesize final output from all agent communications.
 
@@ -1386,6 +1609,7 @@ class CentralPost:
                 with review data. Should return dict with 'action' key.
             approval_threshold: Confidence threshold below which approval is required.
                 Default 0.6. Only applies if approval_callback is provided.
+            workflow_id: Optional workflow ID for tracking and meta-learning (Issue #4.1).
 
         Returns:
             Dict containing:
@@ -1407,10 +1631,24 @@ class CentralPost:
         Raises:
             RuntimeError: If no LLM client available for synthesis
         """
+        # Verify synthesis engine is available
+        if self.synthesis_engine is None:
+            logger.error("Cannot synthesize: SynthesisEngine not initialized")
+            return {
+                "synthesis_content": "",
+                "confidence": 0.0,
+                "error": "SynthesisEngine not initialized",
+                "agents_synthesized": 0,
+                "degraded": True,
+                "degraded_reason": "SynthesisEngine unavailable"
+            }
+
         return self.synthesis_engine.synthesize_agent_outputs(
             task_description, max_messages, task_complexity, reasoning_evals, coverage_report,
             successful_agents, failed_agents, streaming_callback,
-            approval_callback=approval_callback, approval_threshold=approval_threshold
+            approval_callback=approval_callback, approval_threshold=approval_threshold,
+            extra_context=extra_context,
+            workflow_id=workflow_id  # Issue #4.1: Forward workflow_id
         )
 
     def broadcast_synthesis_feedback(self, synthesis_result: Dict[str, Any],
@@ -1469,6 +1707,7 @@ class CentralPost:
                 sender_id="central_post",
                 message_type=MessageType.SYNTHESIS_FEEDBACK,
                 content={
+                    'target_agent_id': agent_id,  # Target for feedback delivery
                     'synthesis_confidence': synthesis_confidence,
                     'synthesis_summary': synthesis_content[:500],  # First 500 chars
                     'agents_synthesized': agents_synthesized,
@@ -1482,6 +1721,7 @@ class CentralPost:
                 sender_id="central_post",
                 message_type=MessageType.CONTRIBUTION_EVALUATION,
                 content={
+                    'target_agent_id': agent_id,  # Target for evaluation delivery
                     'usefulness_score': usefulness_score,
                     'incorporated_in_synthesis': usefulness_score > 0.3,
                     'agent_confidence': agent_confidence,
@@ -1499,21 +1739,21 @@ class CentralPost:
             logger.debug(f"  → Feedback sent to {agent_id}: usefulness={usefulness_score:.2f}, calibration={confidence_calibration:+.2f}")
 
         # Record knowledge usage with synthesis-derived usefulness scores for meta-learning
-        if knowledge_entry_ids and workflow_id and self.knowledge_store:
+        # Issue #4.5: Route through memory_facade for consistent auditing
+        if knowledge_entry_ids and workflow_id and self.memory_facade:
             # Use synthesis confidence as proxy for overall usefulness
             useful_score = synthesis_confidence
 
-            try:
-                self.knowledge_store.record_knowledge_usage(
-                    workflow_id=workflow_id,
-                    knowledge_ids=knowledge_entry_ids,
-                    task_type=task_type or 'general_task',
-                    useful_score=useful_score
-                )
+            if self.memory_facade.record_knowledge_usage(
+                workflow_id=workflow_id,
+                knowledge_ids=knowledge_entry_ids,
+                task_type=task_type or 'general_task',
+                useful_score=useful_score
+            ):
                 logger.info(f"  ✓ Recorded meta-learning usage for {len(knowledge_entry_ids)} knowledge entries "
                            f"(useful_score={useful_score:.2f}, task_type={task_type})")
-            except Exception as e:
-                logger.warning(f"  ⚠ Failed to record knowledge usage for meta-learning: {e}")
+            else:
+                logger.debug("  ⚠ Memory facade unavailable for knowledge usage recording")
 
     def _evaluate_contribution_usefulness(self, agent_content: str,
                                          synthesis_content: str) -> float:
@@ -1638,6 +1878,11 @@ class CentralPost:
                         logger.debug(f"  ✓ Stored system action result as knowledge entry #{knowledge_id}")
                 except Exception as store_error:
                     logger.warning(f"  ⚠️ Failed to store system action result as knowledge: {store_error}")
+        # Meta-learning feedback handlers
+        elif message.message_type == MessageType.SYNTHESIS_FEEDBACK:
+            self._handle_synthesis_feedback(message)
+        elif message.message_type == MessageType.CONTRIBUTION_EVALUATION:
+            self._handle_contribution_evaluation(message)
 
     async def _handle_message_async(self, message: Message) -> None:
         """
@@ -1669,9 +1914,14 @@ class CentralPost:
             await self._handle_synthesis_ready_async(message)
         elif message.message_type == MessageType.AGENT_QUERY:
             await self._handle_agent_query_async(message)
-        # System action handlers
+        # System action handlers (Issue #4.7: wrap sync call in asyncio.to_thread)
         elif message.message_type == MessageType.SYSTEM_ACTION_REQUEST:
-            self._handle_system_action_request(message)
+            await asyncio.to_thread(self._handle_system_action_request, message)
+        # Meta-learning feedback handlers (sync methods are fine for these)
+        elif message.message_type == MessageType.SYNTHESIS_FEEDBACK:
+            self._handle_synthesis_feedback(message)
+        elif message.message_type == MessageType.CONTRIBUTION_EVALUATION:
+            self._handle_contribution_evaluation(message)
 
     def _update_agent_registry_from_message(self, message: Message) -> None:
         """
@@ -1820,6 +2070,89 @@ class CentralPost:
         """Handle error report from agent."""
         # Placeholder for error handling logic
         pass
+
+    # Meta-learning feedback handlers
+
+    def _handle_synthesis_feedback(self, message: Message) -> None:
+        """
+        Handle synthesis feedback message and queue for target agent.
+
+        Routes SYNTHESIS_FEEDBACK to the contributing agent so they can
+        learn from how their contributions were used in synthesis.
+        """
+        target_agent_id = message.content.get('target_agent_id')
+        if not target_agent_id:
+            logger.warning("SYNTHESIS_FEEDBACK message missing target_agent_id")
+            return
+
+        # Prepare feedback data for agent consumption
+        feedback_data = {
+            'type': MessageType.SYNTHESIS_FEEDBACK.value,
+            'synthesis_confidence': message.content.get('synthesis_confidence', 0.0),
+            'synthesis_summary': message.content.get('synthesis_summary', ''),
+            'agents_synthesized': message.content.get('agents_synthesized', 0),
+            'task_description': message.content.get('task_description', ''),
+            'timestamp': message.timestamp
+        }
+
+        # Queue feedback for agent
+        if target_agent_id not in self._pending_agent_feedback:
+            self._pending_agent_feedback[target_agent_id] = []
+        self._pending_agent_feedback[target_agent_id].append(feedback_data)
+
+        logger.debug(f"Queued SYNTHESIS_FEEDBACK for agent {target_agent_id}")
+
+    def _handle_contribution_evaluation(self, message: Message) -> None:
+        """
+        Handle contribution evaluation message and queue for target agent.
+
+        Routes CONTRIBUTION_EVALUATION to the contributing agent with
+        detailed metrics about their contribution's usefulness.
+        """
+        target_agent_id = message.content.get('target_agent_id')
+        if not target_agent_id:
+            logger.warning("CONTRIBUTION_EVALUATION message missing target_agent_id")
+            return
+
+        # Prepare evaluation data for agent consumption
+        evaluation_data = {
+            'type': MessageType.CONTRIBUTION_EVALUATION.value,
+            'usefulness_score': message.content.get('usefulness_score', 0.0),
+            'incorporated_in_synthesis': message.content.get('incorporated_in_synthesis', False),
+            'agent_confidence': message.content.get('agent_confidence', 0.0),
+            'synthesis_confidence': message.content.get('synthesis_confidence', 0.0),
+            'confidence_calibration': message.content.get('confidence_calibration', 0.0),
+            'calibration_quality': message.content.get('calibration_quality', 'unknown'),
+            'timestamp': message.timestamp
+        }
+
+        # Queue feedback for agent
+        if target_agent_id not in self._pending_agent_feedback:
+            self._pending_agent_feedback[target_agent_id] = []
+        self._pending_agent_feedback[target_agent_id].append(evaluation_data)
+
+        logger.debug(f"Queued CONTRIBUTION_EVALUATION for agent {target_agent_id}: "
+                    f"usefulness={evaluation_data['usefulness_score']:.2f}")
+
+    def get_pending_feedback(self, agent_id: str, clear: bool = True) -> List[Dict[str, Any]]:
+        """
+        Get pending feedback messages for a specific agent.
+
+        Args:
+            agent_id: Agent ID to get feedback for
+            clear: If True, clears the feedback after retrieval (default: True)
+
+        Returns:
+            List of feedback dictionaries for the agent
+        """
+        if agent_id not in self._pending_agent_feedback:
+            return []
+
+        feedback = self._pending_agent_feedback[agent_id]
+        if clear:
+            self._pending_agent_feedback[agent_id] = []
+
+        return feedback
 
     # Phase-aware message handlers
 
@@ -1981,53 +2314,44 @@ class CentralPost:
         )
         self._processed_messages.append(response)
     
-    # Async message handlers
+    # Async message handlers (Issue #4.2: use asyncio.to_thread to avoid blocking)
     async def _handle_task_request_async(self, message: Message) -> None:
         """Handle task request from agent asynchronously."""
-        # Async task assignment logic
-        pass
-    
+        await asyncio.to_thread(self._handle_task_request, message)
+
     async def _handle_status_update_async(self, message: Message) -> None:
         """Handle status update from agent asynchronously."""
-        # Async status tracking logic
-        pass
-    
+        await asyncio.to_thread(self._handle_status_update, message)
+
     async def _handle_task_completion_async(self, message: Message) -> None:
         """Handle task completion notification asynchronously."""
-        # Async completion processing logic
-        pass
-    
+        await asyncio.to_thread(self._handle_task_completion, message)
+
     async def _handle_error_report_async(self, message: Message) -> None:
         """Handle error report from agent asynchronously."""
-        # Async error handling logic
-        pass
+        await asyncio.to_thread(self._handle_error_report, message)
 
     # Async phase-aware message handlers
 
     async def _handle_phase_announce_async(self, message: Message) -> None:
         """Handle phase transition announcement asynchronously."""
-        # Delegate to sync handler for now
-        self._handle_phase_announce(message)
+        await asyncio.to_thread(self._handle_phase_announce, message)
 
     async def _handle_convergence_signal_async(self, message: Message) -> None:
         """Handle convergence signal asynchronously."""
-        # Delegate to sync handler for now
-        self._handle_convergence_signal(message)
+        await asyncio.to_thread(self._handle_convergence_signal, message)
 
     async def _handle_collaboration_request_async(self, message: Message) -> None:
         """Handle collaboration request asynchronously."""
-        # Delegate to sync handler for now
-        self._handle_collaboration_request(message)
+        await asyncio.to_thread(self._handle_collaboration_request, message)
 
     async def _handle_synthesis_ready_async(self, message: Message) -> None:
         """Handle synthesis ready signal asynchronously."""
-        # Delegate to sync handler for now
-        self._handle_synthesis_ready(message)
+        await asyncio.to_thread(self._handle_synthesis_ready, message)
 
     async def _handle_agent_query_async(self, message: Message) -> None:
         """Handle agent query asynchronously."""
-        # Delegate to sync handler for now
-        self._handle_agent_query(message)
+        await asyncio.to_thread(self._handle_agent_query, message)
 
     def get_recent_messages(self,
                            limit: int = 10,
@@ -2411,7 +2735,10 @@ class CentralPost:
         # Clear all connections
         self._registered_agents.clear()
         self._connection_times.clear()
-        
+
+        # Clear pending agent feedback
+        self._pending_agent_feedback.clear()
+
         # Clear message queue
         while not self._message_queue.empty():
             try:
@@ -2699,8 +3026,8 @@ class CentralPost:
                 'command': command,
                 'success': result.success,
                 'exit_code': result.exit_code,
-                'stdout': result.stdout[:500],  # Preview
-                'stderr': result.stderr[:500],
+                'stdout': result.stdout[:50000],  # Up to 50KB for full file content
+                'stderr': result.stderr[:5000],  # 5KB for error output
                 'duration': result.duration,
                 'error_category': result.error_category.value if result.error_category else None
             },

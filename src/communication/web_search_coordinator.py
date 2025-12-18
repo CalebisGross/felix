@@ -152,6 +152,10 @@ class WebSearchCoordinator:
         """Get current confidence threshold."""
         return self._web_search_trigger_threshold
 
+    def get_current_task_description(self) -> Optional[str]:
+        """Get the current task description for context."""
+        return self._current_task_description
+
     def check_proactive_search_needed(self, task_description: str, task_complexity: str = "COMPLEX") -> bool:
         """
         Check if task requires immediate proactive web search.
@@ -328,6 +332,10 @@ class WebSearchCoordinator:
 
     def _check_existing_trustable_knowledge(self, task_description: str) -> bool:
         """Check if trustable knowledge already exists for this task."""
+        # Skip if knowledge store is disabled
+        if not self.knowledge_store:
+            return False
+
         try:
             from src.memory.knowledge_store import KnowledgeQuery
             from src.workflows.truth_assessment import assess_answer_confidence

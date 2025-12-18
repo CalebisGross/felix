@@ -286,14 +286,15 @@ class FelixAdapter(QObject):
             signals = get_signals()
             signals.synthesis_review_requested.emit(review_id, review_data)
 
-            # Block until user responds (with timeout)
-            if event.wait(timeout=300):  # 5 minute timeout
+            # Block until user responds (with configurable timeout)
+            timeout = getattr(self._config, 'synthesis_approval_timeout', 60.0) if self._config else 60.0
+            if event.wait(timeout=timeout):
                 decision = self._synthesis_review_decisions.get(review_id, {'action': 'accept'})
                 logger.info(f"Synthesis review {review_id} resolved: {decision.get('action')}")
             else:
                 # Timeout - auto-accept
                 decision = {'action': 'accept'}
-                logger.warning(f"Synthesis review {review_id} timed out, auto-accepting")
+                logger.warning(f"Synthesis review {review_id} timed out after {timeout}s, auto-accepting")
 
             # Cleanup
             self._synthesis_review_events.pop(review_id, None)

@@ -53,6 +53,19 @@ class PromptManager:
     4. Python fallback (hardcoded)
     """
 
+    # Known agent types for robust key parsing
+    # Keys like "research_exploration_normal" are parsed as agent_type="research", sub_key="exploration_normal"
+    # This registry prevents issues with agent types that might contain underscores
+    KNOWN_AGENT_TYPES = frozenset({
+        "research",
+        "analysis",
+        "critic",
+        "system",
+        "synthesis",
+        "direct",     # For direct mode
+        "workflow",   # For workflow-level prompts
+    })
+
     def __init__(self, yaml_path: str = "config/prompts.yaml",
                  db_path: str = "prompts/felix_prompts.db"):
         """
@@ -208,39 +221,70 @@ class PromptManager:
             )
         return None
 
-    def _get_from_yaml(self, prompt_key: str) -> Optional[PromptTemplate]:
-        """Get default prompt from YAML."""
-        # DEBUG: Trace YAML lookup
-        logger.debug(f"🐛 DEBUG _get_from_yaml: Looking up key '{prompt_key}'")
-        logger.debug(f"🐛 DEBUG _get_from_yaml: _yaml_data is {'loaded' if self._yaml_data else 'EMPTY/NONE'}")
+    def _parse_prompt_key(self, prompt_key: str) -> Optional[Tuple[str, str]]:
+        """
+        Parse a prompt key into (agent_type, sub_key) using known types registry.
 
-        if not self._yaml_data:
-            logger.debug(f"🐛 DEBUG _get_from_yaml: YAML data is empty, returning None")
-            return None
+        This method uses KNOWN_AGENT_TYPES to safely parse keys, avoiding issues
+        with agent types that might contain underscores.
 
-        # Parse prompt_key like "research_exploration_normal"
+        Args:
+            prompt_key: Key like "research_exploration_normal"
+
+        Returns:
+            Tuple of (agent_type, sub_key) or None if parsing fails
+        """
         parts = prompt_key.split('_')
         if len(parts) < 2:
-            logger.debug(f"🐛 DEBUG _get_from_yaml: Key has < 2 parts, returning None")
             return None
 
-        agent_type = parts[0]  # "research", "analysis", "critic", etc.
-        sub_key = '_'.join(parts[1:])  # "exploration_normal", etc.
-        logger.debug(f"🐛 DEBUG _get_from_yaml: Parsed as agent_type='{agent_type}', sub_key='{sub_key}'")
+        # Try to match against known agent types (prefer longest match)
+        # This handles cases where future agent types might have underscores
+        for i in range(len(parts), 0, -1):
+            potential_type = '_'.join(parts[:i])
+            if potential_type in self.KNOWN_AGENT_TYPES:
+                agent_type = potential_type
+                sub_key = '_'.join(parts[i:]) if i < len(parts) else ""
+                if sub_key:  # Must have a sub_key
+                    return (agent_type, sub_key)
+
+        # Fall back to simple split (first part is agent_type)
+        # This maintains backward compatibility with unknown agent types
+        agent_type = parts[0]
+        sub_key = '_'.join(parts[1:])
+
+        return (agent_type, sub_key) if sub_key else None
+
+    def _get_from_yaml(self, prompt_key: str) -> Optional[PromptTemplate]:
+        """Get default prompt from YAML."""
+        logger.debug(f"Looking up YAML key '{prompt_key}'")
+
+        if not self._yaml_data:
+            logger.debug(f"YAML data is empty, returning None")
+            return None
+
+        # Parse prompt_key using known types registry
+        parsed = self._parse_prompt_key(prompt_key)
+        if not parsed:
+            logger.debug(f"Key '{prompt_key}' could not be parsed")
+            return None
+
+        agent_type, sub_key = parsed
+        logger.debug(f"Parsed key: agent_type='{agent_type}', sub_key='{sub_key}'")
 
         # Navigate YAML structure
         if agent_type not in self._yaml_data:
             available_types = list(self._yaml_data.keys()) if self._yaml_data else []
-            logger.debug(f"🐛 DEBUG _get_from_yaml: agent_type '{agent_type}' NOT in YAML. Available: {available_types}")
+            logger.debug(f"Agent type '{agent_type}' not in YAML. Available: {available_types}")
             return None
 
         agent_prompts = self._yaml_data[agent_type]
         if sub_key not in agent_prompts:
             available_subkeys = list(agent_prompts.keys()) if isinstance(agent_prompts, dict) else []
-            logger.debug(f"🐛 DEBUG _get_from_yaml: sub_key '{sub_key}' NOT in {agent_type}. Available: {available_subkeys}")
+            logger.debug(f"Sub-key '{sub_key}' not in {agent_type}. Available: {available_subkeys}")
             return None
 
-        logger.debug(f"🐛 DEBUG _get_from_yaml: Found {agent_type}.{sub_key} in YAML!")
+        logger.debug(f"Found {agent_type}.{sub_key} in YAML")
 
         prompt_data = agent_prompts[sub_key]
         if isinstance(prompt_data, dict) and 'template' in prompt_data:
@@ -521,3 +565,50 @@ class PromptManager:
         self._load_yaml()
         self.clear_cache()
         logger.info("YAML reloaded and cache cleared")
+
+    def get_system_chat_identity(self, variables: Optional[Dict[str, str]] = None) -> Optional[str]:
+        """
+        Get Felix's chat identity system prompt.
+
+        Priority:
+        1. Database custom override (key: "system_chat_identity")
+        2. Markdown file (config/chat_system_prompt.md)
+        3. Fallback minimal identity
+
+        Args:
+            variables: Optional template variables (e.g., {"currentDateTime": "2025-12-18 10:00:00"})
+
+        Returns:
+            System prompt text with variables substituted, or None if not found
+        """
+        # 1. Check database for custom override
+        custom = self._get_from_database("system_chat_identity")
+        if custom:
+            logger.debug("Chat identity loaded from database override")
+            template = custom.template
+            if variables:
+                return self.render_template(template, **variables)
+            return template
+
+        # 2. Load from markdown file (default)
+        project_root = self.yaml_path.parent.parent
+        prompt_path = project_root / "config" / "chat_system_prompt.md"
+
+        if prompt_path.exists():
+            try:
+                content = prompt_path.read_text(encoding='utf-8')
+                logger.debug(f"Chat identity loaded from {prompt_path}")
+
+                # Apply template variables if provided
+                if variables:
+                    # Replace {{variable}} style placeholders (markdown style)
+                    for key, value in variables.items():
+                        content = content.replace(f"{{{{{key}}}}}", str(value))
+
+                return content
+            except Exception as e:
+                logger.warning(f"Failed to load chat identity from file: {e}")
+
+        # 3. Not found
+        logger.warning("Chat identity not found in database or file")
+        return None

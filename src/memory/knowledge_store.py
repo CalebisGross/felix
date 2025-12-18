@@ -103,7 +103,9 @@ class KnowledgeEntry:
     embedding: Optional[bytes] = None
     source_doc_id: Optional[str] = None
     chunk_index: Optional[int] = None
-    
+    # Gap tracking fields (Issue #3.5)
+    resolved_gap_ids: List[str] = field(default_factory=list)
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for storage."""
         data = asdict(self)
@@ -128,7 +130,7 @@ class KnowledgeQuery:
     min_success_rate: Optional[float] = None
     content_keywords: Optional[List[str]] = None
     time_range: Optional[tuple[float, float]] = None
-    limit: int = 10
+    limit: int = 100
     # Task context for meta-learning (new fields)
     task_type: Optional[str] = None
     task_complexity: Optional[str] = None
@@ -150,6 +152,8 @@ class KnowledgeStore:
             storage_path: Path to SQLite database file
         """
         self.storage_path = Path(storage_path)
+        # Meta-learning status tracking (Issue #3.6)
+        self._meta_learning_status = {"enabled": True, "last_error": None, "error_count": 0}
         self._init_database()
     
     def _init_database(self) -> None:
@@ -238,7 +242,7 @@ class KnowledgeStore:
                 # FTS5 might not be available in some SQLite builds
                 logger.debug(f"FTS5 table creation skipped: {e}")
 
-            # Knowledge relationships table for knowledge graph
+            # Knowledge relationships table for knowledge graph (Issue #3.1: CASCADE DELETE)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS knowledge_relationships (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -247,7 +251,9 @@ class KnowledgeStore:
                     relationship_type TEXT NOT NULL,
                     confidence REAL DEFAULT 0.5,
                     created_at REAL DEFAULT (strftime('%s', 'now')),
-                    UNIQUE(source_id, target_id, relationship_type)
+                    UNIQUE(source_id, target_id, relationship_type),
+                    FOREIGN KEY(source_id) REFERENCES knowledge_entries(knowledge_id) ON DELETE CASCADE,
+                    FOREIGN KEY(target_id) REFERENCES knowledge_entries(knowledge_id) ON DELETE CASCADE
                 )
             """)
 
@@ -290,6 +296,43 @@ class KnowledgeStore:
                 CREATE INDEX IF NOT EXISTS idx_kr_type
                 ON knowledge_relationships(relationship_type)
             """)
+
+            # Knowledge usage table for meta-learning (Issue #3.3)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS knowledge_usage (
+                    usage_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    workflow_id TEXT NOT NULL,
+                    knowledge_id TEXT NOT NULL,
+                    task_type TEXT,
+                    task_complexity TEXT,
+                    useful_score REAL DEFAULT 0.0,
+                    retrieval_method TEXT,
+                    recorded_at REAL DEFAULT (strftime('%s', 'now')),
+                    FOREIGN KEY (knowledge_id) REFERENCES knowledge_entries(knowledge_id) ON DELETE CASCADE
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_knowledge_usage_workflow
+                ON knowledge_usage(workflow_id)
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_knowledge_usage_knowledge
+                ON knowledge_usage(knowledge_id)
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_knowledge_usage_task_type
+                ON knowledge_usage(task_type)
+            """)
+
+            # Issue #3.5: Add resolved_gap_ids column for existing databases
+            try:
+                conn.execute("""
+                    ALTER TABLE knowledge_entries
+                    ADD COLUMN resolved_gap_ids_json TEXT DEFAULT '[]'
+                """)
+                logger.info("Added resolved_gap_ids_json column to knowledge_entries")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
 
             # Migrate existing data if needed
             self._migrate_existing_tags(conn)
@@ -589,17 +632,20 @@ class KnowledgeStore:
             logger.info(f"   ✓ Verification: {count} entry with knowledge_id={knowledge_id} in database")
 
         # Issue #25: Check if this knowledge resolves any gaps
-        self._check_gap_auto_resolution(domain, content)
+        # Issue #3.5: Now also links resolved gaps to this entry
+        self._check_gap_auto_resolution(domain, content, knowledge_id)
 
         return knowledge_id
 
-    def _check_gap_auto_resolution(self, domain: str, content: Dict[str, Any]):
+    def _check_gap_auto_resolution(self, domain: str, content: Dict[str, Any],
+                                    knowledge_id: str):
         """
         Check if newly stored knowledge resolves any gaps (Issue #25).
 
         Args:
             domain: Domain of the stored knowledge
             content: Content dict of the stored knowledge
+            knowledge_id: ID of the knowledge entry that may resolve gaps
         """
         try:
             from src.knowledge.gap_tracker import GapTracker
@@ -624,11 +670,32 @@ class KnowledgeStore:
 
             if resolved:
                 logger.info(f"Auto-resolved {len(resolved)} knowledge gaps via ingestion")
+                # Issue #3.5: Link resolved gaps to this knowledge entry
+                self._link_resolved_gaps(knowledge_id, resolved)
 
         except ImportError:
             logger.debug("GapTracker not available for auto-resolution")
         except Exception as e:
             logger.debug(f"Gap auto-resolution check failed: {e}")
+
+    def _link_resolved_gaps(self, knowledge_id: str, gap_ids: List[str]) -> None:
+        """
+        Link resolved gap IDs to a knowledge entry.
+
+        Args:
+            knowledge_id: Knowledge entry that resolved the gaps
+            gap_ids: List of gap IDs that were resolved
+        """
+        try:
+            with sqlite3.connect(self.storage_path) as conn:
+                conn.execute("""
+                    UPDATE knowledge_entries
+                    SET resolved_gap_ids_json = ?
+                    WHERE knowledge_id = ?
+                """, (json.dumps(gap_ids), knowledge_id))
+                logger.debug(f"Linked {len(gap_ids)} resolved gaps to entry {knowledge_id[:8]}")
+        except sqlite3.Error as e:
+            logger.debug(f"Failed to link resolved gaps: {e}")
     
     def retrieve_knowledge(self, query: KnowledgeQuery) -> List[KnowledgeEntry]:
         """
@@ -795,6 +862,19 @@ class KnowledgeStore:
 
         try:
             with sqlite3.connect(self.storage_path) as conn:
+                # Issue #3.6: Check if knowledge_usage table exists first
+                cursor = conn.execute("""
+                    SELECT name FROM sqlite_master
+                    WHERE type='table' AND name='knowledge_usage'
+                """)
+                if not cursor.fetchone():
+                    if self._meta_learning_status["enabled"]:
+                        logger.warning("Meta-learning disabled: knowledge_usage table not found. "
+                                      "Run migration or reinitialize KnowledgeStore.")
+                        self._meta_learning_status["enabled"] = False
+                        self._meta_learning_status["last_error"] = "Table missing"
+                    return entries
+
                 # For each entry, get its historical usefulness score
                 entry_scores = []
                 for entry in entries:
@@ -839,12 +919,43 @@ class KnowledgeStore:
                 entry_scores.sort(key=lambda x: x[1], reverse=True)
                 reranked_entries = [entry for entry, score in entry_scores]
 
+                # Reset status on success
+                self._meta_learning_status["enabled"] = True
+                self._meta_learning_status["last_error"] = None
+
                 logger.info(f"   📊 Meta-learning boost applied: reranked {len(reranked_entries)} entries")
                 return reranked_entries
 
         except sqlite3.Error as e:
-            logger.warning(f"   ⚠ Meta-learning boost failed: {e}, returning original order")
+            self._meta_learning_status["error_count"] += 1
+            self._meta_learning_status["last_error"] = str(e)
+            logger.warning(f"   ⚠ Meta-learning boost failed (error #{self._meta_learning_status['error_count']}): {e}")
             return entries
+
+    def get_meta_learning_status(self) -> Dict[str, Any]:
+        """
+        Get diagnostic status of meta-learning feature.
+
+        Returns:
+            Dictionary with status info including:
+            - enabled: Whether meta-learning is working
+            - last_error: Last error message if any
+            - error_count: Number of errors encountered
+            - table_exists: Whether knowledge_usage table exists
+            - usage_records: Number of usage records in table
+        """
+        status = self._meta_learning_status.copy()
+
+        try:
+            with sqlite3.connect(self.storage_path) as conn:
+                cursor = conn.execute("SELECT COUNT(*) FROM knowledge_usage")
+                status["usage_records"] = cursor.fetchone()[0]
+                status["table_exists"] = True
+        except sqlite3.Error:
+            status["usage_records"] = 0
+            status["table_exists"] = False
+
+        return status
 
     def _row_to_entry(self, row, conn=None) -> KnowledgeEntry:
         """
@@ -854,8 +965,17 @@ class KnowledgeStore:
         New entries always use content_json, but old entries may have
         content stored in content_compressed using pickle serialization.
         """
-        # Handle old (13), validation (17), and full (20 columns) schemas for backward compatibility
-        if len(row) == 20:
+        # Handle old (13), validation (17), full (20), and gap-tracking (21) schemas
+        resolved_gap_ids_json = "[]"  # Default for all older schemas
+
+        if len(row) == 21:
+            # Full schema with gap tracking (Issue #3.5)
+            (knowledge_id, knowledge_type, content_json, content_compressed,
+             confidence_level, source_agent, domain, tags_json,
+             created_at, updated_at, access_count, success_rate, related_entries_json,
+             validation_score, validation_flags, validation_status, validated_at,
+             embedding, source_doc_id, chunk_index, resolved_gap_ids_json) = row
+        elif len(row) == 20:
             # Full schema with validation + knowledge brain fields
             (knowledge_id, knowledge_type, content_json, content_compressed,
              confidence_level, source_agent, domain, tags_json,
@@ -887,7 +1007,7 @@ class KnowledgeStore:
             source_doc_id = None
             chunk_index = None
         else:
-            raise ValueError(f"Unexpected row length: {len(row)}. Expected 13, 17, or 20 columns.")
+            raise ValueError(f"Unexpected row length: {len(row)}. Expected 13, 17, 20, or 21 columns.")
 
         # Determine content source
         if content_compressed:
@@ -911,6 +1031,14 @@ class KnowledgeStore:
         if isinstance(validation_flags, str):
             validation_flags = json.loads(validation_flags)
 
+        # Parse resolved_gap_ids JSON
+        resolved_gap_ids = []
+        if resolved_gap_ids_json:
+            try:
+                resolved_gap_ids = json.loads(resolved_gap_ids_json)
+            except (json.JSONDecodeError, TypeError):
+                resolved_gap_ids = []
+
         return KnowledgeEntry(
             knowledge_id=knowledge_id,
             knowledge_type=KnowledgeType(knowledge_type),
@@ -930,7 +1058,8 @@ class KnowledgeStore:
             validated_at=validated_at,
             embedding=embedding,
             source_doc_id=source_doc_id,
-            chunk_index=chunk_index
+            chunk_index=chunk_index,
+            resolved_gap_ids=resolved_gap_ids
         )
     
     def _increment_access_count(self, knowledge_id: str) -> None:
@@ -1083,39 +1212,57 @@ class KnowledgeStore:
             """, (success_rate, time.time(), knowledge_id))
             return cursor.rowcount > 0
     
-    def add_related_entry(self, knowledge_id: str, 
-                         related_id: str) -> bool:
+    def add_related_entry(self, knowledge_id: str,
+                         related_id: str,
+                         relationship_type: str = "related",
+                         confidence: float = 0.7) -> bool:
         """
         Add relationship between knowledge entries.
-        
+
+        Updates BOTH related_entries_json (for backward compatibility) AND
+        knowledge_relationships table (for graph queries) to keep them in sync.
+
         Args:
             knowledge_id: Primary knowledge entry ID
             related_id: Related knowledge entry ID
-            
+            relationship_type: Type of relationship (default: "related")
+            confidence: Confidence score 0.0-1.0 (default: 0.7)
+
         Returns:
             True if relationship added successfully
         """
         with sqlite3.connect(self.storage_path) as conn:
             # Get current related entries
             cursor = conn.execute("""
-                SELECT related_entries_json FROM knowledge_entries 
+                SELECT related_entries_json FROM knowledge_entries
                 WHERE knowledge_id = ?
             """, (knowledge_id,))
             row = cursor.fetchone()
-            
+
             if not row:
                 return False
-            
+
             related_entries = json.loads(row[0])
             if related_id not in related_entries:
                 related_entries.append(related_id)
-                
+
                 conn.execute("""
-                    UPDATE knowledge_entries 
+                    UPDATE knowledge_entries
                     SET related_entries_json = ?, updated_at = ?
                     WHERE knowledge_id = ?
                 """, (json.dumps(related_entries), time.time(), knowledge_id))
-            
+
+            # Issue #3.4: Also insert into knowledge_relationships table for graph queries
+            try:
+                conn.execute("""
+                    INSERT OR IGNORE INTO knowledge_relationships
+                    (source_id, target_id, relationship_type, confidence)
+                    VALUES (?, ?, ?, ?)
+                """, (knowledge_id, related_id, relationship_type, confidence))
+            except sqlite3.OperationalError:
+                # Table might not exist in older databases - skip silently
+                logger.debug("knowledge_relationships table not available for sync")
+
             return True
 
     def get_entry_by_id(self, knowledge_id: str) -> Optional[KnowledgeEntry]:

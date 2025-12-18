@@ -56,7 +56,8 @@ class RecommendationEngine:
                  enable_auto_apply: bool = True,
                  min_samples_patterns: int = 10,
                  min_samples_calibration: int = 10,
-                 min_samples_thresholds: int = 20):
+                 min_samples_thresholds: int = 20,
+                 performance_tracker=None):
         """
         Initialize RecommendationEngine.
 
@@ -67,9 +68,11 @@ class RecommendationEngine:
             min_samples_patterns: Minimum samples for pattern recommendations
             min_samples_calibration: Minimum samples for calibration
             min_samples_thresholds: Minimum samples for threshold learning
+            performance_tracker: Optional AgentPerformanceTracker for phase analysis (Issue #56.10)
         """
         self.task_memory = task_memory
         self.enable_auto_apply = enable_auto_apply
+        self.performance_tracker = performance_tracker  # Issue #56.10: Adaptive metrics
 
         # Initialize learning components
         self.pattern_learner = PatternLearner(
@@ -88,7 +91,30 @@ class RecommendationEngine:
             min_samples=min_samples_thresholds
         )
 
-        logger.info(f"RecommendationEngine initialized (auto_apply={enable_auto_apply})")
+        logger.info(f"RecommendationEngine initialized (auto_apply={enable_auto_apply}, performance_tracker={'enabled' if performance_tracker else 'disabled'})")
+
+    def _get_phase_transition_insights(self) -> Dict[str, Any]:
+        """
+        Get phase transition insights from performance tracker (Issue #56.10).
+
+        Uses historical phase transition data to provide recommendations
+        about optimal phase timing and agent allocation.
+
+        Returns:
+            Dictionary with phase transition analysis or empty dict if unavailable
+        """
+        if not self.performance_tracker:
+            return {}
+
+        try:
+            analysis = self.performance_tracker.get_phase_transition_analysis()
+            if analysis:
+                logger.debug(f"Phase transition insights available: {len(analysis)} metrics")
+                return analysis
+        except Exception as e:
+            logger.debug(f"Could not get phase transition insights: {e}")
+
+        return {}
 
     def get_pre_workflow_recommendations(self,
                                           task_description: str,
@@ -136,9 +162,12 @@ class RecommendationEngine:
             calibration_available[agent_type] = (abs(factor - 1.0) > 0.01)
 
         # 4. Determine if auto-apply should happen
-        should_auto_apply = False
+        should_auto_apply = True
         if self.enable_auto_apply and workflow_rec:
             should_auto_apply = workflow_rec.should_auto_apply
+
+        # 4.5 Get phase transition insights from performance tracker (Issue #56.10)
+        phase_insights = self._get_phase_transition_insights()
 
         # 5. Generate summary
         summary_parts = []
@@ -161,6 +190,10 @@ class RecommendationEngine:
         calibrated_agents = sum(1 for available in calibration_available.values() if available)
         if calibrated_agents > 0:
             summary_parts.append(f"✓ {calibrated_agents} agents calibrated for {task_complexity} tasks")
+
+        # Add phase transition insights (Issue #56.10)
+        if phase_insights:
+            summary_parts.append(f"✓ Phase transition data available")
 
         if not summary_parts:
             summary_parts.append("No learned patterns available - using standard configuration")

@@ -604,20 +604,21 @@ class LMStudioClient:
                 if has_content:
                     delta_content = chunk.choices[0].delta.content
 
-                    # Token-aware processing (if controller provided)
-                    if token_controller:
-                        processed_chunk, should_continue = token_controller.process_chunk(delta_content)
-                        if not should_continue:
-                            logger.info(f"Token controller stopped stream for {agent_id} "
-                                       f"at {token_controller.tokens_generated} tokens")
-                            # Don't add the rejected chunk, break immediately
-                            break
-                        # Use processed chunk (may have conclusion signal injected)
-                        delta_content = processed_chunk
-
+                    # CRITICAL: Accumulate content BEFORE token controller check
+                    # This ensures we capture content even if token limit is hit
                     accumulated_content += delta_content
                     batch_buffer += delta_content
                     tokens_so_far += 1  # Approximate (1 token ≈ 1 chunk)
+
+                    # Token-aware processing (if controller provided)
+                    # Check AFTER accumulation to avoid losing content
+                    if token_controller:
+                        _, should_continue = token_controller.process_chunk(delta_content)
+                        if not should_continue:
+                            logger.info(f"Token controller stopped stream for {agent_id} "
+                                       f"at {token_controller.tokens_generated} tokens "
+                                       f"(content accumulated: {len(accumulated_content)} chars)")
+                            break
 
                     # Check if batch interval elapsed
                     current_time = time.time()

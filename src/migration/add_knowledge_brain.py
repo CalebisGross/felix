@@ -142,7 +142,7 @@ class AddKnowledgeBrain(Migration):
                     useful_score REAL DEFAULT 0.0,
                     retrieval_method TEXT,
                     recorded_at REAL DEFAULT (strftime('%s', 'now')),
-                    FOREIGN KEY (knowledge_id) REFERENCES knowledge(knowledge_id) ON DELETE CASCADE
+                    FOREIGN KEY (knowledge_id) REFERENCES knowledge_entries(knowledge_id) ON DELETE CASCADE
                 )
             """)
 

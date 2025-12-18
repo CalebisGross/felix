@@ -9,7 +9,7 @@ from fastapi import Header, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi import Depends
 
-from src.gui.felix_system import FelixSystem, FelixConfig
+from src.core.felix_system import FelixSystem, FelixConfig
 
 logger = logging.getLogger(__name__)
 
@@ -248,6 +248,7 @@ _knowledge_daemon: Optional[any] = None
 _document_reader: Optional[any] = None
 _knowledge_retriever: Optional[any] = None
 _graph_builder: Optional[any] = None
+_knowledge_store: Optional[any] = None  # Issue #3.2: Singleton for API
 
 
 def verify_knowledge_brain_enabled() -> None:
@@ -267,7 +268,10 @@ def verify_knowledge_brain_enabled() -> None:
 
 def get_knowledge_store():
     """
-    Get KnowledgeStore instance.
+    Get KnowledgeStore instance (singleton).
+
+    Prefers FelixSystem's instance if running, otherwise uses global singleton.
+    This ensures API and GUI/CLI share the same database connection.
 
     Returns:
         KnowledgeStore instance
@@ -275,17 +279,34 @@ def get_knowledge_store():
     Raises:
         HTTPException: If knowledge brain is disabled or store unavailable
     """
+    global _knowledge_store
+
     verify_knowledge_brain_enabled()
 
-    try:
-        from src.memory.knowledge_store import KnowledgeStore
-        return KnowledgeStore()
-    except Exception as e:
-        logger.exception("Failed to initialize KnowledgeStore")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to initialize Knowledge Store: {str(e)}"
-        )
+    # Issue #3.2: Prefer FelixSystem's instance if available
+    if is_felix_running():
+        try:
+            felix = get_felix()
+            if hasattr(felix, 'knowledge_store') and felix.knowledge_store is not None:
+                return felix.knowledge_store
+        except HTTPException:
+            pass  # Fall through to singleton
+
+    # Fallback to global singleton
+    if _knowledge_store is None:
+        try:
+            from src.memory.knowledge_store import KnowledgeStore
+            config = get_felix_config()
+            _knowledge_store = KnowledgeStore(config.knowledge_db_path)
+            logger.info("KnowledgeStore singleton initialized for API")
+        except Exception as e:
+            logger.exception("Failed to initialize KnowledgeStore")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to initialize Knowledge Store: {str(e)}"
+            )
+
+    return _knowledge_store
 
 
 def get_document_reader():
@@ -492,7 +513,7 @@ def get_embedding_provider():
 
 def cleanup_knowledge_brain() -> None:
     """Clean up knowledge brain singletons (called on shutdown)."""
-    global _knowledge_daemon, _document_reader, _knowledge_retriever, _graph_builder
+    global _knowledge_daemon, _document_reader, _knowledge_retriever, _graph_builder, _knowledge_store
 
     if _knowledge_daemon is not None:
         try:
@@ -505,6 +526,7 @@ def cleanup_knowledge_brain() -> None:
     _document_reader = None
     _knowledge_retriever = None
     _graph_builder = None
+    _knowledge_store = None  # Issue #3.2: Clear singleton on cleanup
 
     logger.info("Knowledge Brain cleanup complete")
 
@@ -608,6 +630,7 @@ def get_knowledge_store_memory():
 
     This is separate from get_knowledge_store() which requires knowledge brain enabled.
     Memory API can access knowledge store even if knowledge brain is disabled.
+    Uses same singleton pattern as get_knowledge_store() for consistency.
 
     Returns:
         KnowledgeStore instance
@@ -615,15 +638,32 @@ def get_knowledge_store_memory():
     Raises:
         HTTPException: If KnowledgeStore unavailable
     """
-    try:
-        from src.memory.knowledge_store import KnowledgeStore
-        return KnowledgeStore()
-    except Exception as e:
-        logger.exception("Failed to initialize KnowledgeStore for memory API")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to initialize Knowledge Store: {str(e)}"
-        )
+    global _knowledge_store
+
+    # Issue #3.2: Prefer FelixSystem's instance if available
+    if is_felix_running():
+        try:
+            felix = get_felix()
+            if hasattr(felix, 'knowledge_store') and felix.knowledge_store is not None:
+                return felix.knowledge_store
+        except HTTPException:
+            pass  # Fall through to singleton
+
+    # Fallback to global singleton
+    if _knowledge_store is None:
+        try:
+            from src.memory.knowledge_store import KnowledgeStore
+            config = get_felix_config()
+            _knowledge_store = KnowledgeStore(config.knowledge_db_path)
+            logger.info("KnowledgeStore singleton initialized for memory API")
+        except Exception as e:
+            logger.exception("Failed to initialize KnowledgeStore for memory API")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to initialize Knowledge Store: {str(e)}"
+            )
+
+    return _knowledge_store
 
 
 def cleanup_memory_systems() -> None:

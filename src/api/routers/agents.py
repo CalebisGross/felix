@@ -19,7 +19,7 @@ from src.api.models import (
     AgentPluginMetadata,
     AgentPluginListResponse
 )
-from src.gui.felix_system import FelixSystem
+from src.core.felix_system import FelixSystem
 from src.agents.agent_plugin_registry import get_global_registry
 
 logger = logging.getLogger(__name__)
@@ -323,8 +323,8 @@ async def terminate_agent(
                 detail=f"Agent not found: {agent_id}"
             )
 
-        # Unregister agent
-        felix.agent_manager.unregister_agent(agent_id)
+        # Deregister agent
+        felix.agent_manager.deregister_agent(agent_id)
 
         logger.info(f"Agent {agent_id} terminated")
 
@@ -592,4 +592,105 @@ async def get_suitable_plugins(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error getting suitable plugins: {str(e)}"
+        )
+
+
+# ============================================================================
+# Agent Performance Metrics (Issue #56.10)
+# ============================================================================
+
+@router.get("/metrics", tags=["Agent Metrics"])
+async def get_agent_metrics(
+    felix: FelixSystem = Depends(get_authenticated_felix)
+) -> Dict[str, Any]:
+    """
+    Get agent performance metrics and statistics.
+
+    Returns aggregated performance data for all agent types including
+    success rates, average confidence, processing times, and phase transitions.
+
+    This endpoint exposes data collected by AgentPerformanceTracker for
+    adaptive feedback in agent spawning decisions (Issue #56.10).
+
+    Returns:
+        Dictionary containing:
+        - agent_type_stats: Per-type statistics (success rate, avg confidence, etc.)
+        - phase_transitions: Analysis of phase transition patterns
+        - summary: High-level metrics summary
+
+    Example:
+        ```
+        GET /api/v1/agents/metrics
+
+        Response:
+        {
+          "agent_type_stats": {
+            "research": {
+              "total_runs": 42,
+              "avg_confidence": 0.78,
+              "success_rate": 0.95,
+              "avg_processing_time": 2.3
+            },
+            "analysis": {...},
+            "critic": {...}
+          },
+          "phase_transitions": {
+            "exploration_to_analysis_avg": 0.35,
+            "analysis_to_synthesis_avg": 0.72
+          },
+          "summary": {
+            "total_agents_tracked": 126,
+            "overall_success_rate": 0.89,
+            "avg_confidence_all": 0.75
+          }
+        }
+        ```
+    """
+    try:
+        # Get performance tracker from Felix system
+        if not felix.performance_tracker:
+            return {
+                "agent_type_stats": {},
+                "phase_transitions": {},
+                "summary": {
+                    "total_agents_tracked": 0,
+                    "message": "Performance tracking disabled (enable_memory=False)"
+                }
+            }
+
+        # Fetch statistics from the tracker
+        agent_type_stats = felix.performance_tracker.get_agent_type_statistics()
+        phase_analysis = felix.performance_tracker.get_phase_transition_analysis()
+
+        # Build summary
+        total_agents = sum(
+            stats.get("total_runs", 0)
+            for stats in agent_type_stats.values()
+        ) if agent_type_stats else 0
+
+        avg_confidence_all = 0.0
+        if agent_type_stats:
+            confidences = [
+                stats.get("avg_confidence", 0)
+                for stats in agent_type_stats.values()
+                if stats.get("total_runs", 0) > 0
+            ]
+            if confidences:
+                avg_confidence_all = sum(confidences) / len(confidences)
+
+        return {
+            "agent_type_stats": agent_type_stats,
+            "phase_transitions": phase_analysis,
+            "summary": {
+                "total_agents_tracked": total_agents,
+                "overall_success_rate": 0.0,  # Computed if needed
+                "avg_confidence_all": round(avg_confidence_all, 3)
+            }
+        }
+
+    except Exception as e:
+        logger.exception("Error getting agent metrics")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error getting agent metrics: {str(e)}"
         )

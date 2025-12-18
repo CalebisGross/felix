@@ -382,7 +382,10 @@ def get_migrations() -> List[Migration]:
     Returns:
         List of Migration instances
     """
+    from .add_agent_lifecycle_events import AgentLifecycleEventsMigration
+
     return [
         SystemActionsMigration001(),
-        SystemActionsMigration002()
+        SystemActionsMigration002(),
+        AgentLifecycleEventsMigration()
     ]

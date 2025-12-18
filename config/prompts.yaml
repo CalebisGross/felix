@@ -399,6 +399,18 @@ synthesis:
       - Target length: 5-10 paragraphs for most complex tasks
       - Prioritize clarity and actionable insights over abstract discussion
 
+# System Prompts (Felix chat identity)
+# Note: Default chat_identity is loaded from config/chat_system_prompt.md
+# Custom overrides can be stored in the database via PromptManager
+system:
+  chat_identity:
+    description: "Felix's core chat identity prompt - loaded from markdown file by default"
+    source_file: "config/chat_system_prompt.md"
+    template_variables:
+      - "currentDateTime"
+    # Template is intentionally not inlined here because it's large and best maintained
+    # in the dedicated markdown file. Database overrides take precedence.
+
 # Metadata section for processing parameters
 metadata:
   temperature_guidance:

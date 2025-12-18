@@ -1,6 +1,9 @@
 """Custom Qt signals for Felix GUI events."""
 
+import logging
 from PySide6.QtCore import QObject, Signal
+
+logger = logging.getLogger(__name__)
 
 
 class FelixSignals(QObject):
@@ -49,6 +52,23 @@ class FelixSignals(QObject):
 
     # Layout changes
     layout_mode_changed = Signal(str)  # "compact" | "standard" | "wide"
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        logger.debug("FelixSignals instance created - signal hub ready for connections")
+
+    def log_available_signals(self):
+        """Log all available signals for debugging purposes (Issue #56.6)."""
+        signal_names = [
+            "system_starting", "system_started", "system_stopping", "system_stopped",
+            "system_error", "status_updated", "request_started", "chunk_received",
+            "thinking_step", "response_complete", "request_failed", "request_cancelled",
+            "approval_requested", "approval_resolved", "synthesis_review_requested",
+            "synthesis_review_response", "command_started", "command_output",
+            "command_completed", "knowledge_updated", "log_message", "layout_mode_changed"
+        ]
+        logger.info(f"FelixSignals: {len(signal_names)} signals available for connection")
+        logger.debug(f"Available signals: {', '.join(signal_names)}")
 
 
 # Global singleton instance

@@ -114,127 +114,26 @@ class ResearchAgent(LLMAgent):
         """
         Create research-specific system prompt with token budget.
 
-        Includes special "direct answer mode" for simple factual queries with high-confidence knowledge.
-        Otherwise delegates to PromptPipeline for standard prompt construction.
+        Uses base class _try_direct_answer_mode() for simple factual queries,
+        otherwise delegates to PromptPipeline for standard prompt construction.
         """
-        logger.debug(f"🐛 DEBUG: ResearchAgent.create_position_aware_prompt() called - CODE VERSION 2")
-        logger.debug(f"🐛 DEBUG: task type = {type(task)}, hasattr(task, 'metadata') = {hasattr(task, 'metadata')}")
-        logger.debug(f"🐛 DEBUG: isinstance(task, dict) = {isinstance(task, dict)}")
+        # Try direct answer mode first (inherited from LLMAgent base class)
+        direct_result = self._try_direct_answer_mode(task)
+        if direct_result is not None:
+            return direct_result
+
+        # NORMAL MODE: Delegate to PromptPipeline for standard research agent prompt
         position_info = self.get_position_info(current_time)
         depth_ratio = position_info.get("depth_ratio", 0.0)
 
-        # Check for "direct answer mode" - when trustable knowledge exists for simple query
-        logger.info(f"🔍 DIRECT ANSWER MODE CHECK for {self.agent_id}")
-        logger.info(f"   task.knowledge_entries exists: {hasattr(task, 'knowledge_entries')}")
-        if hasattr(task, 'knowledge_entries'):
-            logger.info(f"   task.knowledge_entries length: {len(task.knowledge_entries) if task.knowledge_entries else 0}")
-
-        use_direct_mode = False
-        if task.knowledge_entries and len(task.knowledge_entries) > 0:
-            logger.info(f"   ✓ Knowledge entries available: {len(task.knowledge_entries)}")
-            # Check if this is a simple factual query with trustable knowledge
-            try:
-                from src.workflows.truth_assessment import assess_answer_confidence
-
-                logger.info(f"   🤖 Calling assess_answer_confidence()...")
-                # Quick assessment
-                trustable, trust_score, trust_reason = assess_answer_confidence(
-                    task.knowledge_entries,
-                    task.description
-                )
-
-                logger.info(f"   📊 Trust assessment results:")
-                logger.info(f"      Trustable: {trustable}")
-                logger.info(f"      Trust score: {trust_score:.2f}")
-                logger.info(f"      Reason: {trust_reason}")
-
-                if trustable and trust_score >= 0.85:
-                    use_direct_mode = True
-                    logger.info(f"🎯 DIRECT ANSWER MODE ACTIVATED for {self.agent_id}")
-                    logger.info(f"   Reason: {trust_reason}")
-                else:
-                    logger.info(f"   ⚠️ Direct answer mode NOT activated:")
-                    logger.info(f"      trustable={trustable}, trust_score={trust_score:.2f} (need ≥0.85)")
-            except Exception as e:
-                logger.error(f"   ❌ Could not assess for direct mode: {e}", exc_info=True)
-        else:
-            logger.warning(f"   ⚠️ No knowledge entries available - direct answer mode cannot activate")
-
-        # DIRECT ANSWER MODE: Override for simple queries with trustable knowledge
-        if use_direct_mode:
-            # Force low temperature for precision
-            # This will be applied in process_task_with_llm by checking task metadata
-            # Safe metadata access for both LLMTask objects and dict representations
-            logger.debug(f"🐛 DEBUG: About to set metadata - task type = {type(task)}")
-            logger.debug(f"🐛 DEBUG: hasattr(task, 'metadata') = {hasattr(task, 'metadata')}")
-            logger.debug(f"🐛 DEBUG: isinstance(task, dict) = {isinstance(task, dict)}")
-            if hasattr(task, 'metadata'):
-                if task.metadata is None:
-                    task.metadata = {}
-                task.metadata['direct_answer_mode'] = True
-                task.metadata['override_temperature'] = 0.2
-                task.metadata['override_tokens'] = 200
-            elif isinstance(task, dict):
-                if 'metadata' not in task:
-                    task['metadata'] = {}
-                task['metadata']['direct_answer_mode'] = True
-                task['metadata']['override_temperature'] = 0.2
-                task['metadata']['override_tokens'] = 200
-
-            # Build direct answer prompt
-            knowledge_summary = "\n\nAVAILABLE KNOWLEDGE (HIGH CONFIDENCE):\n"
-            for entry in task.knowledge_entries:
-                if hasattr(entry, 'content'):
-                    if isinstance(entry.content, dict):
-                        content_str = entry.content.get('result', str(entry.content))
-                    else:
-                        content_str = str(entry.content)
-                else:
-                    content_str = str(entry)
-
-                # Show full content for direct answer mode (no truncation)
-                knowledge_summary += f"• {content_str}\n"
-
-            base_prompt = f"""You are answering a SIMPLE FACTUAL QUESTION with HIGH confidence knowledge available.
-
-{knowledge_summary}
-
-🎯 DIRECT ANSWER INSTRUCTIONS:
-- State ONLY the direct factual answer from the knowledge above
-- 1-2 sentences maximum (15-30 words)
-- NO exploration, NO analysis, NO elaboration, NO uncertainty
-- NO "according to" or "based on" qualifiers
-- Format: "The [answer] is [fact]." or "Current [X] is [Y]."
-
-Example good responses:
-- "The current date is October 23, 2025."
-- "The time is 1:24 PM EDT."
-- "The answer is 42."
-
-Example bad responses (TOO LONG):
-- "Based on the available sources, the current date and time vary by location..."
-- "Multiple authoritative sources confirm that the date is..."
-
-Your response (15-30 words, direct answer only):"""
-
-            return base_prompt, 200  # Force low token budget
-
-        # NORMAL MODE: Delegate to PromptPipeline for standard research agent prompt
-        logger.debug(f"🐛 DEBUG: NORMAL MODE - calculating token budget")
         stage_token_budget = self.max_tokens  # Default
         if self.token_budget_manager:
-            logger.debug(f"🐛 DEBUG: Calling token_budget_manager.calculate_stage_allocation()")
             token_allocation = self.token_budget_manager.calculate_stage_allocation(
                 self.agent_id, depth_ratio, self.processing_stage + 1
             )
             stage_token_budget = token_allocation.stage_budget
-            logger.debug(f"🐛 DEBUG: Token allocation complete, budget = {stage_token_budget}")
 
         # Delegate to PromptPipeline
-        logger.debug(f"🐛 DEBUG: About to call self.prompt_pipeline.build_agent_prompt()")
-        logger.debug(f"🐛 DEBUG: task type = {type(task)}, hasattr metadata = {hasattr(task, 'metadata')}")
-        logger.debug(f"🐛 DEBUG: prompt_pipeline object = {self.prompt_pipeline}")
-
         try:
             result = self.prompt_pipeline.build_agent_prompt(
                 task=task,
@@ -242,14 +141,10 @@ Your response (15-30 words, direct answer only):"""
                 position_info=position_info,
                 current_time=current_time
             )
-            logger.debug(f"🐛 DEBUG: prompt_pipeline.build_agent_prompt() returned successfully")
         except Exception as e:
-            logger.error(f"🚨 EXCEPTION CAUGHT in build_agent_prompt() call:")
-            logger.error(f"🚨 Exception type: {type(e).__name__}")
-            logger.error(f"🚨 Exception message: {str(e)}")
-            logger.error(f"🚨 Full traceback:")
+            logger.error(f"Exception in build_agent_prompt(): {type(e).__name__}: {e}")
             logger.error(traceback.format_exc())
-            raise  # Re-raise so failure recovery can handle it
+            raise
 
         return result.system_prompt, stage_token_budget
 
@@ -264,7 +159,9 @@ Your response (15-30 words, direct answer only):"""
         else:
             return f"research_deep_{mode_suffix}"
 
-
+    def _get_agent_traits(self) -> Dict[str, Any]:
+        """Return research-specific traits for synthesis context."""
+        return {"research_domain": self.research_domain}
 
 
 
@@ -339,11 +236,15 @@ class AnalysisAgent(LLMAgent):
 
         return result.system_prompt, stage_token_budget
 
+    def _get_agent_traits(self) -> Dict[str, Any]:
+        """Return analysis-specific traits for synthesis context."""
+        return {"analysis_type": self.analysis_type}
+
 
 class CriticAgent(LLMAgent):
     """
     Critic agent specializing in quality assurance and review.
-    
+
     Characteristics:
     - Critical evaluation of other agents' work
     - Identifies gaps, errors, and improvements
@@ -410,6 +311,10 @@ class CriticAgent(LLMAgent):
         )
 
         return result.system_prompt, stage_token_budget
+
+    def _get_agent_traits(self) -> Dict[str, Any]:
+        """Return critic-specific traits for synthesis context."""
+        return {"review_focus": self.review_focus}
 
     def evaluate_reasoning_process(self, agent_output: Dict[str, Any],
                                    agent_metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:

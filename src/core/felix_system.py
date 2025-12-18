@@ -92,6 +92,7 @@ class FelixConfig:
     enable_streaming: bool = True  # Enable incremental token streaming for real-time communication
     streaming_batch_interval: float = 0.1  # Send partial updates every 100ms
     auto_approve_system_actions: bool = False  # Auto-approve system commands without blocking (for CLI mode)
+    synthesis_approval_timeout: float = 60.0  # Seconds to wait for user approval of synthesis (reduced from 300s)
 
     # Web search settings
     web_search_enabled: bool = False  # Enable web search for CentralPost (confidence-based)
@@ -146,7 +147,7 @@ class FelixConfig:
 
     # Embedding tier recovery configuration
     embedding_tier_recovery_mode: str = "auto"  # "auto" or "manual"
-    embedding_recovery_check_interval: float = 60.0  # Seconds between checks
+    embedding_recovery_check_interval: float = 15.0  # Seconds between checks (faster recovery)
     embedding_recovery_check_timeout: float = 5.0  # Timeout for availability checks
     embedding_max_recovery_attempts: int = 3  # Max consecutive failures before pausing
 
@@ -352,6 +353,8 @@ class FelixSystem:
                     knowledge_db_path=self.config.knowledge_db_path
                 )
                 logger.info("Memory systems initialized (including performance tracker, feedback manager, integrator)")
+            else:
+                logger.info("Memory disabled - knowledge store, task memory, and performance tracking will be unavailable")
 
             # Initialize context compressor
             if self.config.enable_compression:
@@ -637,12 +640,15 @@ class FelixSystem:
             self.agent_manager.register_agent(agent)
 
             # Use spoke topology if enabled, otherwise direct central post registration
+            # NOTE (Issue #56.4): These are mutually exclusive paths (if/elif) to prevent
+            # double registration. Spoke creation internally calls central_post.register_agent(),
+            # so we only fall back to direct registration if spoke_manager is not enabled.
             if self.spoke_manager:
                 # Create spoke connection (automatically registers with central post)
                 self.spoke_manager.create_spoke(agent)
                 logger.info(f"Spawned {agent_type} agent: {agent_id} (domain: {domain}) with spoke connection")
             elif self.central_post:
-                # Fallback to direct registration
+                # Fallback to direct registration (only if spoke topology disabled)
                 self.central_post.register_agent(agent)
                 logger.info(f"Spawned {agent_type} agent: {agent_id} (domain: {domain})")
 

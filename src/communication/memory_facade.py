@@ -421,3 +421,36 @@ class MemoryFacade:
     def has_context_compressor(self) -> bool:
         """Check if context compressor is available."""
         return self.context_compressor is not None
+
+    def record_knowledge_usage(self, workflow_id: str, knowledge_ids: List[str],
+                               task_type: str, useful_score: float) -> bool:
+        """
+        Record knowledge usage for meta-learning.
+
+        Routes through memory facade for consistent auditing (Issue #4.5).
+
+        Args:
+            workflow_id: ID of the workflow using the knowledge
+            knowledge_ids: List of knowledge entry IDs that were used
+            task_type: Type of task that used the knowledge
+            useful_score: Usefulness score (0.0-1.0) from synthesis confidence
+
+        Returns:
+            True if recorded successfully, False otherwise
+        """
+        if not self._memory_enabled or not self.knowledge_store:
+            return False
+
+        try:
+            self.knowledge_store.record_knowledge_usage(
+                workflow_id=workflow_id,
+                knowledge_ids=knowledge_ids,
+                task_type=task_type,
+                useful_score=useful_score
+            )
+            logger.debug(f"Recorded knowledge usage for {len(knowledge_ids)} entries "
+                        f"(workflow={workflow_id}, task_type={task_type})")
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to record knowledge usage: {e}")
+            return False

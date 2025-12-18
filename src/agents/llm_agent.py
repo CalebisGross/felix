@@ -757,11 +757,109 @@ Then provide your response.
 This acknowledgment ensures you've reviewed available resources before responding.
 """
 
+    # Default confidence threshold for direct answer mode (shared across all agents)
+    DIRECT_ANSWER_CONFIDENCE_THRESHOLD = 0.85
+
+    def _try_direct_answer_mode(
+        self,
+        task: LLMTask
+    ) -> Optional[tuple[str, int]]:
+        """
+        Attempt direct answer mode for simple factual queries with high-confidence knowledge.
+
+        When trustable knowledge exists with confidence >= 0.85, returns a simplified
+        prompt and reduced token budget for precise, direct responses.
+
+        This method is shared across all specialized agents (Research, Analysis, Critic)
+        to avoid code duplication and ensure consistent behavior.
+
+        Args:
+            task: The task containing knowledge_entries and description
+
+        Returns:
+            Tuple of (direct_answer_prompt, token_budget) if direct mode activated,
+            None otherwise (caller should use standard prompt generation)
+        """
+        # Check for knowledge entries
+        if not task.knowledge_entries or len(task.knowledge_entries) == 0:
+            logger.debug(f"Direct answer mode skipped: no knowledge entries for {self.agent_id}")
+            return None
+
+        # Assess confidence using truth assessment
+        try:
+            from src.workflows.truth_assessment import assess_answer_confidence
+
+            trustable, trust_score, trust_reason = assess_answer_confidence(
+                task.knowledge_entries,
+                task.description
+            )
+
+            if not trustable or trust_score < self.DIRECT_ANSWER_CONFIDENCE_THRESHOLD:
+                logger.debug(
+                    f"Direct answer mode skipped for {self.agent_id}: "
+                    f"trustable={trustable}, score={trust_score:.2f} "
+                    f"(threshold={self.DIRECT_ANSWER_CONFIDENCE_THRESHOLD})"
+                )
+                return None
+
+            logger.info(f"Direct answer mode activated for {self.agent_id} (score={trust_score:.2f})")
+
+        except Exception as e:
+            logger.warning(f"Could not assess for direct mode: {e}")
+            return None
+
+        # Set task metadata overrides
+        if hasattr(task, 'metadata'):
+            if task.metadata is None:
+                task.metadata = {}
+            task.metadata['direct_answer_mode'] = True
+            task.metadata['override_temperature'] = 0.2
+            task.metadata['override_tokens'] = 200
+        elif isinstance(task, dict):
+            if 'metadata' not in task:
+                task['metadata'] = {}
+            task['metadata']['direct_answer_mode'] = True
+            task['metadata']['override_temperature'] = 0.2
+            task['metadata']['override_tokens'] = 200
+
+        # Build knowledge summary
+        knowledge_summary = "\n\nAVAILABLE KNOWLEDGE (HIGH CONFIDENCE):\n"
+        for entry in task.knowledge_entries:
+            if hasattr(entry, 'content'):
+                if isinstance(entry.content, dict):
+                    content_str = entry.content.get('result', str(entry.content))
+                else:
+                    content_str = str(entry.content)
+            else:
+                content_str = str(entry)
+            knowledge_summary += f"• {content_str}\n"
+
+        # Build direct answer prompt
+        direct_prompt = f"""You are answering a SIMPLE FACTUAL QUESTION with HIGH confidence knowledge available.
+
+{knowledge_summary}
+
+DIRECT ANSWER INSTRUCTIONS:
+- State ONLY the direct factual answer from the knowledge above
+- 1-2 sentences maximum (15-30 words)
+- NO exploration, NO analysis, NO elaboration, NO uncertainty
+- NO "according to" or "based on" qualifiers
+- Format: "The [answer] is [fact]." or "Current [X] is [Y]."
+
+Example good responses:
+- "The current date is October 23, 2025."
+- "The time is 1:24 PM EDT."
+- "The answer is 42."
+
+Your response (15-30 words, direct answer only):"""
+
+        return direct_prompt, 200  # Force low token budget
+
     def create_position_aware_prompt(self, task: LLMTask, current_time: float) -> tuple[str, int]:
         """
         Create system prompt that adapts to agent's helix position with token budget.
 
-        Now delegates to PromptPipeline for unified, traceable prompt construction.
+        Now includes direct answer mode check before delegating to PromptPipeline.
 
         Args:
             task: Task to process
@@ -770,6 +868,11 @@ This acknowledgment ensures you've reviewed available resources before respondin
         Returns:
             Tuple of (position-aware system prompt, token budget for this stage)
         """
+        # Try direct answer mode first (for simple factual queries with high-confidence knowledge)
+        direct_result = self._try_direct_answer_mode(task)
+        if direct_result is not None:
+            return direct_result
+
         # Get position information
         position_info = self.get_position_info(current_time)
         depth_ratio = position_info.get("depth_ratio", 0.0)
@@ -1338,7 +1441,9 @@ This acknowledgment ensures you've reviewed available resources before respondin
             "processing_time": result.processing_time,
             "confidence": result.confidence,
             "processing_stage": result.processing_stage,
-            "summary": self._create_result_summary(result)
+            "summary": self._create_result_summary(result),
+            # Agent traits for enhanced synthesis context (Issue #55/5.8)
+            "agent_traits": self._get_agent_traits()
         }
         
         # Add chunking metadata if applicable
@@ -1392,9 +1497,22 @@ This acknowledgment ensures you've reviewed available resources before respondin
         """Create concise summary of processing result."""
         content_preview = result.content[:100] + "..." if len(result.content) > 100 else result.content
         depth = result.position_info.get("depth_ratio", 0.0)
-        
+
         return f"[{self.agent_type.upper()} @ depth {depth:.2f}] {content_preview}"
-    
+
+    def _get_agent_traits(self) -> Dict[str, Any]:
+        """
+        Get agent-specific traits for synthesis context.
+
+        Base implementation returns empty dict. Specialized agents override
+        this to provide their specific traits (research_domain, analysis_type,
+        review_focus, etc.).
+
+        Returns:
+            Dictionary of agent traits for inclusion in STATUS_UPDATE messages
+        """
+        return {}
+
     def receive_shared_context(self, message: Dict[str, Any]) -> None:
         """
         Receive and store shared context from other agents.
